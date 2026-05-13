@@ -28,10 +28,24 @@ set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(SDL3)
 
+FetchContent_Declare(
+  rtmidi
+  GIT_REPOSITORY https://github.com/thestk/rtmidi.git
+  GIT_TAG 6.0.0
+  GIT_SHALLOW TRUE
+)
+
+set(RTMIDI_API_ALSA ON CACHE BOOL "" FORCE)
+set(RTMIDI_API_JACK OFF CACHE BOOL "" FORCE)
+set(RTMIDI_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(rtmidi)
+
 add_executable(analogno
   src/main.cpp
   src/controller_state.cpp
   src/music_mapper.cpp
+  src/midi_output.cpp
 )
 
 target_include_directories(analogno
@@ -42,6 +56,7 @@ target_include_directories(analogno
 target_link_libraries(analogno
   PRIVATE
     SDL3::SDL3
+    rtmidi
 )
 
 target_compile_features(analogno

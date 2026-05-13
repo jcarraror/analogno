@@ -58,10 +58,6 @@ auto positive_from_axis(float value) -> float {
   return std::clamp((value + 1.0F) * 0.5F, 0.0F, 1.0F);
 }
 
-auto abs_clamped(float value) -> float {
-  return std::clamp(std::abs(value), 0.0F, 1.0F);
-}
-
 } // namespace
 
 auto scale_for(ScaleKind kind) -> Scale {
@@ -133,14 +129,23 @@ auto MusicMapper::map(const ControllerState &controller) -> MusicalIntent {
 
   intent.note_on = map_note_buttons(controller);
 
+  const auto gyro_vibrato =
+      controller.has_gyro()
+          ? std::clamp(controller.gyro().z * 0.12F, -0.35F, 0.35F)
+          : 0.0F;
+
+  const auto vibrato_amount = controller.left_trigger();
+
+  const auto pitch_bend = std::clamp(
+      controller.left_x() + gyro_vibrato * vibrato_amount, -1.0F, 1.0F);
+
   intent.controls = ContinuousControls{
-      .pitch_bend = controller.left_x(),
+      .pitch_bend = pitch_bend,
       .expression = controller.left_trigger(),
       .filter_cutoff = positive_from_axis(-controller.right_y()),
       .filter_resonance = positive_from_axis(controller.right_x()),
       .modulation = controller.right_trigger(),
-      .vibrato =
-          controller.has_gyro() ? abs_clamped(controller.gyro().z) : 0.0F,
+      .vibrato = std::abs(gyro_vibrato) * vibrato_amount,
   };
 
   return intent;

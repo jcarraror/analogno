@@ -1,4 +1,5 @@
 #include "controller_state.hpp"
+#include "midi_output.hpp"
 #include "music_mapper.hpp"
 #include "music_types.hpp"
 #include "sdl_check.hpp"
@@ -25,6 +26,7 @@ namespace {
 
 using analogno::ControllerState;
 using analogno::Gamepad;
+using analogno::MidiOutput;
 using analogno::MusicalIntent;
 using analogno::MusicMapper;
 
@@ -183,6 +185,7 @@ auto run_event_loop() -> void {
 
   ControllerState state{};
   MusicMapper mapper{};
+  MidiOutput midi{};
 
   bool running = true;
   auto last_print = std::chrono::steady_clock::now();
@@ -200,6 +203,7 @@ auto run_event_loop() -> void {
     if (state.changed_this_frame() &&
         elapsed >= std::chrono::milliseconds{33}) {
       const auto intent = mapper.map(state);
+      midi.apply(intent);
       print_intent(intent);
 
       state.clear_frame_edges();
