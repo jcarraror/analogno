@@ -4,6 +4,7 @@
 
 #include <RtMidi.h>
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -29,16 +30,22 @@ public:
 private:
   static constexpr auto channel = std::uint8_t{0};
   static constexpr auto velocity = std::uint8_t{100};
+  static constexpr auto midi_cc_count = std::size_t{128};
+  static constexpr auto midi_note_count = std::size_t{128};
 
   RtMidiOut midi_;
-  std::optional<int> active_note_{};
+  std::array<bool, midi_note_count> active_notes_{};
+  std::array<std::optional<std::uint8_t>, midi_cc_count> last_cc_{};
+  std::optional<int> last_pitch_bend_{};
 
   auto note_on(int midi_note) -> void;
   auto note_off(int midi_note) -> void;
   auto control_change(std::uint8_t controller, std::uint8_t value) -> void;
   auto pitch_bend(float normalized) -> void;
 
-  static auto midi7(float normalized) -> std::uint8_t;
+  static auto control_value(float normalized) -> std::uint8_t;
+  static auto pitch_bend_value(float normalized) -> int;
+  static auto valid_midi_note(int note) -> bool;
   static auto send(RtMidiOut &midi, std::vector<unsigned char> message) -> void;
 };
 

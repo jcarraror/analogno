@@ -161,6 +161,22 @@ auto ControllerState::button(SDL_GamepadButton button) const -> bool {
   return buttons_[static_cast<std::size_t>(button)];
 }
 
+auto ControllerState::button_pressed(SDL_GamepadButton button) const -> bool {
+  if (!valid_button(button)) {
+    return false;
+  }
+
+  return pressed_[static_cast<std::size_t>(button)];
+}
+
+auto ControllerState::button_released(SDL_GamepadButton button) const -> bool {
+  if (!valid_button(button)) {
+    return false;
+  }
+
+  return released_[static_cast<std::size_t>(button)];
+}
+
 auto ControllerState::left_x() const -> float {
   return axis(SDL_GAMEPAD_AXIS_LEFTX);
 }

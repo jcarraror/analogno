@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace analogno {
 
@@ -39,7 +40,8 @@ struct ContinuousControls final {
 };
 
 struct MusicalIntent final {
-  std::optional<Note> note_on{};
+  std::vector<Note> note_ons{};
+  std::vector<Note> note_offs{};
   bool note_off_all{};
 
   int root_midi_note{60};

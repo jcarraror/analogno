@@ -43,6 +43,8 @@ public:
 
   [[nodiscard]] auto axis(SDL_GamepadAxis axis) const -> float;
   [[nodiscard]] auto button(SDL_GamepadButton button) const -> bool;
+  [[nodiscard]] auto button_pressed(SDL_GamepadButton button) const -> bool;
+  [[nodiscard]] auto button_released(SDL_GamepadButton button) const -> bool;
 
   [[nodiscard]] auto left_x() const -> float;
   [[nodiscard]] auto left_y() const -> float;

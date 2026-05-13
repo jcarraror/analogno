@@ -104,10 +104,21 @@ auto enable_motion_sensors(const Gamepad &gamepad) -> void {
   std::cout << '\n';
 }
 
-auto print_note(const analogno::Note &note) -> void {
+auto print_note_on(const analogno::Note &note) -> void {
   std::cout << "note_on"
             << " midi=" << note.midi_note << " degree=" << note.degree
             << " octave=" << note.octave << '\n';
+}
+
+auto print_note_off(const analogno::Note &note) -> void {
+  std::cout << "note_off"
+            << " midi=" << note.midi_note << " degree=" << note.degree
+            << " octave=" << note.octave << '\n';
+}
+
+auto has_note_event(const MusicalIntent &intent) -> bool {
+  return !intent.note_ons.empty() || !intent.note_offs.empty() ||
+         intent.note_off_all;
 }
 
 auto print_intent(const MusicalIntent &intent) -> void {
@@ -122,8 +133,12 @@ auto print_intent(const MusicalIntent &intent) -> void {
             << " modulation=" << intent.controls.modulation
             << " vibrato=" << intent.controls.vibrato << '\n';
 
-  if (intent.note_on.has_value()) {
-    print_note(*intent.note_on);
+  for (const auto &note : intent.note_ons) {
+    print_note_on(note);
+  }
+
+  for (const auto &note : intent.note_offs) {
+    print_note_off(note);
   }
 
   if (intent.note_off_all) {
@@ -180,7 +195,7 @@ auto handle_event(const SDL_Event &event, ControllerState &state) -> bool {
 }
 
 auto run_event_loop() -> void {
-  std::cout << "musical intent monitor running. press Ctrl+C or close the "
+  std::cout << "polyphonic MIDI controller running. press Ctrl+C or close the "
                "window to quit.\n\n";
 
   ControllerState state{};
@@ -197,17 +212,19 @@ auto run_event_loop() -> void {
       running = handle_event(event, state);
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    const auto elapsed = now - last_print;
-
-    if (state.changed_this_frame() &&
-        elapsed >= std::chrono::milliseconds{33}) {
+    if (state.changed_this_frame()) {
       const auto intent = mapper.map(state);
       midi.apply(intent);
-      print_intent(intent);
+
+      const auto now = std::chrono::steady_clock::now();
+      const auto elapsed = now - last_print;
+
+      if (has_note_event(intent) || elapsed >= std::chrono::milliseconds{100}) {
+        print_intent(intent);
+        last_print = now;
+      }
 
       state.clear_frame_edges();
-      last_print = now;
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds{1});

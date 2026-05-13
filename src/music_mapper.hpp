@@ -3,6 +3,9 @@
 #include "controller_state.hpp"
 #include "music_types.hpp"
 
+#include <array>
+#include <optional>
+
 namespace analogno {
 
 class MusicMapper final {
@@ -10,14 +13,12 @@ public:
   [[nodiscard]] auto map(const ControllerState &controller) -> MusicalIntent;
 
 private:
+  static constexpr auto playable_button_count = std::size_t{4};
+
   int root_midi_note_{48};
   int octave_offset_{};
   ScaleKind scale_{ScaleKind::minor_pentatonic};
 
-  bool previous_south_{};
-  bool previous_east_{};
-  bool previous_west_{};
-  bool previous_north_{};
   bool previous_l1_{};
   bool previous_r1_{};
   bool previous_dpad_up_{};
@@ -26,8 +27,10 @@ private:
   bool previous_dpad_right_{};
   bool previous_guide_{};
 
-  [[nodiscard]] auto map_note_buttons(const ControllerState &controller)
-      -> std::optional<Note>;
+  std::array<std::optional<Note>, playable_button_count> active_notes_{};
+
+  auto map_note_buttons(const ControllerState &controller,
+                        MusicalIntent &intent) -> void;
   auto update_mode_buttons(const ControllerState &controller,
                            MusicalIntent &intent) -> void;
 

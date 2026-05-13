@@ -1,7 +1,9 @@
 #include "music_mapper.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <optional>
 
 namespace analogno {
@@ -9,6 +11,19 @@ namespace {
 
 constexpr auto midi_min = 0;
 constexpr auto midi_max = 127;
+
+struct PlayableButton final {
+  SDL_GamepadButton button{};
+  int degree{};
+  std::size_t slot{};
+};
+
+constexpr auto playable_buttons = std::array{
+    PlayableButton{.button = SDL_GAMEPAD_BUTTON_SOUTH, .degree = 0, .slot = 0},
+    PlayableButton{.button = SDL_GAMEPAD_BUTTON_EAST, .degree = 1, .slot = 1},
+    PlayableButton{.button = SDL_GAMEPAD_BUTTON_WEST, .degree = 2, .slot = 2},
+    PlayableButton{.button = SDL_GAMEPAD_BUTTON_NORTH, .degree = 3, .slot = 3},
+};
 
 auto clamp_midi(int note) -> int {
   return std::clamp(note, midi_min, midi_max);
@@ -126,8 +141,7 @@ auto MusicMapper::map(const ControllerState &controller) -> MusicalIntent {
   };
 
   update_mode_buttons(controller, intent);
-
-  intent.note_on = map_note_buttons(controller);
+  map_note_buttons(controller, intent);
 
   const auto gyro_vibrato =
       controller.has_gyro()
@@ -151,30 +165,23 @@ auto MusicMapper::map(const ControllerState &controller) -> MusicalIntent {
   return intent;
 }
 
-auto MusicMapper::map_note_buttons(const ControllerState &controller)
-    -> std::optional<Note> {
-  const auto south = controller.button(SDL_GAMEPAD_BUTTON_SOUTH);
-  const auto east = controller.button(SDL_GAMEPAD_BUTTON_EAST);
-  const auto west = controller.button(SDL_GAMEPAD_BUTTON_WEST);
-  const auto north = controller.button(SDL_GAMEPAD_BUTTON_NORTH);
+auto MusicMapper::map_note_buttons(const ControllerState &controller,
+                                   MusicalIntent &intent) -> void {
+  for (const auto playable : playable_buttons) {
+    auto &active_note = active_notes_[playable.slot];
 
-  if (rising_edge(south, previous_south_)) {
-    return note_for_degree(0);
+    if (controller.button_pressed(playable.button)) {
+      const auto note = note_for_degree(playable.degree);
+      active_note = note;
+      intent.note_ons.push_back(note);
+    }
+
+    if (controller.button_released(playable.button) &&
+        active_note.has_value()) {
+      intent.note_offs.push_back(*active_note);
+      active_note.reset();
+    }
   }
-
-  if (rising_edge(east, previous_east_)) {
-    return note_for_degree(1);
-  }
-
-  if (rising_edge(west, previous_west_)) {
-    return note_for_degree(2);
-  }
-
-  if (rising_edge(north, previous_north_)) {
-    return note_for_degree(3);
-  }
-
-  return std::nullopt;
 }
 
 auto MusicMapper::update_mode_buttons(const ControllerState &controller,
@@ -213,6 +220,7 @@ auto MusicMapper::update_mode_buttons(const ControllerState &controller,
 
   if (rising_edge(guide, previous_guide_)) {
     intent.note_off_all = true;
+    active_notes_.fill(std::nullopt);
   }
 
   intent.root_midi_note = root_midi_note_;
