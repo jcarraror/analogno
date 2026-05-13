@@ -26,6 +26,7 @@ public:
 
   void apply(const MusicalIntent &intent);
   void all_notes_off();
+  void program_change(std::uint8_t program, std::uint8_t bank_msb = 0);
 
 private:
   static constexpr auto channel = std::uint8_t{0};

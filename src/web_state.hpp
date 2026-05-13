@@ -32,6 +32,13 @@ struct WebControllerState final {
   WebVec3 accel{};
 };
 
+struct WebSampleBank final {
+  bool has_sample{};
+  std::uint32_t frames{};
+  float trim_start{};
+  float trim_end{1.0F};
+};
+
 struct WebAudioState final {
   std::vector<WebCaptureDevice> devices{};
   std::optional<std::uint32_t> selected_device_index{};
@@ -48,6 +55,8 @@ struct WebAudioState final {
   std::uint32_t sample_frames{};
   float sample_trim_start{};
   float sample_trim_end{1.0F};
+  std::vector<WebSampleBank> banks{};
+  std::size_t active_bank{};
 };
 
 struct WebMusicState final {
@@ -61,6 +70,8 @@ struct WebMusicState final {
   float modulation{};
   float vibrato{};
   std::vector<int> active_notes{};
+  int midi_program{};
+  int midi_bank{};
 };
 
 struct WebRuntimeState final {

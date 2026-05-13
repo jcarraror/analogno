@@ -15,6 +15,11 @@ public:
     float end{1.0F};
   };
 
+  struct PatchRequest final {
+    std::uint8_t bank{};
+    std::uint8_t program{};
+  };
+
   explicit WebSocketServer(std::uint16_t port = 8765);
   ~WebSocketServer();
 
@@ -31,6 +36,9 @@ public:
   [[nodiscard]] bool consume_panic_requested();
   [[nodiscard]] std::optional<int> consume_capture_device_request();
   [[nodiscard]] std::optional<SampleTrimRequest> consume_sample_trim_request();
+  [[nodiscard]] std::optional<std::size_t> consume_active_bank_request();
+  [[nodiscard]] std::optional<std::size_t> consume_save_sample_request();
+  [[nodiscard]] std::optional<PatchRequest> consume_patch_request();
 
 private:
   class Impl;

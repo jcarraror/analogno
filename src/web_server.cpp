@@ -42,6 +42,21 @@ Json capture_devices_json(const std::vector<WebCaptureDevice> &devices) {
   return result;
 }
 
+Json sample_banks_json(const std::vector<WebSampleBank> &banks) {
+  auto result = Json::array();
+
+  for (const auto &bank : banks) {
+    result.push_back({
+        {"hasData", bank.has_sample},
+        {"frames", bank.frames},
+        {"trimStart", bank.trim_start},
+        {"trimEnd", bank.trim_end},
+    });
+  }
+
+  return result;
+}
+
 std::string to_json_string(const WebRuntimeState &state) {
   const Json json{
       {"type", "state"},
@@ -87,6 +102,8 @@ std::string to_json_string(const WebRuntimeState &state) {
               {"modulation", state.music.modulation},
               {"vibrato", state.music.vibrato},
               {"activeNotes", state.music.active_notes},
+              {"midiProgram", state.music.midi_program},
+              {"midiBank", state.music.midi_bank},
           },
       },
       {
@@ -107,6 +124,8 @@ std::string to_json_string(const WebRuntimeState &state) {
               {"sampleFrames", state.audio.sample_frames},
               {"sampleTrimStart", state.audio.sample_trim_start},
               {"sampleTrimEnd", state.audio.sample_trim_end},
+              {"banks", sample_banks_json(state.audio.banks)},
+              {"activeBank", state.audio.active_bank},
           },
       },
   };
@@ -125,8 +144,13 @@ public:
   std::vector<std::weak_ptr<class Session>> sessions{};
   std::atomic_bool panic_requested{false};
   std::atomic_int capture_device_request{-2};
+  std::atomic_int active_bank_request{-1};
   std::mutex sample_trim_mutex{};
   std::optional<WebSocketServer::SampleTrimRequest> sample_trim_request{};
+  std::mutex save_sample_mutex{};
+  std::optional<std::size_t> save_sample_request{};
+  std::mutex patch_mutex{};
+  std::optional<WebSocketServer::PatchRequest> patch_request{};
 };
 
 class Session final : public std::enable_shared_from_this<Session> {
@@ -202,6 +226,31 @@ private:
             .start = json.value("start", 0.0F),
             .end = json.value("end", 1.0F),
         };
+      } else if (json.value("type", "") == "setActiveBank") {
+        if (json.contains("bank") && json["bank"].is_number_integer()) {
+          const auto bank = json["bank"].get<int>();
+          if (bank >= 0) {
+            shared_->active_bank_request.store(bank);
+          }
+        }
+      } else if (json.value("type", "") == "saveSample") {
+        if (json.contains("bank") && json["bank"].is_number_integer()) {
+          const auto bank = json["bank"].get<int>();
+          if (bank >= 0) {
+            const auto lock = std::scoped_lock{shared_->save_sample_mutex};
+            shared_->save_sample_request = static_cast<std::size_t>(bank);
+          }
+        }
+      } else if (json.value("type", "") == "setPatch") {
+        const auto bank = json.value("bank", 0);
+        const auto program = json.value("program", 0);
+        if (bank >= 0 && bank < 128 && program >= 0 && program < 128) {
+          const auto lock = std::scoped_lock{shared_->patch_mutex};
+          shared_->patch_request = WebSocketServer::PatchRequest{
+              .bank = static_cast<std::uint8_t>(bank),
+              .program = static_cast<std::uint8_t>(program),
+          };
+        }
       }
     } catch (const std::exception &exception) {
       std::cerr << "invalid websocket JSON: " << exception.what() << '\n';
@@ -351,6 +400,24 @@ public:
     return request;
   }
 
+  [[nodiscard]] std::optional<std::size_t> consume_active_bank_request() {
+    const auto val = shared_->active_bank_request.exchange(-1);
+    if (val >= 0) {
+      return static_cast<std::size_t>(val);
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<std::size_t> consume_save_sample_request() {
+    const auto lock = std::scoped_lock{shared_->save_sample_mutex};
+    return std::exchange(shared_->save_sample_request, std::nullopt);
+  }
+
+  [[nodiscard]] std::optional<WebSocketServer::PatchRequest> consume_patch_request() {
+    const auto lock = std::scoped_lock{shared_->patch_mutex};
+    return std::exchange(shared_->patch_request, std::nullopt);
+  }
+
 private:
   std::shared_ptr<SharedState> shared_;
   std::thread thread_{};
@@ -381,6 +448,18 @@ std::optional<int> WebSocketServer::consume_capture_device_request() {
 std::optional<WebSocketServer::SampleTrimRequest>
 WebSocketServer::consume_sample_trim_request() {
   return impl_->consume_sample_trim_request();
+}
+
+std::optional<std::size_t> WebSocketServer::consume_active_bank_request() {
+  return impl_->consume_active_bank_request();
+}
+
+std::optional<std::size_t> WebSocketServer::consume_save_sample_request() {
+  return impl_->consume_save_sample_request();
+}
+
+std::optional<WebSocketServer::PatchRequest> WebSocketServer::consume_patch_request() {
+  return impl_->consume_patch_request();
 }
 
 } // namespace analogno

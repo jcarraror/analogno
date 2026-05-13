@@ -7,12 +7,15 @@
 #include <cstddef>
 #include <mutex>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace analogno {
 
 class AudioSampler final {
 public:
+  static constexpr auto bank_count = std::size_t{8};
+
   AudioSampler();
   ~AudioSampler();
 
@@ -22,6 +25,7 @@ public:
   AudioSampler(AudioSampler &&) = delete;
   AudioSampler &operator=(AudioSampler &&) = delete;
 
+  // Operates on the active bank
   void set_sample(std::vector<float> sample);
   void clear_sample();
   void set_trim(float start, float end);
@@ -29,10 +33,22 @@ public:
   void set_pitch_controls(float pitch_bend, float vibrato_depth);
   void trigger(float rate = 1.0F);
 
+  void set_active_bank(std::size_t bank);
+  bool save_bank(std::size_t bank, const std::string &path);
+
+  // Active-bank queries
   [[nodiscard]] bool has_sample() const;
   [[nodiscard]] std::size_t sample_frames() const;
   [[nodiscard]] float trim_start() const;
   [[nodiscard]] float trim_end() const;
+  [[nodiscard]] std::size_t active_bank() const;
+
+  // Per-bank queries
+  [[nodiscard]] bool bank_has_sample(std::size_t bank) const;
+  [[nodiscard]] std::size_t bank_frames(std::size_t bank) const;
+  [[nodiscard]] float bank_trim_start(std::size_t bank) const;
+  [[nodiscard]] float bank_trim_end(std::size_t bank) const;
+
   [[nodiscard]] bool is_running() const;
 
 private:
@@ -42,6 +58,7 @@ private:
     float position{};
     float rate{1.0F};
     float envelope{};
+    std::size_t bank_index{};
   };
 
   static constexpr auto voice_count = std::size_t{8};
@@ -51,11 +68,12 @@ private:
   static constexpr auto release_frames = float{960.0F};
 
   ma_device device_{};
-  std::shared_ptr<const std::vector<float>> sample_{};
+  std::array<std::shared_ptr<const std::vector<float>>, bank_count> banks_{};
   std::array<Voice, voice_count> voices_{};
   mutable std::mutex mutex_{};
-  std::atomic<float> trim_start_{};
-  std::atomic<float> trim_end_{1.0F};
+  std::array<std::atomic<float>, bank_count> bank_trim_start_{};
+  std::array<std::atomic<float>, bank_count> bank_trim_end_{};
+  std::atomic<std::size_t> active_bank_{};
   std::atomic<float> gain_{};
   std::atomic<float> pitch_bend_{};
   std::atomic<float> vibrato_depth_{};

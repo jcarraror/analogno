@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -274,7 +275,9 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                const ActiveNoteTracker &active_notes,
                const AudioCapture &audio_capture,
                const AudioSampler &audio_sampler,
-               const analogno::AudioFeatures &audio_features) {
+               const analogno::AudioFeatures &audio_features,
+               std::uint8_t midi_program,
+               std::uint8_t midi_bank) {
   std::vector<analogno::WebCaptureDevice> capture_devices{};
 
   for (const auto &device : audio_capture.devices()) {
@@ -282,6 +285,18 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
         .index = device.index,
         .name = device.name,
         .is_default = device.is_default,
+    });
+  }
+
+  std::vector<analogno::WebSampleBank> sample_banks{};
+  sample_banks.reserve(AudioSampler::bank_count);
+
+  for (std::size_t i = 0; i < AudioSampler::bank_count; ++i) {
+    sample_banks.push_back(analogno::WebSampleBank{
+        .has_sample = audio_sampler.bank_has_sample(i),
+        .frames = static_cast<std::uint32_t>(audio_sampler.bank_frames(i)),
+        .trim_start = audio_sampler.bank_trim_start(i),
+        .trim_end = audio_sampler.bank_trim_end(i),
     });
   }
 
@@ -321,6 +336,8 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
               .modulation = intent.controls.modulation,
               .vibrato = intent.controls.vibrato,
               .active_notes = active_notes.notes(),
+              .midi_program = static_cast<int>(midi_program),
+              .midi_bank = static_cast<int>(midi_bank),
           },
       .audio =
           analogno::WebAudioState{
@@ -340,6 +357,8 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                   static_cast<std::uint32_t>(audio_sampler.sample_frames()),
               .sample_trim_start = audio_sampler.trim_start(),
               .sample_trim_end = audio_sampler.trim_end(),
+              .banks = std::move(sample_banks),
+              .active_bank = audio_sampler.active_bank(),
           },
   };
 }
@@ -365,6 +384,8 @@ void run_event_loop() {
   MusicalIntent last_intent{};
   analogno::AudioFeatures last_audio_features{};
   auto was_sample_record_button_active = false;
+  auto current_midi_bank = std::uint8_t{0};
+  auto current_midi_program = std::uint8_t{0};
 
   while (running) {
     SDL_Event event{};
@@ -394,6 +415,54 @@ void run_event_loop() {
 
     if (const auto trim_request = web.consume_sample_trim_request()) {
       audio_sampler.set_trim(trim_request->start, trim_request->end);
+    }
+
+    if (const auto bank_request = web.consume_active_bank_request()) {
+      audio_sampler.set_active_bank(*bank_request);
+      std::cout << "active bank: " << *bank_request << '\n';
+    }
+
+    if (const auto patch = web.consume_patch_request()) {
+      current_midi_bank = patch->bank;
+      current_midi_program = patch->program;
+      midi.program_change(current_midi_program, current_midi_bank);
+      std::cout << "program change: bank=" << static_cast<int>(current_midi_bank)
+                << " program=" << static_cast<int>(current_midi_program) << '\n';
+    }
+
+    if (const auto save_request = web.consume_save_sample_request()) {
+      const auto bank = *save_request;
+      const char *home_env = std::getenv("HOME");
+      const auto home = std::string{home_env != nullptr ? home_env : "."};
+      const auto dir = home + "/analogno-samples";
+      const auto epoch_ms =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::system_clock::now().time_since_epoch())
+              .count();
+      const auto path = dir + "/bank-" + std::to_string(bank) + "-" +
+                        std::to_string(epoch_ms) + ".wav";
+
+      if (audio_sampler.save_bank(bank, path)) {
+        std::cout << "saved bank " << bank << " to " << path << '\n';
+      } else {
+        std::cerr << "failed to save bank " << bank << '\n';
+      }
+    }
+
+    
+    if (state.button_pressed(SDL_GAMEPAD_BUTTON_TOUCHPAD) &&
+        !state.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) {
+      const auto next = (audio_sampler.active_bank() + 1) % AudioSampler::bank_count;
+      audio_sampler.set_active_bank(next);
+      std::cout << "bank: " << next << '\n';
+    }
+
+    
+    if (state.button_pressed(SDL_GAMEPAD_BUTTON_START)) {
+      const auto cur = audio_sampler.active_bank();
+      const auto prev = (cur == 0 ? AudioSampler::bank_count : cur) - 1;
+      audio_sampler.set_active_bank(prev);
+      std::cout << "bank: " << prev << '\n';
     }
 
     if (audio_sampler.has_sample() &&
@@ -469,7 +538,8 @@ void run_event_loop() {
 
       web.publish(make_web_state(state, last_intent, active_notes,
                                  audio_capture, audio_sampler,
-                                 last_audio_features));
+                                 last_audio_features,
+                                 current_midi_program, current_midi_bank));
       last_web_publish = now;
     }
 

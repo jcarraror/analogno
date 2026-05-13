@@ -319,4 +319,198 @@ h1 {
   .layout {
     grid-template-columns: 1fr;
   }
+
+  .panel-wide {
+    grid-column: span 1;
+  }
+
+  .sampler-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Sample banks ─────────────────────────────────────── */
+
+.panel-wide {
+  grid-column: span 2;
+}
+
+.sampler-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.sampler-hint {
+  margin: 0 0 12px;
+  color: #585f75;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.sampler-trim .state-line:first-of-type {
+  padding-top: 0;
+}
+
+.bank-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.bank-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 12px 8px;
+  min-height: 74px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.bank-slot:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.bank-slot.bank-active {
+  border-color: rgba(156, 167, 255, 0.6);
+  background: rgba(156, 167, 255, 0.1);
+}
+
+.bank-num {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8e97aa;
+}
+
+.bank-slot.bank-active .bank-num {
+  color: #c0c7ff;
+}
+
+.bank-dur {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #b9c1d4;
+}
+
+.bank-slot.bank-filled .bank-dur {
+  color: #8dffa8;
+}
+
+.bank-save-btn {
+  margin-top: 2px;
+  padding: 3px 9px;
+  border: 1px solid rgba(141, 255, 168, 0.4);
+  border-radius: 6px;
+  background: rgba(141, 255, 168, 0.08);
+  color: #8dffa8;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.bank-save-btn:hover {
+  background: rgba(141, 255, 168, 0.18);
+}
+
+.bank-save-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── Synth patches ────────────────────────────────────── */
+
+.patch-header {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.patch-bank-field {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.patch-active-name {
+  margin: 0;
+  color: #9ca7ff;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.patch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 6px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.patch-grid::-webkit-scrollbar {
+  width: 5px;
+}
+
+.patch-grid::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.patch-btn {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #b9c1d4;
+  font-size: 0.78rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.patch-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.patch-btn.patch-active {
+  border-color: rgba(156, 167, 255, 0.6);
+  background: rgba(156, 167, 255, 0.12);
+  color: #fff;
+}
+
+.patch-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.patch-num {
+  flex: 0 0 auto;
+  min-width: 22px;
+  color: #585f75;
+  font-size: 0.7rem;
+}
+
+.patch-btn.patch-active .patch-num {
+  color: #9ca7ff;
+}
+
+.patch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

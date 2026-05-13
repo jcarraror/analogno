@@ -14,6 +14,7 @@ namespace {
 
 constexpr auto status_note_off = std::uint8_t{0x80};
 constexpr auto status_note_on = std::uint8_t{0x90};
+constexpr auto status_program_change = std::uint8_t{0xC0};
 constexpr auto status_control_change = std::uint8_t{0xB0};
 constexpr auto status_pitch_bend = std::uint8_t{0xE0};
 
@@ -22,6 +23,7 @@ constexpr auto cc_filter_cutoff = std::uint8_t{74};
 constexpr auto cc_filter_resonance = std::uint8_t{71};
 constexpr auto cc_modulation = std::uint8_t{1};
 constexpr auto cc_vibrato = std::uint8_t{76};
+constexpr auto cc_bank_select_msb = std::uint8_t{0};
 constexpr auto cc_all_notes_off = std::uint8_t{123};
 
 constexpr auto pitch_bend_center = 8192;
@@ -189,6 +191,23 @@ void MidiOutput::pitch_bend(float normalized) {
                   status(status_pitch_bend, static_cast<int>(channel)),
                   byte(lsb),
                   byte(msb),
+              });
+}
+
+void MidiOutput::program_change(std::uint8_t program, std::uint8_t bank_msb) {
+  all_notes_off();
+
+  if (bank_msb > 0) {
+    send(midi_, {
+                    status(status_control_change, static_cast<int>(channel)),
+                    byte(cc_bank_select_msb),
+                    byte(bank_msb),
+                });
+  }
+
+  send(midi_, {
+                  status(status_program_change, static_cast<int>(channel)),
+                  byte(program),
               });
 }
 

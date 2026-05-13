@@ -1,5 +1,45 @@
 import { useEffect, useMemo, useState } from "react";
 
+// General MIDI program names (0-indexed)
+const GM_PROGRAMS: string[] = [
+  // Piano
+  "Acoustic Grand Piano","Bright Acoustic Piano","Electric Grand Piano","Honky-tonk Piano",
+  "Electric Piano 1","Electric Piano 2","Harpsichord","Clavinet",
+  // Chromatic Perc
+  "Celesta","Glockenspiel","Music Box","Vibraphone","Marimba","Xylophone","Tubular Bells","Dulcimer",
+  // Organ
+  "Drawbar Organ","Percussive Organ","Rock Organ","Church Organ","Reed Organ","Accordion","Harmonica","Tango Accordion",
+  // Guitar
+  "Nylon Guitar","Steel Guitar","Jazz Guitar","Clean Guitar","Muted Guitar","Overdriven Guitar","Distortion Guitar","Guitar Harmonics",
+  // Bass
+  "Acoustic Bass","Finger Bass","Pick Bass","Fretless Bass","Slap Bass 1","Slap Bass 2","Synth Bass 1","Synth Bass 2",
+  // Strings
+  "Violin","Viola","Cello","Contrabass","Tremolo Strings","Pizzicato Strings","Orchestral Harp","Timpani",
+  // Ensemble
+  "String Ensemble 1","String Ensemble 2","Synth Strings 1","Synth Strings 2","Choir Aahs","Voice Oohs","Synth Voice","Orchestra Hit",
+  // Brass
+  "Trumpet","Trombone","Tuba","Muted Trumpet","French Horn","Brass Section","Synth Brass 1","Synth Brass 2",
+  // Reed
+  "Soprano Sax","Alto Sax","Tenor Sax","Baritone Sax","Oboe","English Horn","Bassoon","Clarinet",
+  // Pipe
+  "Piccolo","Flute","Recorder","Pan Flute","Blown Bottle","Shakuhachi","Whistle","Ocarina",
+  // Synth Lead
+  "Lead 1 (square)","Lead 2 (sawtooth)","Lead 3 (calliope)","Lead 4 (chiff)",
+  "Lead 5 (charang)","Lead 6 (voice)","Lead 7 (fifths)","Lead 8 (bass+lead)",
+  // Synth Pad
+  "Pad 1 (new age)","Pad 2 (warm)","Pad 3 (polysynth)","Pad 4 (choir)",
+  "Pad 5 (bowed)","Pad 6 (metallic)","Pad 7 (halo)","Pad 8 (sweep)",
+  // Synth Effects
+  "FX 1 (rain)","FX 2 (soundtrack)","FX 3 (crystal)","FX 4 (atmosphere)",
+  "FX 5 (brightness)","FX 6 (goblins)","FX 7 (echoes)","FX 8 (sci-fi)",
+  // Ethnic
+  "Sitar","Banjo","Shamisen","Koto","Kalimba","Bagpipe","Fiddle","Shanai",
+  // Percussive
+  "Tinkle Bell","Agogo","Steel Drums","Woodblock","Taiko Drum","Melodic Tom","Synth Drum","Reverse Cymbal",
+  // Sound effects
+  "Guitar Fret Noise","Breath Noise","Seashore","Bird Tweet","Telephone Ring","Helicopter","Applause","Gunshot",
+];
+
 type Vec3 = {
   x: number;
   y: number;
@@ -31,6 +71,8 @@ type RuntimeState = {
     modulation: number;
     vibrato: number;
     activeNotes: number[];
+    midiProgram: number;
+    midiBank: number;
   };
   audio: {
     devices: Array<{
@@ -52,6 +94,13 @@ type RuntimeState = {
     sampleFrames: number;
     sampleTrimStart: number;
     sampleTrimEnd: number;
+    banks: Array<{
+      hasData: boolean;
+      frames: number;
+      trimStart: number;
+      trimEnd: number;
+    }>;
+    activeBank: number;
   };
 };
 
@@ -75,13 +124,15 @@ function StatusPill({ state }: { state: ConnectionState }) {
 
 function Panel({
   title,
-  children
+  children,
+  wide,
 }: {
   title: string;
   children: React.ReactNode;
+  wide?: boolean;
 }) {
   return (
-    <section className="panel">
+    <section className={`panel${wide ? " panel-wide" : ""}`}>
       <h2>{title}</h2>
       {children}
     </section>
@@ -247,10 +298,24 @@ export function App() {
     }));
   }
 
+  function setActiveBank(bank: number) {
+    socket?.send(JSON.stringify({ type: "setActiveBank", bank }));
+  }
+
+  function saveSample(bank: number) {
+    socket?.send(JSON.stringify({ type: "saveSample", bank }));
+  }
+
+  function setPatch(bank: number, program: number) {
+    socket?.send(JSON.stringify({ type: "setPatch", bank, program }));
+  }
+
   const controller = runtime?.controller;
   const music = runtime?.music;
   const audio = runtime?.audio;
   const sampleMode = audio?.sampleReady ?? false;
+  const activePatch = music?.midiProgram ?? 0;
+  const activeBank = music?.midiBank ?? 0;
 
   return (
     <main className="app">
@@ -285,27 +350,11 @@ export function App() {
           <Meter label="R2 / vibrato depth" value={controller?.r2 ?? 0} />
         </Panel>
 
-        <Panel title="Motion">
-          <StateLine label="Gyro" value={controller?.hasGyro ? "available" : "missing"} />
-          <StateLine label="Accelerometer" value={controller?.hasAccel ? "available" : "missing"} />
-          <Vec3Readout
-            label="gyro"
-            value={controller?.gyro ?? { x: 0, y: 0, z: 0 }}
-          />
-          <Vec3Readout
-            label="accel"
-            value={controller?.accel ?? { x: 0, y: 0, z: 0 }}
-          />
-        </Panel>
-
         <Panel title="Music">
           <StateLine label="Root" value={music ? `${midiNoteName(music.rootMidiNote)} / ${music.rootMidiNote}` : "—"} />
           <StateLine label="Scale" value={music?.scale ?? "—"} />
           <StateLine label="Octave offset" value={music?.octaveOffset ?? "—"} />
           <StateLine label="Active notes" value={activeNoteText} />
-        </Panel>
-
-        <Panel title="Continuous controls">
           <BipolarMeter label="Pitch bend" value={music?.pitchBend ?? 0} />
           <Meter
             label={sampleMode ? "Sample gain" : "Expression"}
@@ -313,64 +362,130 @@ export function App() {
           />
           <Meter label="Filter cutoff" value={music?.filterCutoff ?? 0} />
           <Meter label="Resonance" value={music?.filterResonance ?? 0} />
-          <Meter label="Modulation" value={music?.modulation ?? 0} />
           <Meter label="Vibrato" value={music?.vibrato ?? 0} />
         </Panel>
 
-        <Panel title="Microphone">
-          <StateLine
-            label="Capture"
-            value={audio?.captureRunning ? "running" : "stopped"}
-          />
-          <StateLine
-            label="Recording"
-            value={audio?.sampleRecording ? "armed" : "idle"}
-          />
-          <StateLine label="Device" value={audio?.captureDevice ?? "none"} />
+        <Panel title="Synth patches" wide>
+          <div className="patch-header">
+            <label className="field patch-bank-field">
+              <span>MIDI bank</span>
+              <select
+                value={activeBank}
+                disabled={connection !== "online" || sampleMode}
+                onChange={(e) => setPatch(Number(e.target.value), activePatch)}
+              >
+                {Array.from({ length: 128 }, (_, i) => (
+                  <option key={i} value={i}>Bank {i}</option>
+                ))}
+              </select>
+            </label>
+            <p className="patch-active-name">
+              {sampleMode ? "Sampler mode — MIDI synth inactive" : `${activePatch + 1}. ${GM_PROGRAMS[activePatch] ?? "Program " + (activePatch + 1)}`}
+            </p>
+          </div>
+          <div className="patch-grid">
+            {GM_PROGRAMS.map((name, i) => (
+              <button
+                key={i}
+                type="button"
+                className={`patch-btn${
+                  i === activePatch && !sampleMode ? " patch-active" : ""
+                }`}
+                disabled={connection !== "online" || sampleMode}
+                onClick={() => setPatch(activeBank, i)}
+                title={name}
+              >
+                <span className="patch-num">{i + 1}</span>
+                <span className="patch-name">{name}</span>
+              </button>
+            ))}
+          </div>
+        </Panel>
+
+        <Panel title="Sampler" wide>
+          <div className="sampler-layout">
+            <div className="sampler-banks">
+              <p className="sampler-hint">Touchpad → next bank · Options → prev bank · L1+Touchpad → record · Guide → clear</p>
+              <div className="bank-grid">
+                {Array.from({ length: 8 }, (_, i) => {
+                  const bank = audio?.banks[i];
+                  const isActive = (audio?.activeBank ?? 0) === i;
+                  const hasData = bank?.hasData ?? false;
+                  const trimmedSecs = hasData
+                    ? (((bank?.trimEnd ?? 1) - (bank?.trimStart ?? 0)) * (bank?.frames ?? 0) / 48000).toFixed(2)
+                    : null;
+                  return (
+                    <div
+                      key={i}
+                      className={`bank-slot${isActive ? " bank-active" : ""}${hasData ? " bank-filled" : ""}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => { if (connection === "online") setActiveBank(i); }}
+                      onKeyDown={(e) => { if (e.key === "Enter" && connection === "online") setActiveBank(i); }}
+                    >
+                      <span className="bank-num">B{i + 1}</span>
+                      <span className="bank-dur">{trimmedSecs != null ? `${trimmedSecs}s` : "—"}</span>
+                      {hasData && (
+                        <button
+                          className="bank-save-btn"
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); saveSample(i); }}
+                          disabled={connection !== "online"}
+                        >
+                          Save
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="sampler-trim">
+              <StateLine label="Mode" value={sampleMode ? "sampler" : "MIDI"} />
+              <StateLine label="Recording" value={audio?.sampleRecording ? "armed" : "idle"} />
+              <StateLine
+                label="Active bank"
+                value={audio?.sampleReady
+                  ? `${((audio.sampleTrimEnd - audio.sampleTrimStart) * audio.sampleFrames / 48000).toFixed(2)}s`
+                  : "empty"}
+              />
+              <div className="trim">
+                <label>
+                  <span>Trim start</span>
+                  <input
+                    min="0"
+                    max="1"
+                    step="0.001"
+                    type="range"
+                    value={audio?.sampleTrimStart ?? 0}
+                    disabled={!audio?.sampleReady || connection !== "online"}
+                    onChange={(event) => setSampleTrim({ start: Number(event.target.value) })}
+                  />
+                </label>
+                <label>
+                  <span>Trim end</span>
+                  <input
+                    min="0"
+                    max="1"
+                    step="0.001"
+                    type="range"
+                    value={audio?.sampleTrimEnd ?? 1}
+                    disabled={!audio?.sampleReady || connection !== "online"}
+                    onChange={(event) => setSampleTrim({ end: Number(event.target.value) })}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        </Panel>
+
+        <Panel title="Audio input">
+          <StateLine label="Capture" value={audio?.captureRunning ? "running" : "stopped"} />
           <StateLine label="Gate" value={audio?.gateOpen ? "open" : "closed"} />
           <StateLine label="Velocity" value={audio?.velocity ?? 0} />
-          <StateLine
-            label="Sample"
-            value={audio?.sampleReady
-              ? `${(audio.sampleFrames / 48000).toFixed(2)}s ready`
-              : "waiting"}
-          />
-          <StateLine
-            label="Mode"
-            value={sampleMode ? "sampler" : "MIDI"}
-          />
-          <div className="trim">
-            <label>
-              <span>Start</span>
-              <input
-                min="0"
-                max="1"
-                step="0.001"
-                type="range"
-                value={audio?.sampleTrimStart ?? 0}
-                disabled={!audio?.sampleReady || connection !== "online"}
-                onChange={(event) => setSampleTrim({
-                  start: Number(event.target.value)
-                })}
-              />
-            </label>
-            <label>
-              <span>End</span>
-              <input
-                min="0"
-                max="1"
-                step="0.001"
-                type="range"
-                value={audio?.sampleTrimEnd ?? 1}
-                disabled={!audio?.sampleReady || connection !== "online"}
-                onChange={(event) => setSampleTrim({
-                  end: Number(event.target.value)
-                })}
-              />
-            </label>
-          </div>
           <label className="field">
-            <span>Input</span>
+            <span>Input device</span>
             <select
               value={audio?.selectedDeviceIndex == null
                 ? "default"
@@ -389,6 +504,19 @@ export function App() {
           <Meter label="Mic level" value={audio?.micLevel ?? 0} />
           <Meter label="Envelope" value={(audio?.envelope ?? 0) * 8} />
           <Waveform samples={audio?.waveform ?? []} />
+        </Panel>
+
+        <Panel title="Motion">
+          <StateLine label="Gyro" value={controller?.hasGyro ? "available" : "missing"} />
+          <StateLine label="Accelerometer" value={controller?.hasAccel ? "available" : "missing"} />
+          <Vec3Readout
+            label="gyro"
+            value={controller?.gyro ?? { x: 0, y: 0, z: 0 }}
+          />
+          <Vec3Readout
+            label="accel"
+            value={controller?.accel ?? { x: 0, y: 0, z: 0 }}
+          />
         </Panel>
       </div>
     </main>
