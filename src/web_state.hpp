@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -57,8 +58,9 @@ struct WebAudioState final {
   float sample_trim_end{1.0F};
   std::vector<WebSampleBank> banks{};
   std::size_t active_bank{};
-  std::vector<float> touchpad_sketch{}; // live waveform preview while drawing
+  std::vector<float> touchpad_sketch{};                   // live waveform preview while drawing
   bool touchpad_drawing{false};
+  std::vector<std::array<float, 2>> touchpad_raw_points{}; // raw finger path [[x,y],...]
 };
 
 struct WebMusicState final {

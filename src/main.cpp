@@ -50,47 +50,146 @@ constexpr auto wavetable_length = std::size_t{367};
 
 struct WaveformSketch {
   bool active{false};
-  std::vector<std::pair<float, float>> points{}; // {x, y} both in [0,1]
-  std::vector<float> committed{};               // last built wavetable (128 pts)
+  std::vector<std::pair<float, float>> points{};
+  std::vector<float> committed{};
+  std::vector<std::pair<float, float>> committed_points{};
 };
 
 
 std::vector<float> build_wavetable(
     const std::vector<std::pair<float, float>> &points, std::size_t n) {
-  if (points.size() < 4 || n == 0) {
+  if (points.size() < 2 || n == 0) {
     return {};
   }
 
+  constexpr auto canvas_bins = std::size_t{2048};
 
-  const auto m = points.size();
+  std::vector<float> y_bins(canvas_bins, 0.0F);
+  std::vector<bool> filled(canvas_bins, false);
+
+  auto put_point = [&](float x, float y) {
+    x = std::clamp(x, 0.0F, 1.0F);
+    y = std::clamp(y, 0.0F, 1.0F);
+
+    const auto bin = static_cast<std::size_t>(
+        std::round(x * static_cast<float>(canvas_bins - 1)));
+
+    y_bins[bin] = y;
+    filled[bin] = true;
+  };
+
+  auto draw_segment = [&](float x0, float y0, float x1, float y1) {
+    x0 = std::clamp(x0, 0.0F, 1.0F);
+    y0 = std::clamp(y0, 0.0F, 1.0F);
+    x1 = std::clamp(x1, 0.0F, 1.0F);
+    y1 = std::clamp(y1, 0.0F, 1.0F);
+
+    const auto b0 = static_cast<int>(
+        std::round(x0 * static_cast<float>(canvas_bins - 1)));
+    const auto b1 = static_cast<int>(
+        std::round(x1 * static_cast<float>(canvas_bins - 1)));
+
+    const auto steps = std::max(std::abs(b1 - b0), 1);
+
+    for (int s = 0; s <= steps; ++s) {
+      const float t = static_cast<float>(s) / static_cast<float>(steps);
+      const float x = x0 + t * (x1 - x0);
+      const float y = y0 + t * (y1 - y0);
+      put_point(x, y);
+    }
+  };
+
+  put_point(points.front().first, points.front().second);
+
+  for (std::size_t i = 1; i < points.size(); ++i) {
+    const auto [x0, y0] = points[i - 1];
+    const auto [x1, y1] = points[i];
+
+    if (x1 + 0.02F < x0) {
+      continue;
+    }
+
+    draw_segment(x0, y0, x1, y1);
+  }
+
+  // Find first filled bin.
+  auto first = std::size_t{0};
+  while (first < canvas_bins && !filled[first]) {
+    ++first;
+  }
+
+  if (first == canvas_bins) {
+    return {};
+  }
+
+  for (std::size_t i = 0; i < first; ++i) {
+    y_bins[i] = y_bins[first];
+    filled[i] = true;
+  }
+
+  std::size_t last = first;
+
+  for (std::size_t i = first + 1; i < canvas_bins; ++i) {
+    if (!filled[i]) {
+      continue;
+    }
+
+    const auto next = i;
+
+    if (next > last + 1) {
+      const float y0 = y_bins[last];
+      const float y1 = y_bins[next];
+
+      for (std::size_t j = last + 1; j < next; ++j) {
+        const float t = static_cast<float>(j - last) /
+                        static_cast<float>(next - last);
+        y_bins[j] = y0 + t * (y1 - y0);
+        filled[j] = true;
+      }
+    }
+
+    last = next;
+  }
+
+  for (std::size_t i = last + 1; i < canvas_bins; ++i) {
+    y_bins[i] = y_bins[last];
+    filled[i] = true;
+  }
+
   std::vector<float> result(n);
 
   for (std::size_t i = 0; i < n; ++i) {
-    const float src = static_cast<float>(i) * static_cast<float>(m - 1) /
+    const float src = static_cast<float>(i) *
+                      static_cast<float>(canvas_bins - 1) /
                       static_cast<float>(n - 1);
+
     const auto lo = static_cast<std::size_t>(src);
-    const auto hi = std::min(lo + 1, m - 1);
+    const auto hi = std::min(lo + 1, canvas_bins - 1);
     const float t = src - static_cast<float>(lo);
-    const float a_lo = 1.0F - 2.0F * points[lo].second;  // Y→amplitude
-    const float a_hi = 1.0F - 2.0F * points[hi].second;
-    result[i] = a_lo + t * (a_hi - a_lo);
+
+    const float y = y_bins[lo] + t * (y_bins[hi] - y_bins[lo]);
+
+    result[i] = 1.0F - 2.0F * y;
   }
 
-  // Remove DC offset so the waveform is centred at zero.
   const float mean =
       std::accumulate(result.begin(), result.end(), 0.0F) /
-      static_cast<float>(n);
+      static_cast<float>(result.size());
+
   for (float &v : result) {
     v -= mean;
   }
 
-  // Normalize to ±1 (wavepainter: scale by max absolute deviation).
   const float max_abs = std::abs(*std::max_element(
       result.begin(), result.end(),
-      [](float a, float b) { return std::abs(a) < std::abs(b); }));
+      [](float a, float b) {
+        return std::abs(a) < std::abs(b);
+      }));
+
   if (max_abs < 0.01F) {
-    return {}; // flat waveform, discard
+    return {};
   }
+
   for (float &v : result) {
     v /= max_abs;
   }
@@ -418,6 +517,13 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                     ? build_wavetable(sketch.points, 128)
                     : sketch.committed,
               .touchpad_drawing = sketch.active,
+              .touchpad_raw_points = [&] {
+                const auto &src = sketch.active ? sketch.points : sketch.committed_points;
+                std::vector<std::array<float, 2>> out;
+                out.reserve(src.size());
+                for (auto [x, y] : src) out.push_back({x, y});
+                return out;
+              }(),
           },
   };
 }
@@ -453,7 +559,7 @@ void run_event_loop() {
     while (SDL_PollEvent(&event)) {
       running = handle_event(event, state);
 
-      
+
       if ((event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN ||
            event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION) &&
           event.gtouchpad.touchpad == 0 && event.gtouchpad.finger == 0) {
@@ -473,6 +579,7 @@ void run_event_loop() {
         auto wavetable = build_wavetable(sketch.points, wavetable_length);
         if (!wavetable.empty()) {
           sketch.committed = build_wavetable(sketch.points, 128);
+          sketch.committed_points = sketch.points;
           std::cout << "wavetable drawn: " << sketch.points.size()
                     << " points\n";
           audio_sampler.set_wavetable(std::move(wavetable));
@@ -554,7 +661,7 @@ void run_event_loop() {
       }
     }
 
-    
+
     if (state.button_pressed(SDL_GAMEPAD_BUTTON_TOUCHPAD) &&
         !state.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) {
       const auto next = (audio_sampler.active_bank() + 1) % AudioSampler::bank_count;
@@ -562,7 +669,7 @@ void run_event_loop() {
       std::cout << "bank: " << next << '\n';
     }
 
-    
+
     if (state.button_pressed(SDL_GAMEPAD_BUTTON_START)) {
       const auto cur = audio_sampler.active_bank();
       const auto prev = (cur == 0 ? AudioSampler::bank_count : cur) - 1;

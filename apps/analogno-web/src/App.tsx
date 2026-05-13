@@ -103,6 +103,7 @@ type RuntimeState = {
     activeBank: number;
     touchpadSketch: number[];
     touchpadDrawing: boolean;
+    touchpadRawPoints: [number, number][];
   };
 };
 
@@ -192,6 +193,58 @@ function Waveform({ samples }: { samples: number[] }) {
         <polyline className="waveform-line" points={points} />
       </svg>
     </div>
+  );
+}
+
+// Draws the raw finger path from the DualSense touchpad as X/Y (1:1, no normalization).
+const WBW = 512, WBH = 160;
+
+function TouchpadWhiteboard({
+  points,
+  drawing,
+}: {
+  points: [number, number][];
+  drawing: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d')!;
+    ctx.clearRect(0, 0, WBW, WBH);
+    // Grid lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 4; i++) {
+      ctx.beginPath(); ctx.moveTo(WBW * i / 4, 0); ctx.lineTo(WBW * i / 4, WBH); ctx.stroke();
+    }
+    ctx.beginPath(); ctx.moveTo(0, WBH / 2); ctx.lineTo(WBW, WBH / 2); ctx.stroke();
+    if (points.length < 2) return;
+    ctx.strokeStyle = drawing ? 'rgba(255,255,255,0.9)' : 'rgba(200,200,255,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let i = 0; i < points.length; i++) {
+      const [x, y] = points[i];
+      if (i === 0) ctx.moveTo(x * WBW, y * WBH); else ctx.lineTo(x * WBW, y * WBH);
+    }
+    ctx.stroke();
+    // Start = green dot, end = yellow (drawing) / red (committed)
+    const [sx, sy] = points[0];
+    ctx.fillStyle = '#4ade80';
+    ctx.beginPath(); ctx.arc(sx * WBW, sy * WBH, 3, 0, Math.PI * 2); ctx.fill();
+    const [ex, ey] = points[points.length - 1];
+    ctx.fillStyle = drawing ? '#facc15' : '#f87171';
+    ctx.beginPath(); ctx.arc(ex * WBW, ey * WBH, 3, 0, Math.PI * 2); ctx.fill();
+  }, [points, drawing]);
+
+  return (
+    <canvas ref={canvasRef} width={WBW} height={WBH}
+      className="touchpad-whiteboard"
+      title="Raw finger path — 1:1 position, no normalization"
+    />
   );
 }
 
@@ -645,6 +698,17 @@ export function App() {
                 <div className="touchpad-sketch">
                   <span className="touchpad-sketch-label">Drawing…</span>
                   <Waveform samples={audio.touchpadSketch} />
+                </div>
+              )}
+              {(audio?.touchpadRawPoints?.length ?? 0) > 0 && (
+                <div className="touchpad-sketch">
+                  <span className="touchpad-sketch-label">
+                    {audio!.touchpadDrawing ? 'Drawing… (raw path)' : 'Last draw — raw path'}
+                  </span>
+                  <TouchpadWhiteboard
+                    points={audio!.touchpadRawPoints}
+                    drawing={audio!.touchpadDrawing}
+                  />
                 </div>
               )}
               <div className="touchpad-sketch">

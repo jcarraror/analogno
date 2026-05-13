@@ -128,6 +128,7 @@ std::string to_json_string(const WebRuntimeState &state) {
               {"activeBank", state.audio.active_bank},
               {"touchpadDrawing", state.audio.touchpad_drawing},
               {"touchpadSketch", state.audio.touchpad_sketch},
+              {"touchpadRawPoints", state.audio.touchpad_raw_points},
           },
       },
   };
