@@ -28,8 +28,7 @@ namespace net = boost::asio;
 using tcp = net::ip::tcp;
 using Json = nlohmann::json;
 
-auto capture_devices_json(const std::vector<WebCaptureDevice> &devices)
-    -> Json {
+Json capture_devices_json(const std::vector<WebCaptureDevice> &devices) {
   auto result = Json::array();
 
   for (const auto &device : devices) {
@@ -43,7 +42,7 @@ auto capture_devices_json(const std::vector<WebCaptureDevice> &devices)
   return result;
 }
 
-auto to_json_string(const WebRuntimeState &state) -> std::string {
+std::string to_json_string(const WebRuntimeState &state) {
   const Json json{
       {"type", "state"},
       {
@@ -135,7 +134,7 @@ public:
   Session(tcp::socket socket, std::shared_ptr<SharedState> shared)
       : ws_{std::move(socket)}, shared_{std::move(shared)} {}
 
-  auto run() -> void {
+  void run() {
     ws_.set_option(
         websocket::stream_base::timeout::suggested(beast::role_type::server));
     ws_.set_option(websocket::stream_base::decorator(
@@ -147,7 +146,7 @@ public:
         beast::bind_front_handler(&Session::on_accept, shared_from_this()));
   }
 
-  auto send(std::string message) -> void {
+  void send(std::string message) {
     net::post(ws_.get_executor(), beast::bind_front_handler(
                                       &Session::queue_send, shared_from_this(),
                                       std::move(message)));
@@ -159,7 +158,7 @@ private:
   std::shared_ptr<SharedState> shared_;
   std::vector<std::string> write_queue_{};
 
-  auto on_accept(beast::error_code error) -> void {
+  void on_accept(beast::error_code error) {
     if (error) {
       std::cerr << "websocket accept failed: " << error.message() << '\n';
       return;
@@ -168,12 +167,12 @@ private:
     do_read();
   }
 
-  auto do_read() -> void {
+  void do_read() {
     ws_.async_read(buffer_, beast::bind_front_handler(&Session::on_read,
                                                       shared_from_this()));
   }
 
-  auto on_read(beast::error_code error, std::size_t) -> void {
+  void on_read(beast::error_code error, std::size_t) {
     if (error == websocket::error::closed) {
       return;
     }
@@ -211,7 +210,7 @@ private:
     do_read();
   }
 
-  auto queue_send(std::string message) -> void {
+  void queue_send(std::string message) {
     const auto already_writing = !write_queue_.empty();
     write_queue_.push_back(std::move(message));
 
@@ -220,7 +219,7 @@ private:
     }
   }
 
-  auto do_write() -> void {
+  void do_write() {
     ws_.text(true);
 
     ws_.async_write(
@@ -228,7 +227,7 @@ private:
         beast::bind_front_handler(&Session::on_write, shared_from_this()));
   }
 
-  auto on_write(beast::error_code error, std::size_t) -> void {
+  void on_write(beast::error_code error, std::size_t) {
     if (error) {
       std::cerr << "websocket write failed: " << error.message() << '\n';
       return;
@@ -247,18 +246,18 @@ public:
   explicit Listener(std::shared_ptr<SharedState> shared)
       : shared_{std::move(shared)} {}
 
-  auto run() -> void { do_accept(); }
+  void run() { do_accept(); }
 
 private:
   std::shared_ptr<SharedState> shared_;
 
-  auto do_accept() -> void {
+  void do_accept() {
     shared_->acceptor.async_accept(
         net::make_strand(shared_->ioc),
         beast::bind_front_handler(&Listener::on_accept, shared_from_this()));
   }
 
-  auto on_accept(beast::error_code error, tcp::socket socket) -> void {
+  void on_accept(beast::error_code error, tcp::socket socket) {
     if (!error) {
       auto session = std::make_shared<Session>(std::move(socket), shared_);
       shared_->sessions.push_back(session);
@@ -285,7 +284,7 @@ public:
 
   ~Impl() { stop(); }
 
-  auto start() -> void {
+  void start() {
     if (running_) {
       return;
     }
@@ -300,7 +299,7 @@ public:
               << shared_->acceptor.local_endpoint().port() << '\n';
   }
 
-  auto stop() -> void {
+  void stop() {
     if (!running_) {
       return;
     }
@@ -313,7 +312,7 @@ public:
     }
   }
 
-  auto publish(const WebRuntimeState &state) -> void {
+  void publish(const WebRuntimeState &state) {
     const auto message = to_json_string(state);
 
     net::post(shared_->ioc, [shared = shared_, message] {
@@ -330,11 +329,11 @@ public:
     });
   }
 
-  [[nodiscard]] auto consume_panic_requested() -> bool {
+  [[nodiscard]] bool consume_panic_requested() {
     return shared_->panic_requested.exchange(false);
   }
 
-  [[nodiscard]] auto consume_capture_device_request() -> std::optional<int> {
+  [[nodiscard]] std::optional<int> consume_capture_device_request() {
     const auto request = shared_->capture_device_request.exchange(-2);
 
     if (request == -2) {
@@ -344,8 +343,8 @@ public:
     return request;
   }
 
-  [[nodiscard]] auto consume_sample_trim_request()
-      -> std::optional<WebSocketServer::SampleTrimRequest> {
+  [[nodiscard]] std::optional<WebSocketServer::SampleTrimRequest>
+  consume_sample_trim_request() {
     const auto lock = std::scoped_lock{shared_->sample_trim_mutex};
     auto request = shared_->sample_trim_request;
     shared_->sample_trim_request.reset();
@@ -363,24 +362,24 @@ WebSocketServer::WebSocketServer(std::uint16_t port)
 
 WebSocketServer::~WebSocketServer() = default;
 
-auto WebSocketServer::start() -> void { impl_->start(); }
+void WebSocketServer::start() { impl_->start(); }
 
-auto WebSocketServer::stop() -> void { impl_->stop(); }
+void WebSocketServer::stop() { impl_->stop(); }
 
-auto WebSocketServer::publish(const WebRuntimeState &state) -> void {
+void WebSocketServer::publish(const WebRuntimeState &state) {
   impl_->publish(state);
 }
 
-auto WebSocketServer::consume_panic_requested() -> bool {
+bool WebSocketServer::consume_panic_requested() {
   return impl_->consume_panic_requested();
 }
 
-auto WebSocketServer::consume_capture_device_request() -> std::optional<int> {
+std::optional<int> WebSocketServer::consume_capture_device_request() {
   return impl_->consume_capture_device_request();
 }
 
-auto WebSocketServer::consume_sample_trim_request()
-    -> std::optional<SampleTrimRequest> {
+std::optional<WebSocketServer::SampleTrimRequest>
+WebSocketServer::consume_sample_trim_request() {
   return impl_->consume_sample_trim_request();
 }
 

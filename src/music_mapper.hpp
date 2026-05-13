@@ -10,7 +10,9 @@ namespace analogno {
 
 class MusicMapper final {
 public:
-  [[nodiscard]] auto map(const ControllerState &controller) -> MusicalIntent;
+  [[nodiscard]] MusicalIntent map(const ControllerState &controller);
+  [[nodiscard]] ContinuousControls
+  map_controls(const ControllerState &controller) const;
 
 private:
   static constexpr auto playable_button_count = std::size_t{4};
@@ -29,13 +31,13 @@ private:
 
   std::array<std::optional<Note>, playable_button_count> active_notes_{};
 
-  auto map_note_buttons(const ControllerState &controller,
-                        MusicalIntent &intent) -> void;
-  auto update_mode_buttons(const ControllerState &controller,
-                           MusicalIntent &intent) -> void;
+  void map_note_buttons(const ControllerState &controller,
+                        MusicalIntent &intent);
+  void update_mode_buttons(const ControllerState &controller,
+                           MusicalIntent &intent);
 
-  [[nodiscard]] auto note_for_degree(int degree) const -> Note;
-  [[nodiscard]] auto rising_edge(bool current, bool &previous) -> bool;
+  [[nodiscard]] Note note_for_degree(int degree) const;
+  [[nodiscard]] bool rising_edge(bool current, bool &previous);
 };
 
 } // namespace analogno

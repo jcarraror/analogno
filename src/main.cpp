@@ -35,6 +35,7 @@ namespace {
 
 using analogno::AudioCapture;
 using analogno::AudioSampler;
+using analogno::ContinuousControls;
 using analogno::ControllerState;
 using analogno::Gamepad;
 using analogno::MidiOutput;
@@ -56,14 +57,14 @@ struct Sdl final {
   ~Sdl() { SDL_Quit(); }
 
   Sdl(const Sdl &) = delete;
-  auto operator=(const Sdl &) -> Sdl & = delete;
+  Sdl &operator=(const Sdl &) = delete;
   Sdl(Sdl &&) = delete;
-  auto operator=(Sdl &&) -> Sdl & = delete;
+  Sdl &operator=(Sdl &&) = delete;
 };
 
 class ActiveNoteTracker final {
 public:
-  auto apply(const MusicalIntent &intent) -> void {
+  void apply(const MusicalIntent &intent) {
     if (intent.note_off_all) {
       active_.fill(false);
     }
@@ -81,7 +82,7 @@ public:
     }
   }
 
-  [[nodiscard]] auto notes() const -> std::vector<int> {
+  [[nodiscard]] std::vector<int> notes() const {
     std::vector<int> result{};
 
     for (std::size_t i = 0; i < active_.size(); ++i) {
@@ -96,10 +97,10 @@ public:
 private:
   std::array<bool, 128> active_{};
 
-  static auto valid(int note) -> bool { return note >= 0 && note < 128; }
+  static bool valid(int note) { return note >= 0 && note < 128; }
 };
 
-auto open_first_gamepad() -> std::optional<Gamepad> {
+std::optional<Gamepad> open_first_gamepad() {
   int count = 0;
   SDL_JoystickID *ids = SDL_GetGamepads(&count);
 
@@ -133,7 +134,7 @@ auto open_first_gamepad() -> std::optional<Gamepad> {
   return Gamepad{gamepad_ids.front()};
 }
 
-auto print_capabilities(const Gamepad &gamepad) -> void {
+void print_capabilities(const Gamepad &gamepad) {
   std::cout << '\n';
   std::cout << "opened gamepad\n";
   std::cout << "  id: " << gamepad.id() << '\n';
@@ -148,30 +149,30 @@ auto print_capabilities(const Gamepad &gamepad) -> void {
   std::cout << '\n';
 }
 
-auto enable_motion_sensors(const Gamepad &gamepad) -> void {
+void enable_motion_sensors(const Gamepad &gamepad) {
   gamepad.enable_sensor(SDL_SENSOR_GYRO, "gyro");
   gamepad.enable_sensor(SDL_SENSOR_ACCEL, "accelerometer");
   std::cout << '\n';
 }
 
-auto print_note_on(const analogno::Note &note) -> void {
+void print_note_on(const analogno::Note &note) {
   std::cout << "note_on"
             << " midi=" << note.midi_note << " degree=" << note.degree
             << " octave=" << note.octave << '\n';
 }
 
-auto print_note_off(const analogno::Note &note) -> void {
+void print_note_off(const analogno::Note &note) {
   std::cout << "note_off"
             << " midi=" << note.midi_note << " degree=" << note.degree
             << " octave=" << note.octave << '\n';
 }
 
-auto has_note_event(const MusicalIntent &intent) -> bool {
+bool has_note_event(const MusicalIntent &intent) {
   return !intent.note_ons.empty() || !intent.note_offs.empty() ||
          intent.note_off_all;
 }
 
-auto print_intent(const MusicalIntent &intent) -> void {
+void print_intent(const MusicalIntent &intent) {
   std::cout << std::fixed << std::setprecision(3) << "intent"
             << " root=" << intent.root_midi_note
             << " octave_offset=" << intent.octave_offset
@@ -196,7 +197,7 @@ auto print_intent(const MusicalIntent &intent) -> void {
   }
 }
 
-auto handle_event(const SDL_Event &event, ControllerState &state) -> bool {
+bool handle_event(const SDL_Event &event, ControllerState &state) {
   switch (event.type) {
   case SDL_EVENT_QUIT:
     return false;
@@ -244,58 +245,36 @@ auto handle_event(const SDL_Event &event, ControllerState &state) -> bool {
   return true;
 }
 
-auto trigger_sampler_notes(const MusicalIntent &intent,
-                           AudioSampler &sampler) -> void {
+void trigger_sampler_notes(const MusicalIntent &intent, AudioSampler &sampler) {
+  constexpr auto sampler_root_midi_note = 48;
+
   if (!sampler.has_sample()) {
     return;
   }
 
   for (const auto &note : intent.note_ons) {
-    const auto semitones = note.midi_note - intent.root_midi_note;
+    const auto semitones = note.midi_note - sampler_root_midi_note;
     sampler.trigger(std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
   }
 }
 
-auto sampler_pitch_bend(const ControllerState &controller) -> float {
-  const auto gyro_vibrato =
-      controller.has_gyro()
-          ? std::clamp(controller.gyro().z * 0.12F, -0.35F, 0.35F)
-          : 0.0F;
-
-  return std::clamp(controller.left_x() + gyro_vibrato * controller.left_trigger(),
-                    -1.0F, 1.0F);
+void update_sampler_controls(const ContinuousControls &controls,
+                             AudioSampler &sampler) {
+  sampler.set_gain(controls.expression);
+  sampler.set_pitch_controls(controls.pitch_bend, controls.vibrato);
 }
 
-auto sampler_vibrato(const ControllerState &controller) -> float {
-  if (!controller.has_gyro()) {
-    return 0.0F;
-  }
-
-  const auto gyro_vibrato =
-      std::clamp(controller.gyro().z * 0.12F, -0.35F, 0.35F);
-
-  return std::abs(gyro_vibrato) * controller.left_trigger();
-}
-
-auto update_sampler_controls(const ControllerState &controller,
-                             AudioSampler &sampler) -> void {
-  sampler.set_gain(controller.left_trigger());
-  sampler.set_pitch_controls(sampler_pitch_bend(controller),
-                             sampler_vibrato(controller));
-}
-
-auto sample_record_button_active(const ControllerState &controller) -> bool {
+bool sample_record_button_active(const ControllerState &controller) {
   return controller.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) &&
          controller.button(SDL_GAMEPAD_BUTTON_TOUCHPAD);
 }
 
-auto make_web_state(const ControllerState &controller,
-                    const MusicalIntent &intent,
-                    const ActiveNoteTracker &active_notes,
-                    const AudioCapture &audio_capture,
-                    const AudioSampler &audio_sampler,
-                    const analogno::AudioFeatures &audio_features)
-    -> analogno::WebRuntimeState {
+analogno::WebRuntimeState
+make_web_state(const ControllerState &controller, const MusicalIntent &intent,
+               const ActiveNoteTracker &active_notes,
+               const AudioCapture &audio_capture,
+               const AudioSampler &audio_sampler,
+               const analogno::AudioFeatures &audio_features) {
   std::vector<analogno::WebCaptureDevice> capture_devices{};
 
   for (const auto &device : audio_capture.devices()) {
@@ -365,7 +344,7 @@ auto make_web_state(const ControllerState &controller,
   };
 }
 
-auto run_event_loop() -> void {
+void run_event_loop() {
   std::cout << "polyphonic MIDI controller running. press Ctrl+C or close the "
                "window to quit.\n\n";
 
@@ -454,7 +433,7 @@ auto run_event_loop() -> void {
     }
 
     const auto audio_features = audio_capture.consume_features();
-    update_sampler_controls(state, audio_sampler);
+    update_sampler_controls(mapper.map_controls(state), audio_sampler);
     const auto should_map = state.changed_this_frame();
 
     if (should_map) {
@@ -500,7 +479,7 @@ auto run_event_loop() -> void {
 
 } // namespace
 
-auto main(int, char **) -> int {
+int main(int, char **) {
   const Sdl sdl{};
 
   auto gamepad = open_first_gamepad();

@@ -61,7 +61,7 @@ struct AudioFeatures final {
   int velocity{};
 };
 
-auto scale_for(ScaleKind kind) -> Scale;
-auto scale_name(ScaleKind kind) -> std::string_view;
+Scale scale_for(ScaleKind kind);
+std::string_view scale_name(ScaleKind kind);
 
 } // namespace analogno

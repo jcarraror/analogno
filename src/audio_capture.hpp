@@ -26,29 +26,27 @@ public:
   ~AudioCapture();
 
   AudioCapture(const AudioCapture &) = delete;
-  auto operator=(const AudioCapture &) -> AudioCapture & = delete;
+  AudioCapture &operator=(const AudioCapture &) = delete;
 
   AudioCapture(AudioCapture &&) = delete;
-  auto operator=(AudioCapture &&) -> AudioCapture & = delete;
+  AudioCapture &operator=(AudioCapture &&) = delete;
 
-  [[nodiscard]] auto devices() const -> const std::vector<CaptureDeviceInfo> &;
+  [[nodiscard]] const std::vector<CaptureDeviceInfo> &devices() const;
 
-  auto start(std::optional<std::uint32_t> preferred_index = std::nullopt)
-      -> void;
-  auto stop() -> void;
-  auto begin_sample_recording() -> void;
-  auto end_sample_recording() -> void;
+  void start(std::optional<std::uint32_t> preferred_index = std::nullopt);
+  void stop();
+  void begin_sample_recording();
+  void end_sample_recording();
 
-  [[nodiscard]] auto is_running() const -> bool;
-  [[nodiscard]] auto is_sample_recording() const -> bool;
-  [[nodiscard]] auto level() const -> float;
-  [[nodiscard]] auto consume_features() -> AudioFeatures;
-  [[nodiscard]] auto waveform() const -> std::vector<float>;
-  [[nodiscard]] auto consume_captured_sample() -> std::optional<std::vector<float>>;
-  [[nodiscard]] auto captured_sample_frames() const -> std::size_t;
-  [[nodiscard]] auto selected_device_name() const -> const std::string &;
-  [[nodiscard]] auto selected_device_index() const
-      -> std::optional<std::uint32_t>;
+  [[nodiscard]] bool is_running() const;
+  [[nodiscard]] bool is_sample_recording() const;
+  [[nodiscard]] float level() const;
+  [[nodiscard]] AudioFeatures consume_features();
+  [[nodiscard]] std::vector<float> waveform() const;
+  [[nodiscard]] std::optional<std::vector<float>> consume_captured_sample();
+  [[nodiscard]] std::size_t captured_sample_frames() const;
+  [[nodiscard]] const std::string &selected_device_name() const;
+  [[nodiscard]] std::optional<std::uint32_t> selected_device_index() const;
 
 private:
   static constexpr auto waveform_sample_count = std::size_t{128};
@@ -78,16 +76,13 @@ private:
   bool device_ready_{};
   bool running_{};
 
-  auto enumerate_devices() -> void;
-  [[nodiscard]] auto
-  choose_device(std::optional<std::uint32_t> preferred_index) const
-      -> std::optional<ma_device_id>;
-  [[nodiscard]] auto default_device_index() const
-      -> std::optional<std::uint32_t>;
+  void enumerate_devices();
+  [[nodiscard]] std::optional<ma_device_id>
+  choose_device(std::optional<std::uint32_t> preferred_index) const;
+  [[nodiscard]] std::optional<std::uint32_t> default_device_index() const;
 
-  static auto capture_callback(ma_device *device, void *output,
-                               const void *input, ma_uint32 frame_count)
-      -> void;
+  static void capture_callback(ma_device *device, void *output,
+                               const void *input, ma_uint32 frame_count);
 };
 
 } // namespace analogno

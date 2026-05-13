@@ -15,34 +15,38 @@ public:
   ~AudioSampler();
 
   AudioSampler(const AudioSampler &) = delete;
-  auto operator=(const AudioSampler &) -> AudioSampler & = delete;
+  AudioSampler &operator=(const AudioSampler &) = delete;
 
   AudioSampler(AudioSampler &&) = delete;
-  auto operator=(AudioSampler &&) -> AudioSampler & = delete;
+  AudioSampler &operator=(AudioSampler &&) = delete;
 
-  auto set_sample(std::vector<float> sample) -> void;
-  auto clear_sample() -> void;
-  auto set_trim(float start, float end) -> void;
-  auto set_gain(float gain) -> void;
-  auto set_pitch_controls(float pitch_bend, float vibrato_depth) -> void;
-  auto trigger(float rate = 1.0F) -> void;
+  void set_sample(std::vector<float> sample);
+  void clear_sample();
+  void set_trim(float start, float end);
+  void set_gain(float gain);
+  void set_pitch_controls(float pitch_bend, float vibrato_depth);
+  void trigger(float rate = 1.0F);
 
-  [[nodiscard]] auto has_sample() const -> bool;
-  [[nodiscard]] auto sample_frames() const -> std::size_t;
-  [[nodiscard]] auto trim_start() const -> float;
-  [[nodiscard]] auto trim_end() const -> float;
-  [[nodiscard]] auto is_running() const -> bool;
+  [[nodiscard]] bool has_sample() const;
+  [[nodiscard]] std::size_t sample_frames() const;
+  [[nodiscard]] float trim_start() const;
+  [[nodiscard]] float trim_end() const;
+  [[nodiscard]] bool is_running() const;
 
 private:
   struct Voice final {
     bool active{};
+    bool releasing{};
     float position{};
     float rate{1.0F};
+    float envelope{};
   };
 
   static constexpr auto voice_count = std::size_t{8};
   static constexpr auto sample_rate = ma_uint32{48000};
   static constexpr auto channels = ma_uint32{2};
+  static constexpr auto attack_frames = float{192.0F};
+  static constexpr auto release_frames = float{960.0F};
 
   ma_device device_{};
   std::vector<float> sample_{};
@@ -58,9 +62,9 @@ private:
   bool running_{};
   std::size_t next_voice_{};
 
-  static auto playback_callback(ma_device *device, void *output,
-                                const void *input, ma_uint32 frame_count)
-      -> void;
+  static void playback_callback(ma_device *device, void *output,
+                                const void *input, ma_uint32 frame_count);
+  [[nodiscard]] float sample_at(float position) const;
 };
 
 } // namespace analogno

@@ -37,11 +37,11 @@ AudioCapture::~AudioCapture() {
   }
 }
 
-auto AudioCapture::devices() const -> const std::vector<CaptureDeviceInfo> & {
+const std::vector<CaptureDeviceInfo> &AudioCapture::devices() const {
   return devices_;
 }
 
-auto AudioCapture::start(std::optional<std::uint32_t> preferred_index) -> void {
+void AudioCapture::start(std::optional<std::uint32_t> preferred_index) {
   if (!context_ready_) {
     return;
   }
@@ -89,7 +89,7 @@ auto AudioCapture::start(std::optional<std::uint32_t> preferred_index) -> void {
   std::cout << "capture device started: " << selected_device_name_ << '\n';
 }
 
-auto AudioCapture::stop() -> void {
+void AudioCapture::stop() {
   if (!device_ready_) {
     return;
   }
@@ -121,9 +121,9 @@ auto AudioCapture::stop() -> void {
   }
 }
 
-auto AudioCapture::is_running() const -> bool { return running_; }
+bool AudioCapture::is_running() const { return running_; }
 
-auto AudioCapture::begin_sample_recording() -> void {
+void AudioCapture::begin_sample_recording() {
   const auto lock = std::scoped_lock{sample_mutex_};
   recording_sample_.clear();
   recording_sample_.reserve(max_sample_frames);
@@ -131,7 +131,7 @@ auto AudioCapture::begin_sample_recording() -> void {
   captured_sample_frames_.store(0);
 }
 
-auto AudioCapture::end_sample_recording() -> void {
+void AudioCapture::end_sample_recording() {
   const auto lock = std::scoped_lock{sample_mutex_};
   sample_recording_.store(false);
 
@@ -143,13 +143,13 @@ auto AudioCapture::end_sample_recording() -> void {
   recording_sample_.clear();
 }
 
-auto AudioCapture::is_sample_recording() const -> bool {
+bool AudioCapture::is_sample_recording() const {
   return sample_recording_.load();
 }
 
-auto AudioCapture::level() const -> float { return level_.load(); }
+float AudioCapture::level() const { return level_.load(); }
 
-auto AudioCapture::consume_features() -> AudioFeatures {
+AudioFeatures AudioCapture::consume_features() {
   const auto level = level_.load();
 
   return AudioFeatures{
@@ -161,7 +161,7 @@ auto AudioCapture::consume_features() -> AudioFeatures {
   };
 }
 
-auto AudioCapture::waveform() const -> std::vector<float> {
+std::vector<float> AudioCapture::waveform() const {
   std::vector<float> samples{};
   samples.reserve(waveform_sample_count);
 
@@ -183,8 +183,7 @@ auto AudioCapture::waveform() const -> std::vector<float> {
   return samples;
 }
 
-auto AudioCapture::consume_captured_sample()
-    -> std::optional<std::vector<float>> {
+std::optional<std::vector<float>> AudioCapture::consume_captured_sample() {
   const auto lock = std::scoped_lock{sample_mutex_};
 
   if (captured_sample_.empty()) {
@@ -196,20 +195,19 @@ auto AudioCapture::consume_captured_sample()
   return sample;
 }
 
-auto AudioCapture::captured_sample_frames() const -> std::size_t {
+std::size_t AudioCapture::captured_sample_frames() const {
   return captured_sample_frames_.load();
 }
 
-auto AudioCapture::selected_device_name() const -> const std::string & {
+const std::string &AudioCapture::selected_device_name() const {
   return selected_device_name_;
 }
 
-auto AudioCapture::selected_device_index() const
-    -> std::optional<std::uint32_t> {
+std::optional<std::uint32_t> AudioCapture::selected_device_index() const {
   return selected_device_index_;
 }
 
-auto AudioCapture::enumerate_devices() -> void {
+void AudioCapture::enumerate_devices() {
   ma_device_info *playback_infos = nullptr;
   ma_uint32 playback_count = 0;
   ma_device_info *capture_infos = nullptr;
@@ -249,8 +247,8 @@ auto AudioCapture::enumerate_devices() -> void {
   }
 }
 
-auto AudioCapture::choose_device(std::optional<std::uint32_t> preferred_index)
-    const -> std::optional<ma_device_id> {
+std::optional<ma_device_id>
+AudioCapture::choose_device(std::optional<std::uint32_t> preferred_index) const {
   if (devices_.empty()) {
     return std::nullopt;
   }
@@ -278,8 +276,7 @@ auto AudioCapture::choose_device(std::optional<std::uint32_t> preferred_index)
   return std::nullopt;
 }
 
-auto AudioCapture::default_device_index() const
-    -> std::optional<std::uint32_t> {
+std::optional<std::uint32_t> AudioCapture::default_device_index() const {
   for (const auto &device : devices_) {
     if (device.is_default) {
       return device.index;
@@ -289,9 +286,9 @@ auto AudioCapture::default_device_index() const
   return std::nullopt;
 }
 
-auto AudioCapture::capture_callback(ma_device *device, void *output,
-                                    const void *input, ma_uint32 frame_count)
-    -> void {
+void AudioCapture::capture_callback(ma_device *device, void *output,
+                                    const void *input,
+                                    ma_uint32 frame_count) {
   static_cast<void>(output);
 
   auto *self = static_cast<AudioCapture *>(device->pUserData);

@@ -28,13 +28,13 @@ public:
   }
 
   Gamepad(const Gamepad &) = delete;
-  auto operator=(const Gamepad &) -> Gamepad & = delete;
+  Gamepad &operator=(const Gamepad &) = delete;
 
   Gamepad(Gamepad &&other) noexcept : handle_{other.handle_} {
     other.handle_ = nullptr;
   }
 
-  auto operator=(Gamepad &&other) noexcept -> Gamepad & {
+  Gamepad &operator=(Gamepad &&other) noexcept {
     if (this == &other) {
       return *this;
     }
@@ -48,31 +48,30 @@ public:
     return *this;
   }
 
-  [[nodiscard]] auto get() const -> SDL_Gamepad * { return handle_; }
+  [[nodiscard]] SDL_Gamepad *get() const { return handle_; }
 
-  [[nodiscard]] auto name() const -> const char * {
+  [[nodiscard]] const char *name() const {
     const char *value = SDL_GetGamepadName(handle_);
     return value != nullptr ? value : "unknown";
   }
 
-  [[nodiscard]] auto id() const -> SDL_JoystickID {
+  [[nodiscard]] SDL_JoystickID id() const {
     return SDL_GetGamepadID(handle_);
   }
 
-  [[nodiscard]] auto type() const -> SDL_GamepadType {
+  [[nodiscard]] SDL_GamepadType type() const {
     return SDL_GetGamepadType(handle_);
   }
 
-  [[nodiscard]] auto touchpad_count() const -> int {
+  [[nodiscard]] int touchpad_count() const {
     return SDL_GetNumGamepadTouchpads(handle_);
   }
 
-  [[nodiscard]] auto has_sensor(SDL_SensorType sensor) const -> bool {
+  [[nodiscard]] bool has_sensor(SDL_SensorType sensor) const {
     return SDL_GamepadHasSensor(handle_, sensor);
   }
 
-  auto enable_sensor(SDL_SensorType sensor, std::string_view name) const
-      -> void {
+  void enable_sensor(SDL_SensorType sensor, std::string_view name) const {
     if (!has_sensor(sensor)) {
       std::cout << "sensor unavailable: " << name << '\n';
       return;
@@ -90,7 +89,7 @@ private:
   SDL_Gamepad *handle_{nullptr};
 };
 
-inline auto gamepad_type_name(SDL_GamepadType type) -> std::string_view {
+inline std::string_view gamepad_type_name(SDL_GamepadType type) {
   switch (type) {
   case SDL_GAMEPAD_TYPE_STANDARD:
     return "standard";
@@ -117,7 +116,7 @@ inline auto gamepad_type_name(SDL_GamepadType type) -> std::string_view {
   }
 }
 
-inline auto sensor_name(SDL_SensorType sensor) -> std::string_view {
+inline std::string_view sensor_name(SDL_SensorType sensor) {
   switch (sensor) {
   case SDL_SENSOR_ACCEL:
     return "accelerometer";
@@ -128,17 +127,17 @@ inline auto sensor_name(SDL_SensorType sensor) -> std::string_view {
   }
 }
 
-inline auto button_name(SDL_GamepadButton button) -> const char * {
+inline const char *button_name(SDL_GamepadButton button) {
   const char *name = SDL_GetGamepadStringForButton(button);
   return name != nullptr ? name : "unknown";
 }
 
-inline auto axis_name(SDL_GamepadAxis axis) -> const char * {
+inline const char *axis_name(SDL_GamepadAxis axis) {
   const char *name = SDL_GetGamepadStringForAxis(axis);
   return name != nullptr ? name : "unknown";
 }
 
-inline auto normalized_axis(std::int16_t raw) -> float {
+inline float normalized_axis(std::int16_t raw) {
   constexpr auto min_value = -32768.0F;
   constexpr auto max_value = 32767.0F;
 

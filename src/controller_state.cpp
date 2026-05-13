@@ -10,17 +10,17 @@ namespace {
 
 constexpr auto stick_deadzone = 0.08F;
 
-auto valid_axis(SDL_GamepadAxis axis) -> bool {
+bool valid_axis(SDL_GamepadAxis axis) {
   return axis >= 0 && axis < SDL_GAMEPAD_AXIS_COUNT;
 }
 
-auto valid_button(SDL_GamepadButton button) -> bool {
+bool valid_button(SDL_GamepadButton button) {
   return button >= 0 && button < SDL_GAMEPAD_BUTTON_COUNT;
 }
 
 } // namespace
 
-auto ControllerState::handle_axis(const SDL_GamepadAxisEvent &event) -> void {
+void ControllerState::handle_axis(const SDL_GamepadAxisEvent &event) {
   const auto current_axis = static_cast<SDL_GamepadAxis>(event.axis);
 
   if (!valid_axis(current_axis)) {
@@ -42,8 +42,7 @@ auto ControllerState::handle_axis(const SDL_GamepadAxisEvent &event) -> void {
   }
 }
 
-auto ControllerState::handle_button_down(const SDL_GamepadButtonEvent &event)
-    -> void {
+void ControllerState::handle_button_down(const SDL_GamepadButtonEvent &event) {
   const auto current_button = static_cast<SDL_GamepadButton>(event.button);
 
   if (!valid_button(current_button)) {
@@ -60,8 +59,7 @@ auto ControllerState::handle_button_down(const SDL_GamepadButtonEvent &event)
   buttons_[index] = true;
 }
 
-auto ControllerState::handle_button_up(const SDL_GamepadButtonEvent &event)
-    -> void {
+void ControllerState::handle_button_up(const SDL_GamepadButtonEvent &event) {
   const auto current_button = static_cast<SDL_GamepadButton>(event.button);
 
   if (!valid_button(current_button)) {
@@ -78,8 +76,7 @@ auto ControllerState::handle_button_up(const SDL_GamepadButtonEvent &event)
   buttons_[index] = false;
 }
 
-auto ControllerState::handle_sensor(const SDL_GamepadSensorEvent &event)
-    -> void {
+void ControllerState::handle_sensor(const SDL_GamepadSensorEvent &event) {
   const Vec3 value{
       .x = event.data[0],
       .y = event.data[1],
@@ -106,13 +103,13 @@ auto ControllerState::handle_sensor(const SDL_GamepadSensorEvent &event)
   }
 }
 
-auto ControllerState::handle_touchpad_down(
-    const SDL_GamepadTouchpadEvent &event) -> void {
+void ControllerState::handle_touchpad_down(
+    const SDL_GamepadTouchpadEvent &event) {
   handle_touchpad_motion(event);
 }
 
-auto ControllerState::handle_touchpad_motion(
-    const SDL_GamepadTouchpadEvent &event) -> void {
+void ControllerState::handle_touchpad_motion(
+    const SDL_GamepadTouchpadEvent &event) {
   const auto touchpad = static_cast<std::size_t>(event.touchpad);
   const auto finger = static_cast<std::size_t>(event.finger);
 
@@ -130,8 +127,8 @@ auto ControllerState::handle_touchpad_motion(
   changed_this_frame_ = true;
 }
 
-auto ControllerState::handle_touchpad_up(const SDL_GamepadTouchpadEvent &event)
-    -> void {
+void ControllerState::handle_touchpad_up(
+    const SDL_GamepadTouchpadEvent &event) {
   const auto touchpad = static_cast<std::size_t>(event.touchpad);
   const auto finger = static_cast<std::size_t>(event.finger);
 
@@ -145,7 +142,7 @@ auto ControllerState::handle_touchpad_up(const SDL_GamepadTouchpadEvent &event)
   changed_this_frame_ = true;
 }
 
-auto ControllerState::axis(SDL_GamepadAxis axis) const -> float {
+float ControllerState::axis(SDL_GamepadAxis axis) const {
   if (!valid_axis(axis)) {
     return 0.0F;
   }
@@ -153,7 +150,7 @@ auto ControllerState::axis(SDL_GamepadAxis axis) const -> float {
   return axes_[static_cast<std::size_t>(axis)];
 }
 
-auto ControllerState::button(SDL_GamepadButton button) const -> bool {
+bool ControllerState::button(SDL_GamepadButton button) const {
   if (!valid_button(button)) {
     return false;
   }
@@ -161,7 +158,7 @@ auto ControllerState::button(SDL_GamepadButton button) const -> bool {
   return buttons_[static_cast<std::size_t>(button)];
 }
 
-auto ControllerState::button_pressed(SDL_GamepadButton button) const -> bool {
+bool ControllerState::button_pressed(SDL_GamepadButton button) const {
   if (!valid_button(button)) {
     return false;
   }
@@ -169,7 +166,7 @@ auto ControllerState::button_pressed(SDL_GamepadButton button) const -> bool {
   return pressed_[static_cast<std::size_t>(button)];
 }
 
-auto ControllerState::button_released(SDL_GamepadButton button) const -> bool {
+bool ControllerState::button_released(SDL_GamepadButton button) const {
   if (!valid_button(button)) {
     return false;
   }
@@ -177,40 +174,40 @@ auto ControllerState::button_released(SDL_GamepadButton button) const -> bool {
   return released_[static_cast<std::size_t>(button)];
 }
 
-auto ControllerState::left_x() const -> float {
+float ControllerState::left_x() const {
   return axis(SDL_GAMEPAD_AXIS_LEFTX);
 }
 
-auto ControllerState::left_y() const -> float {
+float ControllerState::left_y() const {
   return axis(SDL_GAMEPAD_AXIS_LEFTY);
 }
 
-auto ControllerState::right_x() const -> float {
+float ControllerState::right_x() const {
   return axis(SDL_GAMEPAD_AXIS_RIGHTX);
 }
 
-auto ControllerState::right_y() const -> float {
+float ControllerState::right_y() const {
   return axis(SDL_GAMEPAD_AXIS_RIGHTY);
 }
 
-auto ControllerState::left_trigger() const -> float {
+float ControllerState::left_trigger() const {
   return axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
 }
 
-auto ControllerState::right_trigger() const -> float {
+float ControllerState::right_trigger() const {
   return axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
 }
 
-auto ControllerState::gyro() const -> Vec3 { return gyro_; }
+Vec3 ControllerState::gyro() const { return gyro_; }
 
-auto ControllerState::accel() const -> Vec3 { return accel_; }
+Vec3 ControllerState::accel() const { return accel_; }
 
-auto ControllerState::has_gyro() const -> bool { return has_gyro_; }
+bool ControllerState::has_gyro() const { return has_gyro_; }
 
-auto ControllerState::has_accel() const -> bool { return has_accel_; }
+bool ControllerState::has_accel() const { return has_accel_; }
 
-auto ControllerState::touch_finger(std::size_t touchpad,
-                                   std::size_t finger) const -> TouchFinger {
+TouchFinger ControllerState::touch_finger(std::size_t touchpad,
+                                          std::size_t finger) const {
   if (touchpad >= max_touchpads || finger >= max_touch_fingers) {
     return {};
   }
@@ -218,17 +215,17 @@ auto ControllerState::touch_finger(std::size_t touchpad,
   return touch_[touchpad][finger];
 }
 
-auto ControllerState::clear_frame_edges() -> void {
+void ControllerState::clear_frame_edges() {
   pressed_.fill(false);
   released_.fill(false);
   changed_this_frame_ = false;
 }
 
-auto ControllerState::changed_this_frame() const -> bool {
+bool ControllerState::changed_this_frame() const {
   return changed_this_frame_;
 }
 
-auto ControllerState::normalize_axis_value(std::int16_t raw) -> float {
+float ControllerState::normalize_axis_value(std::int16_t raw) {
   constexpr auto negative_max = 32768.0F;
   constexpr auto positive_max = 32767.0F;
 
@@ -238,14 +235,14 @@ auto ControllerState::normalize_axis_value(std::int16_t raw) -> float {
   return apply_deadzone(std::clamp(value, -1.0F, 1.0F));
 }
 
-auto ControllerState::normalize_trigger_value(std::int16_t raw) -> float {
+float ControllerState::normalize_trigger_value(std::int16_t raw) {
   constexpr auto positive_max = 32767.0F;
 
   const auto value = static_cast<float>(raw) / positive_max;
   return std::clamp(value, 0.0F, 1.0F);
 }
 
-auto ControllerState::apply_deadzone(float value) -> float {
+float ControllerState::apply_deadzone(float value) {
   if (std::abs(value) < stick_deadzone) {
     return 0.0F;
   }
@@ -253,7 +250,7 @@ auto ControllerState::apply_deadzone(float value) -> float {
   return value;
 }
 
-auto axis_label(SDL_GamepadAxis axis) -> std::string_view {
+std::string_view axis_label(SDL_GamepadAxis axis) {
   switch (axis) {
   case SDL_GAMEPAD_AXIS_LEFTX:
     return "left_x";
@@ -272,7 +269,7 @@ auto axis_label(SDL_GamepadAxis axis) -> std::string_view {
   }
 }
 
-auto button_label(SDL_GamepadButton button) -> std::string_view {
+std::string_view button_label(SDL_GamepadButton button) {
   switch (button) {
   case SDL_GAMEPAD_BUTTON_SOUTH:
     return "south";

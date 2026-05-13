@@ -33,38 +33,38 @@ public:
   static constexpr auto max_touchpads = std::size_t{2};
   static constexpr auto max_touch_fingers = std::size_t{4};
 
-  auto handle_axis(const SDL_GamepadAxisEvent &event) -> void;
-  auto handle_button_down(const SDL_GamepadButtonEvent &event) -> void;
-  auto handle_button_up(const SDL_GamepadButtonEvent &event) -> void;
-  auto handle_sensor(const SDL_GamepadSensorEvent &event) -> void;
-  auto handle_touchpad_down(const SDL_GamepadTouchpadEvent &event) -> void;
-  auto handle_touchpad_motion(const SDL_GamepadTouchpadEvent &event) -> void;
-  auto handle_touchpad_up(const SDL_GamepadTouchpadEvent &event) -> void;
+  void handle_axis(const SDL_GamepadAxisEvent &event);
+  void handle_button_down(const SDL_GamepadButtonEvent &event);
+  void handle_button_up(const SDL_GamepadButtonEvent &event);
+  void handle_sensor(const SDL_GamepadSensorEvent &event);
+  void handle_touchpad_down(const SDL_GamepadTouchpadEvent &event);
+  void handle_touchpad_motion(const SDL_GamepadTouchpadEvent &event);
+  void handle_touchpad_up(const SDL_GamepadTouchpadEvent &event);
 
-  [[nodiscard]] auto axis(SDL_GamepadAxis axis) const -> float;
-  [[nodiscard]] auto button(SDL_GamepadButton button) const -> bool;
-  [[nodiscard]] auto button_pressed(SDL_GamepadButton button) const -> bool;
-  [[nodiscard]] auto button_released(SDL_GamepadButton button) const -> bool;
+  [[nodiscard]] float axis(SDL_GamepadAxis axis) const;
+  [[nodiscard]] bool button(SDL_GamepadButton button) const;
+  [[nodiscard]] bool button_pressed(SDL_GamepadButton button) const;
+  [[nodiscard]] bool button_released(SDL_GamepadButton button) const;
 
-  [[nodiscard]] auto left_x() const -> float;
-  [[nodiscard]] auto left_y() const -> float;
-  [[nodiscard]] auto right_x() const -> float;
-  [[nodiscard]] auto right_y() const -> float;
-  [[nodiscard]] auto left_trigger() const -> float;
-  [[nodiscard]] auto right_trigger() const -> float;
+  [[nodiscard]] float left_x() const;
+  [[nodiscard]] float left_y() const;
+  [[nodiscard]] float right_x() const;
+  [[nodiscard]] float right_y() const;
+  [[nodiscard]] float left_trigger() const;
+  [[nodiscard]] float right_trigger() const;
 
-  [[nodiscard]] auto gyro() const -> Vec3;
-  [[nodiscard]] auto accel() const -> Vec3;
+  [[nodiscard]] Vec3 gyro() const;
+  [[nodiscard]] Vec3 accel() const;
 
-  [[nodiscard]] auto has_gyro() const -> bool;
-  [[nodiscard]] auto has_accel() const -> bool;
+  [[nodiscard]] bool has_gyro() const;
+  [[nodiscard]] bool has_accel() const;
 
-  [[nodiscard]] auto touch_finger(std::size_t touchpad,
-                                  std::size_t finger) const -> TouchFinger;
+  [[nodiscard]] TouchFinger touch_finger(std::size_t touchpad,
+                                         std::size_t finger) const;
 
-  auto clear_frame_edges() -> void;
+  void clear_frame_edges();
 
-  [[nodiscard]] auto changed_this_frame() const -> bool;
+  [[nodiscard]] bool changed_this_frame() const;
 
 private:
   std::array<float, axis_count> axes_{};
@@ -82,12 +82,12 @@ private:
   bool has_accel_{};
   bool changed_this_frame_{};
 
-  static auto normalize_axis_value(std::int16_t raw) -> float;
-  static auto normalize_trigger_value(std::int16_t raw) -> float;
-  static auto apply_deadzone(float value) -> float;
+  static float normalize_axis_value(std::int16_t raw);
+  static float normalize_trigger_value(std::int16_t raw);
+  static float apply_deadzone(float value);
 };
 
-auto axis_label(SDL_GamepadAxis axis) -> std::string_view;
-auto button_label(SDL_GamepadButton button) -> std::string_view;
+std::string_view axis_label(SDL_GamepadAxis axis);
+std::string_view button_label(SDL_GamepadButton button);
 
 } // namespace analogno

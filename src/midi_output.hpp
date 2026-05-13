@@ -17,15 +17,15 @@ public:
   explicit MidiOutput(std::string port_name = "Analogno MIDI Out");
 
   MidiOutput(const MidiOutput &) = delete;
-  auto operator=(const MidiOutput &) -> MidiOutput & = delete;
+  MidiOutput &operator=(const MidiOutput &) = delete;
 
   MidiOutput(MidiOutput &&) = delete;
-  auto operator=(MidiOutput &&) -> MidiOutput & = delete;
+  MidiOutput &operator=(MidiOutput &&) = delete;
 
   ~MidiOutput();
 
-  auto apply(const MusicalIntent &intent) -> void;
-  auto all_notes_off() -> void;
+  void apply(const MusicalIntent &intent);
+  void all_notes_off();
 
 private:
   static constexpr auto channel = std::uint8_t{0};
@@ -38,16 +38,16 @@ private:
   std::array<std::optional<std::uint8_t>, midi_cc_count> last_cc_{};
   std::optional<int> last_pitch_bend_{};
 
-  auto note_on(const Note &note) -> void;
-  auto note_off(const Note &note) -> void;
-  auto control_change(std::uint8_t controller, std::uint8_t value) -> void;
-  auto pitch_bend(float normalized) -> void;
+  void note_on(const Note &note);
+  void note_off(const Note &note);
+  void control_change(std::uint8_t controller, std::uint8_t value);
+  void pitch_bend(float normalized);
 
-  static auto note_index(const Note &note) -> std::size_t;
-  static auto control_value(float normalized) -> std::uint8_t;
-  static auto pitch_bend_value(float normalized) -> int;
-  static auto valid_midi_note(int note) -> bool;
-  static auto send(RtMidiOut &midi, std::vector<unsigned char> message) -> void;
+  static std::size_t note_index(const Note &note);
+  static std::uint8_t control_value(float normalized);
+  static int pitch_bend_value(float normalized);
+  static bool valid_midi_note(int note);
+  static void send(RtMidiOut &midi, std::vector<unsigned char> message);
 };
 
 } // namespace analogno

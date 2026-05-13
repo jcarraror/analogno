@@ -19,19 +19,18 @@ public:
   ~WebSocketServer();
 
   WebSocketServer(const WebSocketServer &) = delete;
-  auto operator=(const WebSocketServer &) -> WebSocketServer & = delete;
+  WebSocketServer &operator=(const WebSocketServer &) = delete;
 
   WebSocketServer(WebSocketServer &&) = delete;
-  auto operator=(WebSocketServer &&) -> WebSocketServer & = delete;
+  WebSocketServer &operator=(WebSocketServer &&) = delete;
 
-  auto start() -> void;
-  auto stop() -> void;
-  auto publish(const WebRuntimeState &state) -> void;
+  void start();
+  void stop();
+  void publish(const WebRuntimeState &state);
 
-  [[nodiscard]] auto consume_panic_requested() -> bool;
-  [[nodiscard]] auto consume_capture_device_request() -> std::optional<int>;
-  [[nodiscard]] auto consume_sample_trim_request()
-      -> std::optional<SampleTrimRequest>;
+  [[nodiscard]] bool consume_panic_requested();
+  [[nodiscard]] std::optional<int> consume_capture_device_request();
+  [[nodiscard]] std::optional<SampleTrimRequest> consume_sample_trim_request();
 
 private:
   class Impl;

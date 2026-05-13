@@ -25,13 +25,13 @@ constexpr auto playable_buttons = std::array{
     PlayableButton{.button = SDL_GAMEPAD_BUTTON_NORTH, .degree = 3, .slot = 3},
 };
 
-auto clamp_midi(int note) -> int {
+int clamp_midi(int note) {
   return std::clamp(note, midi_min, midi_max);
 }
 
-auto clamp_octave(int octave) -> int { return std::clamp(octave, -4, 4); }
+int clamp_octave(int octave) { return std::clamp(octave, -4, 4); }
 
-auto next_scale(ScaleKind scale) -> ScaleKind {
+ScaleKind next_scale(ScaleKind scale) {
   switch (scale) {
   case ScaleKind::minor_pentatonic:
     return ScaleKind::major;
@@ -50,7 +50,7 @@ auto next_scale(ScaleKind scale) -> ScaleKind {
   return ScaleKind::minor_pentatonic;
 }
 
-auto previous_scale(ScaleKind scale) -> ScaleKind {
+ScaleKind previous_scale(ScaleKind scale) {
   switch (scale) {
   case ScaleKind::minor_pentatonic:
     return ScaleKind::chromatic;
@@ -69,13 +69,13 @@ auto previous_scale(ScaleKind scale) -> ScaleKind {
   return ScaleKind::minor_pentatonic;
 }
 
-auto positive_from_axis(float value) -> float {
+float positive_from_axis(float value) {
   return std::clamp((value + 1.0F) * 0.5F, 0.0F, 1.0F);
 }
 
 } // namespace
 
-auto scale_for(ScaleKind kind) -> Scale {
+Scale scale_for(ScaleKind kind) {
   switch (kind) {
   case ScaleKind::minor_pentatonic:
     return Scale{
@@ -129,11 +129,11 @@ auto scale_for(ScaleKind kind) -> Scale {
   return scale_for(ScaleKind::minor_pentatonic);
 }
 
-auto scale_name(ScaleKind kind) -> std::string_view {
+std::string_view scale_name(ScaleKind kind) {
   return scale_for(kind).name;
 }
 
-auto MusicMapper::map(const ControllerState &controller) -> MusicalIntent {
+MusicalIntent MusicMapper::map(const ControllerState &controller) {
   MusicalIntent intent{
       .root_midi_note = root_midi_note_,
       .octave_offset = octave_offset_,
@@ -143,6 +143,13 @@ auto MusicMapper::map(const ControllerState &controller) -> MusicalIntent {
   update_mode_buttons(controller, intent);
   map_note_buttons(controller, intent);
 
+  intent.controls = map_controls(controller);
+
+  return intent;
+}
+
+ContinuousControls
+MusicMapper::map_controls(const ControllerState &controller) const {
   const auto gyro_vibrato =
       controller.has_gyro()
           ? std::clamp(controller.gyro().z * 0.12F, -0.35F, 0.35F)
@@ -153,7 +160,7 @@ auto MusicMapper::map(const ControllerState &controller) -> MusicalIntent {
   const auto pitch_bend = std::clamp(
       controller.left_x() + gyro_vibrato * vibrato_amount, -1.0F, 1.0F);
 
-  intent.controls = ContinuousControls{
+  return ContinuousControls{
       .pitch_bend = pitch_bend,
       .expression = controller.left_trigger(),
       .filter_cutoff = positive_from_axis(-controller.right_y()),
@@ -161,12 +168,10 @@ auto MusicMapper::map(const ControllerState &controller) -> MusicalIntent {
       .modulation = controller.right_trigger(),
       .vibrato = std::abs(gyro_vibrato) * vibrato_amount,
   };
-
-  return intent;
 }
 
-auto MusicMapper::map_note_buttons(const ControllerState &controller,
-                                   MusicalIntent &intent) -> void {
+void MusicMapper::map_note_buttons(const ControllerState &controller,
+                                   MusicalIntent &intent) {
   for (const auto playable : playable_buttons) {
     auto &active_note = active_notes_[playable.slot];
 
@@ -184,8 +189,8 @@ auto MusicMapper::map_note_buttons(const ControllerState &controller,
   }
 }
 
-auto MusicMapper::update_mode_buttons(const ControllerState &controller,
-                                      MusicalIntent &intent) -> void {
+void MusicMapper::update_mode_buttons(const ControllerState &controller,
+                                      MusicalIntent &intent) {
   const auto l1 = controller.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
   const auto r1 = controller.button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
   const auto dpad_up = controller.button(SDL_GAMEPAD_BUTTON_DPAD_UP);
@@ -228,7 +233,7 @@ auto MusicMapper::update_mode_buttons(const ControllerState &controller,
   intent.scale = scale_;
 }
 
-auto MusicMapper::note_for_degree(int degree) const -> Note {
+Note MusicMapper::note_for_degree(int degree) const {
   const auto scale = scale_for(scale_);
   const auto wrapped_degree = degree % scale.size;
   const auto extra_octave = degree / scale.size;
@@ -245,7 +250,7 @@ auto MusicMapper::note_for_degree(int degree) const -> Note {
   };
 }
 
-auto MusicMapper::rising_edge(bool current, bool &previous) -> bool {
+bool MusicMapper::rising_edge(bool current, bool &previous) {
   const auto result = current && !previous;
   previous = current;
   return result;
