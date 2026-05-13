@@ -96,9 +96,18 @@ auto to_json_string(const WebRuntimeState &state) -> std::string {
               {"devices", capture_devices_json(state.audio.devices)},
               {"selectedDeviceIndex", state.audio.selected_device_index},
               {"captureRunning", state.audio.capture_running},
+              {"sampleRecording", state.audio.sample_recording},
               {"captureDevice", state.audio.capture_device},
               {"micLevel", state.audio.mic_level},
+              {"envelope", state.audio.envelope},
+              {"gateOpen", state.audio.gate_open},
+              {"onset", state.audio.onset},
+              {"velocity", state.audio.velocity},
               {"waveform", state.audio.waveform},
+              {"sampleReady", state.audio.sample_ready},
+              {"sampleFrames", state.audio.sample_frames},
+              {"sampleTrimStart", state.audio.sample_trim_start},
+              {"sampleTrimEnd", state.audio.sample_trim_end},
           },
       },
   };
@@ -117,6 +126,8 @@ public:
   std::vector<std::weak_ptr<class Session>> sessions{};
   std::atomic_bool panic_requested{false};
   std::atomic_int capture_device_request{-2};
+  std::mutex sample_trim_mutex{};
+  std::optional<WebSocketServer::SampleTrimRequest> sample_trim_request{};
 };
 
 class Session final : public std::enable_shared_from_this<Session> {
@@ -186,6 +197,12 @@ private:
         } else {
           shared_->capture_device_request.store(-1);
         }
+      } else if (json.value("type", "") == "setSampleTrim") {
+        const auto lock = std::scoped_lock{shared_->sample_trim_mutex};
+        shared_->sample_trim_request = WebSocketServer::SampleTrimRequest{
+            .start = json.value("start", 0.0F),
+            .end = json.value("end", 1.0F),
+        };
       }
     } catch (const std::exception &exception) {
       std::cerr << "invalid websocket JSON: " << exception.what() << '\n';
@@ -327,6 +344,14 @@ public:
     return request;
   }
 
+  [[nodiscard]] auto consume_sample_trim_request()
+      -> std::optional<WebSocketServer::SampleTrimRequest> {
+    const auto lock = std::scoped_lock{shared_->sample_trim_mutex};
+    auto request = shared_->sample_trim_request;
+    shared_->sample_trim_request.reset();
+    return request;
+  }
+
 private:
   std::shared_ptr<SharedState> shared_;
   std::thread thread_{};
@@ -352,6 +377,11 @@ auto WebSocketServer::consume_panic_requested() -> bool {
 
 auto WebSocketServer::consume_capture_device_request() -> std::optional<int> {
   return impl_->consume_capture_device_request();
+}
+
+auto WebSocketServer::consume_sample_trim_request()
+    -> std::optional<SampleTrimRequest> {
+  return impl_->consume_sample_trim_request();
 }
 
 } // namespace analogno

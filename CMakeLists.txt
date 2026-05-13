@@ -68,6 +68,7 @@ add_executable(analogno
   src/midi_output.cpp
   src/web_server.cpp
   src/audio_capture.cpp
+  src/audio_sampler.cpp
   src/miniaudio_impl.cpp
 )
 

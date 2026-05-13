@@ -240,6 +240,8 @@ auto MusicMapper::note_for_degree(int degree) const -> Note {
       .midi_note = clamp_midi(root_midi_note_ + semitone + octave * 12),
       .degree = degree,
       .octave = octave,
+      .velocity = 100,
+      .channel = 0,
   };
 }
 

@@ -28,6 +28,8 @@ struct Note final {
   int midi_note{};
   int degree{};
   int octave{};
+  int velocity{100};
+  int channel{};
 };
 
 struct ContinuousControls final {
@@ -49,6 +51,14 @@ struct MusicalIntent final {
   ScaleKind scale{ScaleKind::minor_pentatonic};
 
   ContinuousControls controls{};
+};
+
+struct AudioFeatures final {
+  float level{};
+  float envelope{};
+  bool gate_open{};
+  bool onset{};
+  int velocity{};
 };
 
 auto scale_for(ScaleKind kind) -> Scale;

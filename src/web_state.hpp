@@ -36,9 +36,18 @@ struct WebAudioState final {
   std::vector<WebCaptureDevice> devices{};
   std::optional<std::uint32_t> selected_device_index{};
   bool capture_running{};
+  bool sample_recording{};
   std::string capture_device{};
   float mic_level{};
+  float envelope{};
+  bool gate_open{};
+  bool onset{};
+  int velocity{};
   std::vector<float> waveform{};
+  bool sample_ready{};
+  std::uint32_t sample_frames{};
+  float sample_trim_start{};
+  float sample_trim_end{1.0F};
 };
 
 struct WebMusicState final {

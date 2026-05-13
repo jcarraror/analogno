@@ -1,4 +1,5 @@
 #include "audio_capture.hpp"
+#include "audio_sampler.hpp"
 #include "controller_state.hpp"
 #include "midi_output.hpp"
 #include "music_mapper.hpp"
@@ -16,8 +17,10 @@
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL_timer.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <iomanip>
 #include <iostream>
@@ -31,6 +34,7 @@
 namespace {
 
 using analogno::AudioCapture;
+using analogno::AudioSampler;
 using analogno::ControllerState;
 using analogno::Gamepad;
 using analogno::MidiOutput;
@@ -240,10 +244,57 @@ auto handle_event(const SDL_Event &event, ControllerState &state) -> bool {
   return true;
 }
 
+auto trigger_sampler_notes(const MusicalIntent &intent,
+                           AudioSampler &sampler) -> void {
+  if (!sampler.has_sample()) {
+    return;
+  }
+
+  for (const auto &note : intent.note_ons) {
+    const auto semitones = note.midi_note - intent.root_midi_note;
+    sampler.trigger(std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+  }
+}
+
+auto sampler_pitch_bend(const ControllerState &controller) -> float {
+  const auto gyro_vibrato =
+      controller.has_gyro()
+          ? std::clamp(controller.gyro().z * 0.12F, -0.35F, 0.35F)
+          : 0.0F;
+
+  return std::clamp(controller.left_x() + gyro_vibrato * controller.left_trigger(),
+                    -1.0F, 1.0F);
+}
+
+auto sampler_vibrato(const ControllerState &controller) -> float {
+  if (!controller.has_gyro()) {
+    return 0.0F;
+  }
+
+  const auto gyro_vibrato =
+      std::clamp(controller.gyro().z * 0.12F, -0.35F, 0.35F);
+
+  return std::abs(gyro_vibrato) * controller.left_trigger();
+}
+
+auto update_sampler_controls(const ControllerState &controller,
+                             AudioSampler &sampler) -> void {
+  sampler.set_gain(controller.left_trigger());
+  sampler.set_pitch_controls(sampler_pitch_bend(controller),
+                             sampler_vibrato(controller));
+}
+
+auto sample_record_button_active(const ControllerState &controller) -> bool {
+  return controller.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) &&
+         controller.button(SDL_GAMEPAD_BUTTON_TOUCHPAD);
+}
+
 auto make_web_state(const ControllerState &controller,
                     const MusicalIntent &intent,
                     const ActiveNoteTracker &active_notes,
-                    const AudioCapture &audio_capture)
+                    const AudioCapture &audio_capture,
+                    const AudioSampler &audio_sampler,
+                    const analogno::AudioFeatures &audio_features)
     -> analogno::WebRuntimeState {
   std::vector<analogno::WebCaptureDevice> capture_devices{};
 
@@ -297,9 +348,19 @@ auto make_web_state(const ControllerState &controller,
               .devices = std::move(capture_devices),
               .selected_device_index = audio_capture.selected_device_index(),
               .capture_running = audio_capture.is_running(),
+              .sample_recording = audio_capture.is_sample_recording(),
               .capture_device = audio_capture.selected_device_name(),
               .mic_level = audio_capture.level(),
+              .envelope = audio_features.envelope,
+              .gate_open = audio_features.gate_open,
+              .onset = audio_features.onset,
+              .velocity = audio_features.velocity,
               .waveform = audio_capture.waveform(),
+              .sample_ready = audio_sampler.has_sample(),
+              .sample_frames =
+                  static_cast<std::uint32_t>(audio_sampler.sample_frames()),
+              .sample_trim_start = audio_sampler.trim_start(),
+              .sample_trim_end = audio_sampler.trim_end(),
           },
   };
 }
@@ -314,6 +375,7 @@ auto run_event_loop() -> void {
   ActiveNoteTracker active_notes{};
   AudioCapture audio_capture{};
   audio_capture.start();
+  AudioSampler audio_sampler{};
   WebSocketServer web{};
   web.start();
 
@@ -322,6 +384,8 @@ auto run_event_loop() -> void {
   auto last_web_publish = std::chrono::steady_clock::now();
 
   MusicalIntent last_intent{};
+  analogno::AudioFeatures last_audio_features{};
+  auto was_sample_record_button_active = false;
 
   while (running) {
     SDL_Event event{};
@@ -349,11 +413,63 @@ auto run_event_loop() -> void {
       }
     }
 
-    if (state.changed_this_frame()) {
-      const auto intent = mapper.map(state);
-      midi.apply(intent);
-      active_notes.apply(intent);
+    if (const auto trim_request = web.consume_sample_trim_request()) {
+      audio_sampler.set_trim(trim_request->start, trim_request->end);
+    }
+
+    if (audio_sampler.has_sample() &&
+        state.button_pressed(SDL_GAMEPAD_BUTTON_GUIDE)) {
+      audio_sampler.clear_sample();
+      MusicalIntent panic{};
+      panic.note_off_all = true;
+      midi.apply(panic);
+      active_notes.apply(panic);
+      last_intent = panic;
+      std::cout << "sample cleared; MIDI mode restored\n";
+    }
+
+    const auto sample_recording_active = sample_record_button_active(state);
+
+    if (sample_recording_active && !was_sample_record_button_active) {
+      audio_capture.begin_sample_recording();
+      std::cout << "sampler recording started\n";
+    }
+
+    if (!sample_recording_active && was_sample_record_button_active) {
+      audio_capture.end_sample_recording();
+      std::cout << "sampler recording stopped\n";
+    }
+
+    was_sample_record_button_active = sample_recording_active;
+
+    if (auto sample = audio_capture.consume_captured_sample()) {
+      const auto frame_count = sample->size();
+      audio_sampler.set_sample(std::move(*sample));
+      MusicalIntent panic{};
+      panic.note_off_all = true;
+      midi.apply(panic);
+      active_notes.apply(panic);
+      last_intent = panic;
+      std::cout << "captured sampler sound: " << frame_count << " frames\n";
+    }
+
+    const auto audio_features = audio_capture.consume_features();
+    update_sampler_controls(state, audio_sampler);
+    const auto should_map = state.changed_this_frame();
+
+    if (should_map) {
+      auto intent = mapper.map(state);
+
+      if (audio_sampler.has_sample()) {
+        trigger_sampler_notes(intent, audio_sampler);
+        active_notes.apply(intent);
+      } else {
+        midi.apply(intent);
+        active_notes.apply(intent);
+      }
+
       last_intent = intent;
+      last_audio_features = audio_features;
 
       const auto now = std::chrono::steady_clock::now();
 
@@ -368,8 +484,13 @@ auto run_event_loop() -> void {
     const auto now = std::chrono::steady_clock::now();
 
     if (now - last_web_publish >= std::chrono::milliseconds{100}) {
-      web.publish(
-          make_web_state(state, last_intent, active_notes, audio_capture));
+      if (!should_map) {
+        last_audio_features = audio_features;
+      }
+
+      web.publish(make_web_state(state, last_intent, active_notes,
+                                 audio_capture, audio_sampler,
+                                 last_audio_features));
       last_web_publish = now;
     }
 

@@ -28,8 +28,12 @@ constexpr auto pitch_bend_center = 8192;
 constexpr auto pitch_bend_range = 8191;
 constexpr auto pitch_bend_deadband = 16;
 
-auto status(std::uint8_t base, std::uint8_t channel) -> unsigned char {
-  return static_cast<unsigned char>(base | (channel & 0x0F));
+auto channel_byte(int channel) -> std::uint8_t {
+  return static_cast<std::uint8_t>(std::clamp(channel, 0, 15));
+}
+
+auto status(std::uint8_t base, int channel) -> unsigned char {
+  return static_cast<unsigned char>(base | channel_byte(channel));
 }
 
 auto byte(std::uint8_t value) -> unsigned char {
@@ -61,11 +65,11 @@ auto MidiOutput::apply(const MusicalIntent &intent) -> void {
   }
 
   for (const auto &note : intent.note_offs) {
-    note_off(note.midi_note);
+    note_off(note);
   }
 
   for (const auto &note : intent.note_ons) {
-    note_on(note.midi_note);
+    note_on(note);
   }
 
   pitch_bend(intent.controls.pitch_bend);
@@ -79,21 +83,41 @@ auto MidiOutput::apply(const MusicalIntent &intent) -> void {
 }
 
 auto MidiOutput::all_notes_off() -> void {
-  for (auto note = 0; note < static_cast<int>(active_notes_.size()); ++note) {
-    if (active_notes_[static_cast<std::size_t>(note)]) {
-      note_off(note);
+  for (auto channel_index = std::size_t{0}; channel_index < midi_channel_count;
+       ++channel_index) {
+    for (auto note = 0; note < static_cast<int>(midi_note_count); ++note) {
+      const auto note_value = Note{
+          .midi_note = note,
+          .degree = 0,
+          .octave = 0,
+          .velocity = 0,
+          .channel = static_cast<int>(channel_index),
+      };
+
+      if (active_notes_[note_index(note_value)]) {
+        note_off(note_value);
+      }
     }
   }
 
-  control_change(cc_all_notes_off, 0);
+  for (auto channel_index = std::size_t{0}; channel_index < midi_channel_count;
+       ++channel_index) {
+    send(midi_, {
+                    status(status_control_change, static_cast<int>(channel_index)),
+                    byte(cc_all_notes_off),
+                    byte(0),
+                });
+  }
 }
 
-auto MidiOutput::note_on(int midi_note) -> void {
+auto MidiOutput::note_on(const Note &note) -> void {
+  const auto midi_note = note.midi_note;
+
   if (!valid_midi_note(midi_note)) {
     return;
   }
 
-  const auto index = static_cast<std::size_t>(midi_note);
+  const auto index = note_index(note);
 
   if (active_notes_[index]) {
     return;
@@ -102,18 +126,21 @@ auto MidiOutput::note_on(int midi_note) -> void {
   active_notes_[index] = true;
 
   send(midi_, {
-                  status(status_note_on, channel),
+                  status(status_note_on, note.channel),
                   midi_note_byte(midi_note),
-                  byte(velocity),
+                  byte(static_cast<std::uint8_t>(
+                      std::clamp(note.velocity, 1, 127))),
               });
 }
 
-auto MidiOutput::note_off(int midi_note) -> void {
+auto MidiOutput::note_off(const Note &note) -> void {
+  const auto midi_note = note.midi_note;
+
   if (!valid_midi_note(midi_note)) {
     return;
   }
 
-  const auto index = static_cast<std::size_t>(midi_note);
+  const auto index = note_index(note);
 
   if (!active_notes_[index]) {
     return;
@@ -122,7 +149,7 @@ auto MidiOutput::note_off(int midi_note) -> void {
   active_notes_[index] = false;
 
   send(midi_, {
-                  status(status_note_off, channel),
+                  status(status_note_off, note.channel),
                   midi_note_byte(midi_note),
                   byte(0),
               });
@@ -140,7 +167,7 @@ auto MidiOutput::control_change(std::uint8_t controller, std::uint8_t value)
   last_cc_[index] = value;
 
   send(midi_, {
-                  status(status_control_change, channel),
+                  status(status_control_change, static_cast<int>(channel)),
                   byte(controller),
                   byte(value),
               });
@@ -160,10 +187,15 @@ auto MidiOutput::pitch_bend(float normalized) -> void {
   const auto msb = static_cast<std::uint8_t>((bend >> 7) & 0x7F);
 
   send(midi_, {
-                  status(status_pitch_bend, channel),
+                  status(status_pitch_bend, static_cast<int>(channel)),
                   byte(lsb),
                   byte(msb),
               });
+}
+
+auto MidiOutput::note_index(const Note &note) -> std::size_t {
+  return static_cast<std::size_t>(channel_byte(note.channel)) * midi_note_count +
+         static_cast<std::size_t>(std::clamp(note.midi_note, 0, 127));
 }
 
 auto MidiOutput::control_value(float normalized) -> std::uint8_t {

@@ -40,9 +40,18 @@ type RuntimeState = {
     }>;
     selectedDeviceIndex: number | null;
     captureRunning: boolean;
+    sampleRecording: boolean;
     captureDevice: string;
     micLevel: number;
+    envelope: number;
+    gateOpen: boolean;
+    onset: boolean;
+    velocity: number;
     waveform: number[];
+    sampleReady: boolean;
+    sampleFrames: number;
+    sampleTrimStart: number;
+    sampleTrimEnd: number;
   };
 };
 
@@ -227,6 +236,17 @@ export function App() {
     }));
   }
 
+  function setSampleTrim(next: { start?: number; end?: number }) {
+    const start = next.start ?? audio?.sampleTrimStart ?? 0;
+    const end = next.end ?? audio?.sampleTrimEnd ?? 1;
+
+    socket?.send(JSON.stringify({
+      type: "setSampleTrim",
+      start,
+      end
+    }));
+  }
+
   const controller = runtime?.controller;
   const music = runtime?.music;
   const audio = runtime?.audio;
@@ -295,7 +315,49 @@ export function App() {
             label="Capture"
             value={audio?.captureRunning ? "running" : "stopped"}
           />
+          <StateLine
+            label="Recording"
+            value={audio?.sampleRecording ? "armed" : "idle"}
+          />
           <StateLine label="Device" value={audio?.captureDevice ?? "none"} />
+          <StateLine label="Gate" value={audio?.gateOpen ? "open" : "closed"} />
+          <StateLine label="Velocity" value={audio?.velocity ?? 0} />
+          <StateLine
+            label="Sample"
+            value={audio?.sampleReady
+              ? `${(audio.sampleFrames / 48000).toFixed(2)}s ready`
+              : "waiting"}
+          />
+          <div className="trim">
+            <label>
+              <span>Start</span>
+              <input
+                min="0"
+                max="1"
+                step="0.001"
+                type="range"
+                value={audio?.sampleTrimStart ?? 0}
+                disabled={!audio?.sampleReady || connection !== "online"}
+                onChange={(event) => setSampleTrim({
+                  start: Number(event.target.value)
+                })}
+              />
+            </label>
+            <label>
+              <span>End</span>
+              <input
+                min="0"
+                max="1"
+                step="0.001"
+                type="range"
+                value={audio?.sampleTrimEnd ?? 1}
+                disabled={!audio?.sampleReady || connection !== "online"}
+                onChange={(event) => setSampleTrim({
+                  end: Number(event.target.value)
+                })}
+              />
+            </label>
+          </div>
           <label className="field">
             <span>Input</span>
             <select
@@ -314,6 +376,7 @@ export function App() {
             </select>
           </label>
           <Meter label="Mic level" value={audio?.micLevel ?? 0} />
+          <Meter label="Envelope" value={(audio?.envelope ?? 0) * 8} />
           <Waveform samples={audio?.waveform ?? []} />
         </Panel>
       </div>

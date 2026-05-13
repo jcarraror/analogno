@@ -196,6 +196,27 @@ h1 {
   opacity: 0.7;
 }
 
+.trim {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.trim label {
+  display: grid;
+  gap: 8px;
+}
+
+.trim span {
+  color: #8e97aa;
+  font-size: 0.82rem;
+}
+
+.trim input {
+  width: 100%;
+  accent-color: #8dffa8;
+}
+
 .meter {
   margin-bottom: 16px;
 }

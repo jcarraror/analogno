@@ -10,6 +10,11 @@ namespace analogno {
 
 class WebSocketServer final {
 public:
+  struct SampleTrimRequest final {
+    float start{};
+    float end{1.0F};
+  };
+
   explicit WebSocketServer(std::uint16_t port = 8765);
   ~WebSocketServer();
 
@@ -25,6 +30,8 @@ public:
 
   [[nodiscard]] auto consume_panic_requested() -> bool;
   [[nodiscard]] auto consume_capture_device_request() -> std::optional<int>;
+  [[nodiscard]] auto consume_sample_trim_request()
+      -> std::optional<SampleTrimRequest>;
 
 private:
   class Impl;

@@ -13,6 +13,9 @@ namespace {
 
 constexpr auto sample_rate = ma_uint32{48000};
 constexpr auto channels = ma_uint32{1};
+constexpr auto gate_open_threshold = 0.12F;
+constexpr auto gate_close_threshold = 0.06F;
+constexpr auto onset_cooldown_frames = ma_uint32{4800};
 
 } // namespace
 
@@ -97,17 +100,66 @@ auto AudioCapture::stop() -> void {
   selected_device_name_ = "none";
   selected_device_index_.reset();
   level_.store(0.0F);
+  envelope_.store(0.0F);
+  gate_open_.store(false);
+  onset_count_.store(0);
+  onset_velocity_.store(0);
+  captured_sample_frames_.store(0);
+  sample_recording_.store(false);
+  onset_cooldown_frames_ = 0;
 
   for (auto &sample : waveform_) {
     sample.store(0.0F);
   }
 
   waveform_write_index_.store(0);
+
+  {
+    const auto lock = std::scoped_lock{sample_mutex_};
+    recording_sample_.clear();
+    captured_sample_.clear();
+  }
 }
 
 auto AudioCapture::is_running() const -> bool { return running_; }
 
+auto AudioCapture::begin_sample_recording() -> void {
+  const auto lock = std::scoped_lock{sample_mutex_};
+  recording_sample_.clear();
+  recording_sample_.reserve(max_sample_frames);
+  sample_recording_.store(true);
+  captured_sample_frames_.store(0);
+}
+
+auto AudioCapture::end_sample_recording() -> void {
+  const auto lock = std::scoped_lock{sample_mutex_};
+  sample_recording_.store(false);
+
+  if (!recording_sample_.empty()) {
+    captured_sample_ = recording_sample_;
+    captured_sample_frames_.store(captured_sample_.size());
+  }
+
+  recording_sample_.clear();
+}
+
+auto AudioCapture::is_sample_recording() const -> bool {
+  return sample_recording_.load();
+}
+
 auto AudioCapture::level() const -> float { return level_.load(); }
+
+auto AudioCapture::consume_features() -> AudioFeatures {
+  const auto level = level_.load();
+
+  return AudioFeatures{
+      .level = level,
+      .envelope = envelope_.load(),
+      .gate_open = gate_open_.load(),
+      .onset = onset_count_.exchange(0) > 0,
+      .velocity = onset_velocity_.load(),
+  };
+}
 
 auto AudioCapture::waveform() const -> std::vector<float> {
   std::vector<float> samples{};
@@ -129,6 +181,23 @@ auto AudioCapture::waveform() const -> std::vector<float> {
   }
 
   return samples;
+}
+
+auto AudioCapture::consume_captured_sample()
+    -> std::optional<std::vector<float>> {
+  const auto lock = std::scoped_lock{sample_mutex_};
+
+  if (captured_sample_.empty()) {
+    return std::nullopt;
+  }
+
+  auto sample = std::move(captured_sample_);
+  captured_sample_.clear();
+  return sample;
+}
+
+auto AudioCapture::captured_sample_frames() const -> std::size_t {
+  return captured_sample_frames_.load();
 }
 
 auto AudioCapture::selected_device_name() const -> const std::string & {
@@ -243,20 +312,59 @@ auto AudioCapture::capture_callback(ma_device *device, void *output,
   const auto rms = std::sqrt(sum / static_cast<float>(sample_count));
   const auto current = self->level_.load();
   const auto smoothed = current * 0.85F + rms * 0.15F;
+  const auto normalized_level = std::clamp(smoothed * 8.0F, 0.0F, 1.0F);
 
-  self->level_.store(std::clamp(smoothed * 8.0F, 0.0F, 1.0F));
+  self->level_.store(normalized_level);
+  self->envelope_.store(smoothed);
+
+  if (self->onset_cooldown_frames_ > frame_count) {
+    self->onset_cooldown_frames_ -= frame_count;
+  } else {
+    self->onset_cooldown_frames_ = 0;
+  }
+
+  const auto was_gate_open = self->gate_open_.load();
+  auto gate_open = was_gate_open;
+
+  if (!gate_open && normalized_level >= gate_open_threshold) {
+    gate_open = true;
+  } else if (gate_open && normalized_level <= gate_close_threshold) {
+    gate_open = false;
+  }
+
+  self->gate_open_.store(gate_open);
+
+  if (gate_open && !was_gate_open && self->onset_cooldown_frames_ == 0) {
+    const auto velocity = 1 + static_cast<int>(std::lround(normalized_level * 126.0F));
+    self->onset_velocity_.store(std::clamp(velocity, 1, 127));
+    self->onset_count_.fetch_add(1);
+    self->onset_cooldown_frames_ = onset_cooldown_frames;
+  }
 
   auto write_index =
       self->waveform_write_index_.load(std::memory_order_relaxed);
 
   for (std::size_t i = 0; i < sample_count; ++i) {
     const auto index = write_index % waveform_sample_count;
-    self->waveform_[index].store(std::clamp(samples[i], -1.0F, 1.0F),
+    const auto sample = std::clamp(samples[i], -1.0F, 1.0F);
+    self->waveform_[index].store(sample,
                                  std::memory_order_relaxed);
     ++write_index;
   }
 
   self->waveform_write_index_.store(write_index, std::memory_order_release);
+
+  if (self->sample_recording_.load() && self->sample_mutex_.try_lock()) {
+    const auto remaining =
+        max_sample_frames > self->recording_sample_.size()
+            ? max_sample_frames - self->recording_sample_.size()
+            : std::size_t{0};
+    const auto copy_count = std::min(sample_count, remaining);
+
+    self->recording_sample_.insert(self->recording_sample_.end(), samples,
+                                   samples + copy_count);
+    self->sample_mutex_.unlock();
+  }
 }
 
 } // namespace analogno
