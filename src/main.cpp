@@ -1,4 +1,6 @@
 #include "controller_state.hpp"
+#include "music_mapper.hpp"
+#include "music_types.hpp"
 #include "sdl_check.hpp"
 #include "sdl_gamepad.hpp"
 
@@ -23,6 +25,8 @@ namespace {
 
 using analogno::ControllerState;
 using analogno::Gamepad;
+using analogno::MusicalIntent;
+using analogno::MusicMapper;
 
 struct Sdl final {
   Sdl() {
@@ -51,8 +55,10 @@ auto open_first_gamepad() -> std::optional<Gamepad> {
     analogno::fail_sdl("SDL_GetGamepads failed");
   }
 
-  std::unique_ptr<SDL_JoystickID[], decltype(&SDL_free)> ids_owner{ids,
-                                                                   SDL_free};
+  std::unique_ptr<SDL_JoystickID[], decltype(&SDL_free)> ids_owner{
+      ids,
+      SDL_free,
+  };
 
   if (count == 0) {
     std::cout << "no gamepads found\n";
@@ -62,7 +68,9 @@ auto open_first_gamepad() -> std::optional<Gamepad> {
   std::cout << "gamepads found: " << count << '\n';
 
   const std::span<const SDL_JoystickID> gamepad_ids{
-      ids, static_cast<std::size_t>(count)};
+      ids,
+      static_cast<std::size_t>(count),
+  };
 
   for (const SDL_JoystickID id : gamepad_ids) {
     const char *name = SDL_GetGamepadNameForID(id);
@@ -94,34 +102,31 @@ auto enable_motion_sensors(const Gamepad &gamepad) -> void {
   std::cout << '\n';
 }
 
-auto print_vec3(const char *label, analogno::Vec3 value) -> void {
-  std::cout << label << "=(" << value.x << ", " << value.y << ", " << value.z
-            << ")";
+auto print_note(const analogno::Note &note) -> void {
+  std::cout << "note_on"
+            << " midi=" << note.midi_note << " degree=" << note.degree
+            << " octave=" << note.octave << '\n';
 }
 
-auto print_state_snapshot(const ControllerState &state) -> void {
-  std::cout << std::fixed << std::setprecision(3) << "LX=" << state.left_x()
-            << " LY=" << state.left_y() << " RX=" << state.right_x()
-            << " RY=" << state.right_y() << " L2=" << state.left_trigger()
-            << " R2=" << state.right_trigger();
+auto print_intent(const MusicalIntent &intent) -> void {
+  std::cout << std::fixed << std::setprecision(3) << "intent"
+            << " root=" << intent.root_midi_note
+            << " octave_offset=" << intent.octave_offset
+            << " scale=" << analogno::scale_name(intent.scale)
+            << " pitch_bend=" << intent.controls.pitch_bend
+            << " expression=" << intent.controls.expression
+            << " cutoff=" << intent.controls.filter_cutoff
+            << " resonance=" << intent.controls.filter_resonance
+            << " modulation=" << intent.controls.modulation
+            << " vibrato=" << intent.controls.vibrato << '\n';
 
-  if (state.has_gyro()) {
-    std::cout << ' ';
-    print_vec3("gyro", state.gyro());
+  if (intent.note_on.has_value()) {
+    print_note(*intent.note_on);
   }
 
-  if (state.has_accel()) {
-    std::cout << ' ';
-    print_vec3("accel", state.accel());
+  if (intent.note_off_all) {
+    std::cout << "note_off_all\n";
   }
-
-  const auto finger = state.touch_finger(0, 0);
-  if (finger.down) {
-    std::cout << " touch=(" << finger.x << ", " << finger.y << ", "
-              << finger.pressure << ")";
-  }
-
-  std::cout << '\n';
 }
 
 auto handle_event(const SDL_Event &event, ControllerState &state) -> bool {
@@ -137,19 +142,13 @@ auto handle_event(const SDL_Event &event, ControllerState &state) -> bool {
     std::cout << "gamepad removed id=" << event.gdevice.which << '\n';
     break;
 
-  case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
-    const auto button = static_cast<SDL_GamepadButton>(event.gbutton.button);
+  case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
     state.handle_button_down(event.gbutton);
-    std::cout << "button down: " << analogno::button_label(button) << '\n';
     break;
-  }
 
-  case SDL_EVENT_GAMEPAD_BUTTON_UP: {
-    const auto button = static_cast<SDL_GamepadButton>(event.gbutton.button);
+  case SDL_EVENT_GAMEPAD_BUTTON_UP:
     state.handle_button_up(event.gbutton);
-    std::cout << "button up: " << analogno::button_label(button) << '\n';
     break;
-  }
 
   case SDL_EVENT_GAMEPAD_AXIS_MOTION:
     state.handle_axis(event.gaxis);
@@ -179,12 +178,13 @@ auto handle_event(const SDL_Event &event, ControllerState &state) -> bool {
 }
 
 auto run_event_loop() -> void {
-  std::cout << "normalized controller monitor running. press Ctrl+C or close "
-               "the window to quit.\n\n";
+  std::cout << "musical intent monitor running. press Ctrl+C or close the "
+               "window to quit.\n\n";
 
   ControllerState state{};
-  bool running = true;
+  MusicMapper mapper{};
 
+  bool running = true;
   auto last_print = std::chrono::steady_clock::now();
 
   while (running) {
@@ -199,7 +199,9 @@ auto run_event_loop() -> void {
 
     if (state.changed_this_frame() &&
         elapsed >= std::chrono::milliseconds{33}) {
-      print_state_snapshot(state);
+      const auto intent = mapper.map(state);
+      print_intent(intent);
+
       state.clear_frame_edges();
       last_print = now;
     }

@@ -31,6 +31,7 @@ FetchContent_MakeAvailable(SDL3)
 add_executable(analogno
   src/main.cpp
   src/controller_state.cpp
+  src/music_mapper.cpp
 )
 
 target_include_directories(analogno
