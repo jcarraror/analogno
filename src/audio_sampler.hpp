@@ -27,11 +27,13 @@ public:
 
   // Operates on the active bank
   void set_sample(std::vector<float> sample);
+  void set_wavetable(std::vector<float> samples); // looping single-cycle wavetable
   void clear_sample();
   void set_trim(float start, float end);
   void set_gain(float gain);
   void set_pitch_controls(float pitch_bend, float vibrato_depth);
   void trigger(float rate = 1.0F);
+  void release(float rate = 1.0F); // begin release for matching active voice
 
   void set_active_bank(std::size_t bank);
   bool save_bank(std::size_t bank, const std::string &path);
@@ -55,6 +57,7 @@ private:
   struct Voice final {
     bool active{};
     bool releasing{};
+    bool loop{};       // wavetable: loops between trim_start and trim_end
     float position{};
     float rate{1.0F};
     float envelope{};
@@ -73,6 +76,7 @@ private:
   mutable std::mutex mutex_{};
   std::array<std::atomic<float>, bank_count> bank_trim_start_{};
   std::array<std::atomic<float>, bank_count> bank_trim_end_{};
+  std::array<std::atomic<bool>, bank_count> bank_is_wavetable_{};
   std::atomic<std::size_t> active_bank_{};
   std::atomic<float> gain_{};
   std::atomic<float> pitch_bend_{};

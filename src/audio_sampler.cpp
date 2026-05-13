@@ -118,6 +118,22 @@ void AudioSampler::set_sample(std::vector<float> sample) {
   banks_[bank] = std::make_shared<const std::vector<float>>(std::move(sample));
   bank_trim_start_[bank].store(0.0F);
   bank_trim_end_[bank].store(1.0F);
+  bank_is_wavetable_[bank].store(false);
+
+  for (auto &voice : voices_) {
+    if (voice.bank_index == bank) {
+      voice = {};
+    }
+  }
+}
+
+void AudioSampler::set_wavetable(std::vector<float> samples) {
+  const auto bank = active_bank_.load();
+  const auto lock = std::scoped_lock{mutex_};
+  banks_[bank] = std::make_shared<const std::vector<float>>(std::move(samples));
+  bank_trim_start_[bank].store(0.0F);
+  bank_trim_end_[bank].store(1.0F);
+  bank_is_wavetable_[bank].store(true);
 
   for (auto &voice : voices_) {
     if (voice.bank_index == bank) {
@@ -132,6 +148,7 @@ void AudioSampler::clear_sample() {
   banks_[bank].reset();
   bank_trim_start_[bank].store(0.0F);
   bank_trim_end_[bank].store(1.0F);
+  bank_is_wavetable_[bank].store(false);
 
   for (auto &voice : voices_) {
     if (voice.bank_index == bank) {
@@ -187,6 +204,7 @@ void AudioSampler::trigger(float rate) {
   voice = Voice{
       .active = true,
       .releasing = false,
+      .loop = bank_is_wavetable_[bank].load(),
       .position =
           bank_trim_start_[bank].load() * static_cast<float>(banks_[bank]->size()),
       .rate = std::clamp(rate, 0.25F, 4.0F),
@@ -195,6 +213,18 @@ void AudioSampler::trigger(float rate) {
   };
 
   next_voice_ = (next_voice_ + 1) % voices_.size();
+}
+
+void AudioSampler::release(float rate) {
+  const auto clamped_rate = std::clamp(rate, 0.25F, 4.0F);
+  const auto lock = std::scoped_lock{mutex_};
+
+  for (auto &voice : voices_) {
+    if (voice.active && !voice.releasing &&
+        std::abs(voice.rate - clamped_rate) < 0.005F) {
+      voice.releasing = true;
+    }
+  }
 }
 
 bool AudioSampler::save_bank(std::size_t bank, const std::string &path) {
@@ -294,10 +324,12 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
     voices = self->voices_;
   }
 
-  // Pre-compute trim end boundaries (samples * trim fraction) for each bank
+  // Pre-compute trim boundaries (in samples) for each bank
+  std::array<float, bank_count> trim_starts{};
   std::array<float, bank_count> trim_ends{};
   for (std::size_t b = 0; b < bank_count; ++b) {
     const auto sz = banks[b] ? static_cast<float>(banks[b]->size()) : 0.0F;
+    trim_starts[b] = self->bank_trim_start_[b].load() * sz;
     trim_ends[b] = self->bank_trim_end_[b].load() * sz;
   }
 
@@ -332,7 +364,11 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
       const auto index = static_cast<std::size_t>(voice.position);
 
       if (index >= sample->size() || voice.position >= trim_end) {
-        voice.releasing = true;
+        if (voice.loop) {
+          voice.position = trim_starts[voice.bank_index];
+        } else {
+          voice.releasing = true;
+        }
       }
 
       if (voice.releasing) {

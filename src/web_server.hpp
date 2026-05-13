@@ -39,6 +39,7 @@ public:
   [[nodiscard]] std::optional<std::size_t> consume_active_bank_request();
   [[nodiscard]] std::optional<std::size_t> consume_save_sample_request();
   [[nodiscard]] std::optional<PatchRequest> consume_patch_request();
+  [[nodiscard]] std::optional<std::vector<float>> consume_wavetable_request();
 
 private:
   class Impl;

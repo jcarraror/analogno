@@ -26,6 +26,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <thread>
@@ -43,6 +44,59 @@ using analogno::MidiOutput;
 using analogno::MusicalIntent;
 using analogno::MusicMapper;
 using analogno::WebSocketServer;
+
+
+constexpr auto wavetable_length = std::size_t{367};
+
+struct WaveformSketch {
+  bool active{false};
+  std::vector<std::pair<float, float>> points{}; // {x, y} both in [0,1]
+  std::vector<float> committed{};               // last built wavetable (128 pts)
+};
+
+
+std::vector<float> build_wavetable(
+    const std::vector<std::pair<float, float>> &points, std::size_t n) {
+  if (points.size() < 4 || n == 0) {
+    return {};
+  }
+
+
+  const auto m = points.size();
+  std::vector<float> result(n);
+
+  for (std::size_t i = 0; i < n; ++i) {
+    const float src = static_cast<float>(i) * static_cast<float>(m - 1) /
+                      static_cast<float>(n - 1);
+    const auto lo = static_cast<std::size_t>(src);
+    const auto hi = std::min(lo + 1, m - 1);
+    const float t = src - static_cast<float>(lo);
+    const float a_lo = 1.0F - 2.0F * points[lo].second;  // Y→amplitude
+    const float a_hi = 1.0F - 2.0F * points[hi].second;
+    result[i] = a_lo + t * (a_hi - a_lo);
+  }
+
+  // Remove DC offset so the waveform is centred at zero.
+  const float mean =
+      std::accumulate(result.begin(), result.end(), 0.0F) /
+      static_cast<float>(n);
+  for (float &v : result) {
+    v -= mean;
+  }
+
+  // Normalize to ±1 (wavepainter: scale by max absolute deviation).
+  const float max_abs = std::abs(*std::max_element(
+      result.begin(), result.end(),
+      [](float a, float b) { return std::abs(a) < std::abs(b); }));
+  if (max_abs < 0.01F) {
+    return {}; // flat waveform, discard
+  }
+  for (float &v : result) {
+    v /= max_abs;
+  }
+
+  return result;
+}
 
 struct Sdl final {
   Sdl() {
@@ -277,7 +331,8 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                const AudioSampler &audio_sampler,
                const analogno::AudioFeatures &audio_features,
                std::uint8_t midi_program,
-               std::uint8_t midi_bank) {
+               std::uint8_t midi_bank,
+               const WaveformSketch &sketch) {
   std::vector<analogno::WebCaptureDevice> capture_devices{};
 
   for (const auto &device : audio_capture.devices()) {
@@ -359,6 +414,10 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
               .sample_trim_end = audio_sampler.trim_end(),
               .banks = std::move(sample_banks),
               .active_bank = audio_sampler.active_bank(),
+              .touchpad_sketch = sketch.active
+                    ? build_wavetable(sketch.points, 128)
+                    : sketch.committed,
+              .touchpad_drawing = sketch.active,
           },
   };
 }
@@ -386,12 +445,40 @@ void run_event_loop() {
   auto was_sample_record_button_active = false;
   auto current_midi_bank = std::uint8_t{0};
   auto current_midi_program = std::uint8_t{0};
+  WaveformSketch sketch{};
 
   while (running) {
     SDL_Event event{};
 
     while (SDL_PollEvent(&event)) {
       running = handle_event(event, state);
+
+      
+      if ((event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN ||
+           event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION) &&
+          event.gtouchpad.touchpad == 0 && event.gtouchpad.finger == 0) {
+        const bool l1_held = state.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+        const bool tp_click = state.button(SDL_GAMEPAD_BUTTON_TOUCHPAD);
+        if (!l1_held && !tp_click) {
+          if (!sketch.active) {
+            sketch.active = true;
+            sketch.points.clear();
+          }
+          sketch.points.emplace_back(event.gtouchpad.x, event.gtouchpad.y);
+        }
+      } else if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP &&
+                 event.gtouchpad.touchpad == 0 &&
+                 event.gtouchpad.finger == 0 && sketch.active) {
+        sketch.active = false;
+        auto wavetable = build_wavetable(sketch.points, wavetable_length);
+        if (!wavetable.empty()) {
+          sketch.committed = build_wavetable(sketch.points, 128);
+          std::cout << "wavetable drawn: " << sketch.points.size()
+                    << " points\n";
+          audio_sampler.set_wavetable(std::move(wavetable));
+        }
+        sketch.points.clear();
+      }
     }
 
     if (web.consume_panic_requested()) {
@@ -428,6 +515,24 @@ void run_event_loop() {
       midi.program_change(current_midi_program, current_midi_bank);
       std::cout << "program change: bank=" << static_cast<int>(current_midi_bank)
                 << " program=" << static_cast<int>(current_midi_program) << '\n';
+    }
+
+    if (auto wt = web.consume_wavetable_request()) {
+      sketch.committed = *wt; // store for display
+      // Resample from the UI's resolution to wavetable_length via linear interp.
+      const auto src_n = wt->size();
+      std::vector<float> full(wavetable_length);
+      for (std::size_t i = 0; i < wavetable_length; ++i) {
+        const float src = static_cast<float>(i) *
+                          static_cast<float>(src_n - 1) /
+                          static_cast<float>(wavetable_length - 1);
+        const auto lo = static_cast<std::size_t>(src);
+        const auto hi = std::min(lo + 1, src_n - 1);
+        const float t = src - static_cast<float>(lo);
+        full[i] = (*wt)[lo] + t * ((*wt)[hi] - (*wt)[lo]);
+      }
+      audio_sampler.set_wavetable(std::move(full));
+      std::cout << "wavetable set from UI\n";
     }
 
     if (const auto save_request = web.consume_save_sample_request()) {
@@ -509,6 +614,13 @@ void run_event_loop() {
       auto intent = mapper.map(state);
 
       if (audio_sampler.has_sample()) {
+        // Release sampler voices on note-off (important for looping wavetables).
+        constexpr auto sampler_root_for_release = 48;
+        for (const auto &note : intent.note_offs) {
+          const auto semitones = note.midi_note - sampler_root_for_release;
+          audio_sampler.release(
+              std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+        }
         trigger_sampler_notes(intent, audio_sampler);
         active_notes.apply(intent);
       } else {
@@ -539,7 +651,8 @@ void run_event_loop() {
       web.publish(make_web_state(state, last_intent, active_notes,
                                  audio_capture, audio_sampler,
                                  last_audio_features,
-                                 current_midi_program, current_midi_bank));
+                                 current_midi_program, current_midi_bank,
+                                 sketch));
       last_web_publish = now;
     }
 

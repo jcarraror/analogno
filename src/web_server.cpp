@@ -126,6 +126,8 @@ std::string to_json_string(const WebRuntimeState &state) {
               {"sampleTrimEnd", state.audio.sample_trim_end},
               {"banks", sample_banks_json(state.audio.banks)},
               {"activeBank", state.audio.active_bank},
+              {"touchpadDrawing", state.audio.touchpad_drawing},
+              {"touchpadSketch", state.audio.touchpad_sketch},
           },
       },
   };
@@ -151,6 +153,8 @@ public:
   std::optional<std::size_t> save_sample_request{};
   std::mutex patch_mutex{};
   std::optional<WebSocketServer::PatchRequest> patch_request{};
+  std::mutex wavetable_mutex{};
+  std::optional<std::vector<float>> wavetable_request{};
 };
 
 class Session final : public std::enable_shared_from_this<Session> {
@@ -250,6 +254,21 @@ private:
               .bank = static_cast<std::uint8_t>(bank),
               .program = static_cast<std::uint8_t>(program),
           };
+        }
+      } else if (json.value("type", "") == "setWavetable") {
+        if (json.contains("data") && json["data"].is_array()) {
+          std::vector<float> samples;
+          samples.reserve(json["data"].size());
+          for (const auto &v : json["data"]) {
+            if (v.is_number()) {
+              samples.push_back(
+                  std::clamp(v.get<float>(), -1.0F, 1.0F));
+            }
+          }
+          if (!samples.empty()) {
+            const auto lock = std::scoped_lock{shared_->wavetable_mutex};
+            shared_->wavetable_request = std::move(samples);
+          }
         }
       }
     } catch (const std::exception &exception) {
@@ -418,6 +437,11 @@ public:
     return std::exchange(shared_->patch_request, std::nullopt);
   }
 
+  [[nodiscard]] std::optional<std::vector<float>> consume_wavetable_request() {
+    const auto lock = std::scoped_lock{shared_->wavetable_mutex};
+    return std::exchange(shared_->wavetable_request, std::nullopt);
+  }
+
 private:
   std::shared_ptr<SharedState> shared_;
   std::thread thread_{};
@@ -460,6 +484,10 @@ std::optional<std::size_t> WebSocketServer::consume_save_sample_request() {
 
 std::optional<WebSocketServer::PatchRequest> WebSocketServer::consume_patch_request() {
   return impl_->consume_patch_request();
+}
+
+std::optional<std::vector<float>> WebSocketServer::consume_wavetable_request() {
+  return impl_->consume_wavetable_request();
 }
 
 } // namespace analogno

@@ -57,6 +57,8 @@ struct WebAudioState final {
   float sample_trim_end{1.0F};
   std::vector<WebSampleBank> banks{};
   std::size_t active_bank{};
+  std::vector<float> touchpad_sketch{}; // live waveform preview while drawing
+  bool touchpad_drawing{false};
 };
 
 struct WebMusicState final {

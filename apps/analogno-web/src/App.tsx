@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 // General MIDI program names (0-indexed)
 const GM_PROGRAMS: string[] = [
@@ -101,6 +101,8 @@ type RuntimeState = {
       trimEnd: number;
     }>;
     activeBank: number;
+    touchpadSketch: number[];
+    touchpadDrawing: boolean;
   };
 };
 
@@ -189,6 +191,191 @@ function Waveform({ samples }: { samples: number[] }) {
         <line className="waveform-center" x1="0" y1="50" x2="100" y2="50" />
         <polyline className="waveform-line" points={points} />
       </svg>
+    </div>
+  );
+}
+
+
+const EDITOR_N = 128;
+
+type CP = { x: number; amp: number };
+
+function cpToSamples(cps: CP[], n: number): number[] {
+  if (cps.length === 0) return new Array(n).fill(0);
+  const pts = [...cps].sort((a, b) => a.x - b.x);
+  const out: number[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = i / (n - 1);
+    if (pts.length === 1 || x <= pts[0].x) { out[i] = pts[0].amp; continue; }
+    if (x >= pts[pts.length - 1].x) { out[i] = pts[pts.length - 1].amp; continue; }
+    let lo = 0;
+    for (let j = 0; j < pts.length - 1; j++) {
+      if (pts[j].x <= x && pts[j + 1].x > x) { lo = j; break; }
+    }
+    const p0 = pts[lo], p1 = pts[lo + 1];
+    out[i] = Math.max(-1, Math.min(1, p0.amp + ((x - p0.x) / (p1.x - p0.x)) * (p1.amp - p0.amp)));
+  }
+  return out;
+}
+
+const PRESET_POINTS: Record<string, CP[]> = {
+  sine:     Array.from({ length: 33 }, (_, i) => ({ x: i / 32, amp: Math.sin(2 * Math.PI * i / 32) })),
+  saw:      [{ x: 0, amp: 1 }, { x: 0.998, amp: -1 }, { x: 0.999, amp: 1 }],
+  triangle: [{ x: 0, amp: 0 }, { x: 0.25, amp: 1 }, { x: 0.75, amp: -1 }, { x: 1, amp: 0 }],
+  square:   [{ x: 0, amp: 1 }, { x: 0.499, amp: 1 }, { x: 0.5, amp: -1 }, { x: 0.999, amp: -1 }, { x: 1, amp: 1 }],
+};
+
+const CW = 512, CH = 130, HIT_R = 7;
+
+function cpXY(cp: CP): [number, number] {
+  return [cp.x * CW, (0.5 - cp.amp * 0.45) * CH];
+}
+function xyCP(cx: number, cy: number): CP {
+  return { x: Math.max(0, Math.min(1, cx / CW)), amp: Math.max(-1, Math.min(1, (0.5 - cy / CH) / 0.45)) };
+}
+
+function WaveformEditor({
+  touchpadSketch,
+  touchpadDrawing,
+  onApply,
+  disabled,
+}: {
+  touchpadSketch: number[];
+  touchpadDrawing: boolean;
+  onApply: (samples: number[]) => void;
+  disabled?: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const ptsRef = useRef<CP[]>([...PRESET_POINTS.sine]);
+  const dragIdx = useRef<number | null>(null);
+  const [ver, setVer] = useState(0);
+  const sketchRef = useRef<number[]>(touchpadSketch);
+  const drawingRef = useRef(touchpadDrawing);
+
+  function redraw() {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d')!;
+    ctx.clearRect(0, 0, CW, CH);
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, CH / 2); ctx.lineTo(CW, CH / 2); ctx.stroke();
+
+    const sk = sketchRef.current;
+    if (sk.length >= 2) {
+      ctx.strokeStyle = drawingRef.current ? 'rgba(255,190,50,0.75)' : 'rgba(255,190,50,0.28)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = 0; i < sk.length; i++) {
+        const x = (i / (sk.length - 1)) * CW;
+        const y = (0.5 - sk[i] * 0.45) * CH;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    // CP curve on top
+    const sorted = [...ptsRef.current].sort((a, b) => a.x - b.x);
+    if (sorted.length >= 2) {
+      const samps = cpToSamples(sorted, CW);
+      ctx.strokeStyle = '#6ea8fe'; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < CW; i++) {
+        const y = (0.5 - samps[i] * 0.45) * CH;
+        if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i, y);
+      }
+      ctx.stroke();
+    }
+    for (const cp of ptsRef.current) {
+      const [cx, cy] = cpXY(cp);
+      ctx.beginPath(); ctx.arc(cx, cy, HIT_R - 1, 0, Math.PI * 2);
+      ctx.fillStyle = '#93bbff'; ctx.fill();
+      ctx.strokeStyle = '#1e3a6e'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+  }
+
+  // Redraws when ver bumps (structural CP changes like add/delete/preset).
+  useEffect(() => { redraw(); }, [ver]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // On finger lift: auto-load sketch as control points, then redraw.
+  // While drawing: just update refs and redraw the amber overlay.
+  useEffect(() => {
+    const wasDrawing = drawingRef.current;
+    sketchRef.current = touchpadSketch;
+    drawingRef.current = touchpadDrawing;
+    if (wasDrawing && !touchpadDrawing && touchpadSketch.length >= 2) {
+      const n = 32;
+      ptsRef.current = Array.from({ length: n }, (_, i) => {
+        const src = Math.round(i * (touchpadSketch.length - 1) / (n - 1));
+        return { x: i / (n - 1), amp: touchpadSketch[src] };
+      });
+      setVer(v => v + 1); // bump triggers redraw via the other useEffect
+    } else {
+      redraw();
+    }
+  }, [touchpadSketch, touchpadDrawing]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function evXY(e: React.PointerEvent<HTMLCanvasElement> | React.MouseEvent<HTMLCanvasElement>): [number, number] {
+    const r = canvasRef.current!.getBoundingClientRect();
+    return [(e.clientX - r.left) * (CW / r.width), (e.clientY - r.top) * (CH / r.height)];
+  }
+  function hitTest(cx: number, cy: number): number {
+    for (let i = 0; i < ptsRef.current.length; i++) {
+      const [px, py] = cpXY(ptsRef.current[i]);
+      if (Math.hypot(cx - px, cy - py) <= HIT_R + 3) return i;
+    }
+    return -1;
+  }
+
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (disabled) return;
+    const [cx, cy] = evXY(e);
+    const h = hitTest(cx, cy);
+    (e.target as HTMLCanvasElement).setPointerCapture(e.pointerId);
+    if (h >= 0) {
+      dragIdx.current = h;
+    } else {
+      ptsRef.current = [...ptsRef.current, xyCP(cx, cy)];
+      dragIdx.current = ptsRef.current.length - 1;
+      setVer(v => v + 1);
+    }
+  };
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (dragIdx.current === null) return;
+    const [cx, cy] = evXY(e);
+    const pts = [...ptsRef.current];
+    pts[dragIdx.current] = xyCP(cx, cy);
+    ptsRef.current = pts;
+    redraw(); // immediate feedback during drag, no re-render needed
+  };
+  const onPointerUp = () => { dragIdx.current = null; };
+  const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (disabled || ptsRef.current.length <= 2) return;
+    const [cx, cy] = evXY(e);
+    const h = hitTest(cx, cy);
+    if (h >= 0) { ptsRef.current = ptsRef.current.filter((_, i) => i !== h); setVer(v => v + 1); }
+  };
+
+  function bump(pts: CP[]) { ptsRef.current = pts; setVer(v => v + 1); }
+
+  return (
+    <div className="waveform-editor">
+      <div className="waveform-editor-presets">
+        {(Object.keys(PRESET_POINTS) as (keyof typeof PRESET_POINTS)[]).map(name => (
+          <button key={name} type="button" className="preset-btn" disabled={disabled}
+            onClick={() => bump([...PRESET_POINTS[name]])}>{name}</button>
+        ))}
+
+      </div>
+      <canvas ref={canvasRef} width={CW} height={CH} className="waveform-editor-canvas"
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp} onDoubleClick={onDoubleClick}
+        style={{ cursor: disabled ? 'default' : 'crosshair', touchAction: 'none' }}
+      />
+      <p className="waveform-editor-hint">Click → add point · drag → move · double-click → delete</p>
+      <button type="button" className="waveform-apply-btn" disabled={disabled}
+        onClick={() => onApply(cpToSamples([...ptsRef.current].sort((a, b) => a.x - b.x), EDITOR_N))}>
+        Apply to bank
+      </button>
     </div>
   );
 }
@@ -310,6 +497,10 @@ export function App() {
     socket?.send(JSON.stringify({ type: "setPatch", bank, program }));
   }
 
+  function sendWavetable(samples: number[]) {
+    socket?.send(JSON.stringify({ type: "setWavetable", data: samples }));
+  }
+
   const controller = runtime?.controller;
   const music = runtime?.music;
   const audio = runtime?.audio;
@@ -405,7 +596,7 @@ export function App() {
         <Panel title="Sampler" wide>
           <div className="sampler-layout">
             <div className="sampler-banks">
-              <p className="sampler-hint">Touchpad → next bank · Options → prev bank · L1+Touchpad → record · Guide → clear</p>
+              <p className="sampler-hint">Touchpad → next bank · Options → prev bank · L1+Touchpad → record · Guide → clear · Drag (no click) → draw waveform</p>
               <div className="bank-grid">
                 {Array.from({ length: 8 }, (_, i) => {
                   const bank = audio?.banks[i];
@@ -450,6 +641,21 @@ export function App() {
                   ? `${((audio.sampleTrimEnd - audio.sampleTrimStart) * audio.sampleFrames / 48000).toFixed(2)}s`
                   : "empty"}
               />
+              {audio?.touchpadDrawing && (
+                <div className="touchpad-sketch">
+                  <span className="touchpad-sketch-label">Drawing…</span>
+                  <Waveform samples={audio.touchpadSketch} />
+                </div>
+              )}
+              <div className="touchpad-sketch">
+                <span className="touchpad-sketch-label">
+                  Waveform editor · touchpad draws · presets below
+                </span>
+                <WaveformEditor
+                    touchpadSketch={audio?.touchpadSketch ?? []}                    touchpadDrawing={audio?.touchpadDrawing ?? false}                  onApply={sendWavetable}
+                  disabled={connection !== "online"}
+                />
+              </div>
               <div className="trim">
                 <label>
                   <span>Trim start</span>
