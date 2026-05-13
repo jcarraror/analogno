@@ -41,11 +41,23 @@ set(RTMIDI_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(rtmidi)
 
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.12.0
+  GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(nlohmann_json)
+
+find_package(Boost REQUIRED)
+
 add_executable(analogno
   src/main.cpp
   src/controller_state.cpp
   src/music_mapper.cpp
   src/midi_output.cpp
+  src/web_server.cpp
 )
 
 target_include_directories(analogno
@@ -57,6 +69,9 @@ target_link_libraries(analogno
   PRIVATE
     SDL3::SDL3
     rtmidi
+    nlohmann_json::nlohmann_json
+    Boost::headers
+    pthread
 )
 
 target_compile_features(analogno

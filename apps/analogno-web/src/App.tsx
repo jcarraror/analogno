@@ -1,36 +1,55 @@
-type ControlValue = {
-  label: string;
-  value: string;
+import { useEffect, useMemo, useState } from "react";
+
+type Vec3 = {
+  x: number;
+  y: number;
+  z: number;
 };
 
-const controllerValues: ControlValue[] = [
-  { label: "Left Stick", value: "pitch bend" },
-  { label: "Right Stick", value: "filter / resonance" },
-  { label: "L2", value: "expression + vibrato depth" },
-  { label: "R2", value: "modulation" },
-  { label: "Face Buttons", value: "scale notes" },
-  { label: "D-pad", value: "root / octave" },
-  { label: "L1 / R1", value: "scale select" },
-  { label: "Gyro", value: "motion vibrato" }
-];
+type RuntimeState = {
+  type: "state";
+  controller: {
+    leftX: number;
+    leftY: number;
+    rightX: number;
+    rightY: number;
+    l2: number;
+    r2: number;
+    hasGyro: boolean;
+    hasAccel: boolean;
+    gyro: Vec3;
+    accel: Vec3;
+  };
+  music: {
+    rootMidiNote: number;
+    octaveOffset: number;
+    scale: string;
+    pitchBend: number;
+    expression: number;
+    filterCutoff: number;
+    filterResonance: number;
+    modulation: number;
+    vibrato: number;
+    activeNotes: number[];
+  };
+};
 
-const midiValues: ControlValue[] = [
-  { label: "Port", value: "Analogno MIDI Out" },
-  { label: "Channel", value: "1" },
-  { label: "Notes", value: "polyphonic" },
-  { label: "Pitch Bend", value: "enabled" },
-  { label: "CC 11", value: "expression" },
-  { label: "CC 74", value: "filter cutoff" },
-  { label: "CC 71", value: "resonance" },
-  { label: "CC 1", value: "modulation" }
-];
+type ConnectionState = "connecting" | "online" | "offline";
 
-function StatusPill({ connected }: { connected: boolean }) {
-  return (
-    <div className={connected ? "pill pill-ok" : "pill pill-wait"}>
-      {connected ? "runtime online" : "waiting for runtime"}
-    </div>
-  );
+const websocketUrl = "ws://127.0.0.1:8765";
+
+function formatNumber(value: number): string {
+  return value.toFixed(3);
+}
+
+function midiNoteName(note: number): string {
+  const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  const octave = Math.floor(note / 12) - 1;
+  return `${names[note % 12]}${octave}`;
+}
+
+function StatusPill({ state }: { state: ConnectionState }) {
+  return <div className={`pill pill-${state}`}>{state}</div>;
 }
 
 function Panel({
@@ -48,36 +67,127 @@ function Panel({
   );
 }
 
-function ValueGrid({ values }: { values: ControlValue[] }) {
+function StateLine({
+  label,
+  value
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
   return (
-    <div className="value-grid">
-      {values.map((item) => (
-        <div className="value-card" key={item.label}>
-          <span>{item.label}</span>
-          <strong>{item.value}</strong>
-        </div>
-      ))}
+    <div className="state-line">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
 
-function SequencerMock() {
+function Meter({ label, value }: { label: string; value: number }) {
+  const percent = Math.round(Math.max(0, Math.min(1, value)) * 100);
+
   return (
-    <div className="sequencer">
-      {Array.from({ length: 16 }, (_, index) => (
-        <button
-          className={index % 4 === 0 ? "step step-accent" : "step"}
-          key={index}
-          type="button"
-        >
-          {index + 1}
-        </button>
-      ))}
+    <div className="meter">
+      <div className="meter-head">
+        <span>{label}</span>
+        <strong>{formatNumber(value)}</strong>
+      </div>
+      <div className="meter-track">
+        <div className="meter-fill" style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function BipolarMeter({ label, value }: { label: string; value: number }) {
+  const clamped = Math.max(-1, Math.min(1, value));
+  const left = clamped < 0 ? 50 + clamped * 50 : 50;
+  const width = Math.abs(clamped) * 50;
+
+  return (
+    <div className="meter">
+      <div className="meter-head">
+        <span>{label}</span>
+        <strong>{formatNumber(value)}</strong>
+      </div>
+      <div className="meter-track meter-bipolar">
+        <div className="meter-center" />
+        <div
+          className="meter-fill"
+          style={{
+            left: `${left}%`,
+            width: `${width}%`
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function Vec3Readout({ label, value }: { label: string; value: Vec3 }) {
+  return (
+    <div className="vec3">
+      <span>{label}</span>
+      <code>
+        x {formatNumber(value.x)} / y {formatNumber(value.y)} / z{" "}
+        {formatNumber(value.z)}
+      </code>
     </div>
   );
 }
 
 export function App() {
+  const [connection, setConnection] = useState<ConnectionState>("connecting");
+  const [socket, setSocket] = useState<WebSocket | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeState | null>(null);
+
+  useEffect(() => {
+    const ws = new WebSocket(websocketUrl);
+
+    ws.addEventListener("open", () => {
+      setConnection("online");
+      setSocket(ws);
+    });
+
+    ws.addEventListener("close", () => {
+      setConnection("offline");
+      setSocket(null);
+    });
+
+    ws.addEventListener("error", () => {
+      setConnection("offline");
+      setSocket(null);
+    });
+
+    ws.addEventListener("message", (event: MessageEvent<string>) => {
+      const parsed = JSON.parse(event.data) as RuntimeState;
+
+      if (parsed.type === "state") {
+        setRuntime(parsed);
+      }
+    });
+
+    return () => {
+      ws.close();
+    };
+  }, []);
+
+  const activeNoteText = useMemo(() => {
+    const notes = runtime?.music.activeNotes ?? [];
+
+    if (notes.length === 0) {
+      return "none";
+    }
+
+    return notes.map((note) => `${midiNoteName(note)} / ${note}`).join(", ");
+  }, [runtime]);
+
+  function panic() {
+    socket?.send(JSON.stringify({ type: "panic" }));
+  }
+
+  const controller = runtime?.controller;
+  const music = runtime?.music;
+
   return (
     <main className="app">
       <header className="hero">
@@ -85,48 +195,56 @@ export function App() {
           <p className="eyebrow">DualSense MIDI workstation</p>
           <h1>Analogno</h1>
           <p className="subtitle">
-            A controller-first music system. C++ owns the runtime. This page is
-            the cockpit.
+            C++ owns controller input, MIDI, timing, and future audio. This UI
+            observes and edits runtime state.
           </p>
         </div>
 
-        <StatusPill connected={false} />
+        <div className="hero-actions">
+          <StatusPill state={connection} />
+          <button className="panic-button" onClick={panic} type="button">
+            Panic
+          </button>
+        </div>
       </header>
 
       <div className="layout">
-        <Panel title="Controller mapping">
-          <ValueGrid values={controllerValues} />
+        <Panel title="Controller">
+          <BipolarMeter label="Left X / pitch bend" value={controller?.leftX ?? 0} />
+          <BipolarMeter label="Left Y" value={controller?.leftY ?? 0} />
+          <BipolarMeter label="Right X / resonance" value={controller?.rightX ?? 0} />
+          <BipolarMeter label="Right Y / cutoff" value={controller?.rightY ?? 0} />
+          <Meter label="L2 / expression" value={controller?.l2 ?? 0} />
+          <Meter label="R2 / modulation" value={controller?.r2 ?? 0} />
         </Panel>
 
-        <Panel title="MIDI output">
-          <ValueGrid values={midiValues} />
+        <Panel title="Motion">
+          <StateLine label="Gyro" value={controller?.hasGyro ? "available" : "missing"} />
+          <StateLine label="Accelerometer" value={controller?.hasAccel ? "available" : "missing"} />
+          <Vec3Readout
+            label="gyro"
+            value={controller?.gyro ?? { x: 0, y: 0, z: 0 }}
+          />
+          <Vec3Readout
+            label="accel"
+            value={controller?.accel ?? { x: 0, y: 0, z: 0 }}
+          />
         </Panel>
 
-        <Panel title="Current musical state">
-          <div className="state-line">
-            <span>Root</span>
-            <strong>C2 / MIDI 48</strong>
-          </div>
-          <div className="state-line">
-            <span>Scale</span>
-            <strong>minor pentatonic</strong>
-          </div>
-          <div className="state-line">
-            <span>Octave offset</span>
-            <strong>0</strong>
-          </div>
-          <div className="state-line">
-            <span>Active notes</span>
-            <strong>none</strong>
-          </div>
+        <Panel title="Music">
+          <StateLine label="Root" value={music ? `${midiNoteName(music.rootMidiNote)} / ${music.rootMidiNote}` : "—"} />
+          <StateLine label="Scale" value={music?.scale ?? "—"} />
+          <StateLine label="Octave offset" value={music?.octaveOffset ?? "—"} />
+          <StateLine label="Active notes" value={activeNoteText} />
         </Panel>
 
-        <Panel title="Sequencer preview">
-          <SequencerMock />
-          <p className="hint">
-            Static mock for now. Next UI milestone connects this to the C++
-            runtime over WebSocket.
-          </p>
+        <Panel title="Continuous controls">
+          <BipolarMeter label="Pitch bend" value={music?.pitchBend ?? 0} />
+          <Meter label="Expression" value={music?.expression ?? 0} />
+          <Meter label="Filter cutoff" value={music?.filterCutoff ?? 0} />
+          <Meter label="Resonance" value={music?.filterResonance ?? 0} />
+          <Meter label="Modulation" value={music?.modulation ?? 0} />
+          <Meter label="Vibrato" value={music?.vibrato ?? 0} />
         </Panel>
       </div>
     </main>
