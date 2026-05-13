@@ -50,6 +50,15 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(nlohmann_json)
 
+FetchContent_Declare(
+  miniaudio
+  GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+  GIT_TAG 0.11.22
+  GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(miniaudio)
+
 find_package(Boost REQUIRED)
 
 add_executable(analogno
@@ -58,11 +67,18 @@ add_executable(analogno
   src/music_mapper.cpp
   src/midi_output.cpp
   src/web_server.cpp
+  src/audio_capture.cpp
+  src/miniaudio_impl.cpp
 )
 
 target_include_directories(analogno
   PRIVATE
     src
+)
+
+target_include_directories(analogno
+  SYSTEM PRIVATE
+    ${miniaudio_SOURCE_DIR}
 )
 
 target_link_libraries(analogno

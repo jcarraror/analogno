@@ -13,6 +13,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -27,54 +28,79 @@ namespace net = boost::asio;
 using tcp = net::ip::tcp;
 using Json = nlohmann::json;
 
-auto to_json_string(const WebRuntimeState& state) -> std::string
-{
+auto capture_devices_json(const std::vector<WebCaptureDevice> &devices)
+    -> Json {
+  auto result = Json::array();
+
+  for (const auto &device : devices) {
+    result.push_back({
+        {"index", device.index},
+        {"name", device.name},
+        {"isDefault", device.is_default},
+    });
+  }
+
+  return result;
+}
+
+auto to_json_string(const WebRuntimeState &state) -> std::string {
   const Json json{
-    {"type", "state"},
-    {
-      "controller",
+      {"type", "state"},
       {
-        {"leftX", state.controller.left_x},
-        {"leftY", state.controller.left_y},
-        {"rightX", state.controller.right_x},
-        {"rightY", state.controller.right_y},
-        {"l2", state.controller.left_trigger},
-        {"r2", state.controller.right_trigger},
-        {"hasGyro", state.controller.has_gyro},
-        {"hasAccel", state.controller.has_accel},
-        {
-          "gyro",
+          "controller",
           {
-            {"x", state.controller.gyro.x},
-            {"y", state.controller.gyro.y},
-            {"z", state.controller.gyro.z},
+              {"leftX", state.controller.left_x},
+              {"leftY", state.controller.left_y},
+              {"rightX", state.controller.right_x},
+              {"rightY", state.controller.right_y},
+              {"l2", state.controller.left_trigger},
+              {"r2", state.controller.right_trigger},
+              {"hasGyro", state.controller.has_gyro},
+              {"hasAccel", state.controller.has_accel},
+              {
+                  "gyro",
+                  {
+                      {"x", state.controller.gyro.x},
+                      {"y", state.controller.gyro.y},
+                      {"z", state.controller.gyro.z},
+                  },
+              },
+              {
+                  "accel",
+                  {
+                      {"x", state.controller.accel.x},
+                      {"y", state.controller.accel.y},
+                      {"z", state.controller.accel.z},
+                  },
+              },
           },
-        },
-        {
-          "accel",
-          {
-            {"x", state.controller.accel.x},
-            {"y", state.controller.accel.y},
-            {"z", state.controller.accel.z},
-          },
-        },
       },
-    },
-    {
-      "music",
       {
-        {"rootMidiNote", state.music.root_midi_note},
-        {"octaveOffset", state.music.octave_offset},
-        {"scale", state.music.scale},
-        {"pitchBend", state.music.pitch_bend},
-        {"expression", state.music.expression},
-        {"filterCutoff", state.music.filter_cutoff},
-        {"filterResonance", state.music.filter_resonance},
-        {"modulation", state.music.modulation},
-        {"vibrato", state.music.vibrato},
-        {"activeNotes", state.music.active_notes},
+          "music",
+          {
+              {"rootMidiNote", state.music.root_midi_note},
+              {"octaveOffset", state.music.octave_offset},
+              {"scale", state.music.scale},
+              {"pitchBend", state.music.pitch_bend},
+              {"expression", state.music.expression},
+              {"filterCutoff", state.music.filter_cutoff},
+              {"filterResonance", state.music.filter_resonance},
+              {"modulation", state.music.modulation},
+              {"vibrato", state.music.vibrato},
+              {"activeNotes", state.music.active_notes},
+          },
       },
-    },
+      {
+          "audio",
+          {
+              {"devices", capture_devices_json(state.audio.devices)},
+              {"selectedDeviceIndex", state.audio.selected_device_index},
+              {"captureRunning", state.audio.capture_running},
+              {"captureDevice", state.audio.capture_device},
+              {"micLevel", state.audio.mic_level},
+              {"waveform", state.audio.waveform},
+          },
+      },
   };
 
   return json.dump();
@@ -83,42 +109,37 @@ auto to_json_string(const WebRuntimeState& state) -> std::string
 class SharedState final {
 public:
   explicit SharedState(std::uint16_t port)
-    : acceptor{ioc, tcp::endpoint{net::ip::make_address("127.0.0.1"), port}}
-  {
+      : acceptor{ioc, tcp::endpoint{net::ip::make_address("127.0.0.1"), port}} {
   }
 
   net::io_context ioc{};
   tcp::acceptor acceptor;
   std::vector<std::weak_ptr<class Session>> sessions{};
   std::atomic_bool panic_requested{false};
+  std::atomic_int capture_device_request{-2};
 };
 
 class Session final : public std::enable_shared_from_this<Session> {
 public:
   Session(tcp::socket socket, std::shared_ptr<SharedState> shared)
-    : ws_{std::move(socket)}
-    , shared_{std::move(shared)}
-  {
-  }
+      : ws_{std::move(socket)}, shared_{std::move(shared)} {}
 
-  auto run() -> void
-  {
-    ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
-    ws_.set_option(websocket::stream_base::decorator([](websocket::response_type& response) {
-      response.set(beast::http::field::server, "Analogno");
-    }));
+  auto run() -> void {
+    ws_.set_option(
+        websocket::stream_base::timeout::suggested(beast::role_type::server));
+    ws_.set_option(websocket::stream_base::decorator(
+        [](websocket::response_type &response) {
+          response.set(beast::http::field::server, "Analogno");
+        }));
 
     ws_.async_accept(
-      beast::bind_front_handler(&Session::on_accept, shared_from_this())
-    );
+        beast::bind_front_handler(&Session::on_accept, shared_from_this()));
   }
 
-  auto send(std::string message) -> void
-  {
-    net::post(
-      ws_.get_executor(),
-      beast::bind_front_handler(&Session::queue_send, shared_from_this(), std::move(message))
-    );
+  auto send(std::string message) -> void {
+    net::post(ws_.get_executor(), beast::bind_front_handler(
+                                      &Session::queue_send, shared_from_this(),
+                                      std::move(message)));
   }
 
 private:
@@ -127,8 +148,7 @@ private:
   std::shared_ptr<SharedState> shared_;
   std::vector<std::string> write_queue_{};
 
-  auto on_accept(beast::error_code error) -> void
-  {
+  auto on_accept(beast::error_code error) -> void {
     if (error) {
       std::cerr << "websocket accept failed: " << error.message() << '\n';
       return;
@@ -137,16 +157,12 @@ private:
     do_read();
   }
 
-  auto do_read() -> void
-  {
-    ws_.async_read(
-      buffer_,
-      beast::bind_front_handler(&Session::on_read, shared_from_this())
-    );
+  auto do_read() -> void {
+    ws_.async_read(buffer_, beast::bind_front_handler(&Session::on_read,
+                                                      shared_from_this()));
   }
 
-  auto on_read(beast::error_code error, std::size_t) -> void
-  {
+  auto on_read(beast::error_code error, std::size_t) -> void {
     if (error == websocket::error::closed) {
       return;
     }
@@ -164,16 +180,21 @@ private:
 
       if (json.value("type", "") == "panic") {
         shared_->panic_requested.store(true);
+      } else if (json.value("type", "") == "setCaptureDevice") {
+        if (json.contains("deviceIndex") && json["deviceIndex"].is_number_integer()) {
+          shared_->capture_device_request.store(json["deviceIndex"].get<int>());
+        } else {
+          shared_->capture_device_request.store(-1);
+        }
       }
-    } catch (const std::exception& exception) {
+    } catch (const std::exception &exception) {
       std::cerr << "invalid websocket JSON: " << exception.what() << '\n';
     }
 
     do_read();
   }
 
-  auto queue_send(std::string message) -> void
-  {
+  auto queue_send(std::string message) -> void {
     const auto already_writing = !write_queue_.empty();
     write_queue_.push_back(std::move(message));
 
@@ -182,18 +203,15 @@ private:
     }
   }
 
-  auto do_write() -> void
-  {
+  auto do_write() -> void {
     ws_.text(true);
 
     ws_.async_write(
-      net::buffer(write_queue_.front()),
-      beast::bind_front_handler(&Session::on_write, shared_from_this())
-    );
+        net::buffer(write_queue_.front()),
+        beast::bind_front_handler(&Session::on_write, shared_from_this()));
   }
 
-  auto on_write(beast::error_code error, std::size_t) -> void
-  {
+  auto on_write(beast::error_code error, std::size_t) -> void {
     if (error) {
       std::cerr << "websocket write failed: " << error.message() << '\n';
       return;
@@ -210,28 +228,20 @@ private:
 class Listener final : public std::enable_shared_from_this<Listener> {
 public:
   explicit Listener(std::shared_ptr<SharedState> shared)
-    : shared_{std::move(shared)}
-  {
-  }
+      : shared_{std::move(shared)} {}
 
-  auto run() -> void
-  {
-    do_accept();
-  }
+  auto run() -> void { do_accept(); }
 
 private:
   std::shared_ptr<SharedState> shared_;
 
-  auto do_accept() -> void
-  {
+  auto do_accept() -> void {
     shared_->acceptor.async_accept(
-      net::make_strand(shared_->ioc),
-      beast::bind_front_handler(&Listener::on_accept, shared_from_this())
-    );
+        net::make_strand(shared_->ioc),
+        beast::bind_front_handler(&Listener::on_accept, shared_from_this()));
   }
 
-  auto on_accept(beast::error_code error, tcp::socket socket) -> void
-  {
+  auto on_accept(beast::error_code error, tcp::socket socket) -> void {
     if (!error) {
       auto session = std::make_shared<Session>(std::move(socket), shared_);
       shared_->sessions.push_back(session);
@@ -241,15 +251,9 @@ private:
     }
 
     shared_->sessions.erase(
-      std::remove_if(
-        shared_->sessions.begin(),
-        shared_->sessions.end(),
-        [](const auto& session) {
-          return session.expired();
-        }
-      ),
-      shared_->sessions.end()
-    );
+        std::remove_if(shared_->sessions.begin(), shared_->sessions.end(),
+                       [](const auto &session) { return session.expired(); }),
+        shared_->sessions.end());
 
     do_accept();
   }
@@ -260,17 +264,11 @@ private:
 class WebSocketServer::Impl final {
 public:
   explicit Impl(std::uint16_t port)
-    : shared_{std::make_shared<SharedState>(port)}
-  {
-  }
+      : shared_{std::make_shared<SharedState>(port)} {}
 
-  ~Impl()
-  {
-    stop();
-  }
+  ~Impl() { stop(); }
 
-  auto start() -> void
-  {
+  auto start() -> void {
     if (running_) {
       return;
     }
@@ -279,16 +277,13 @@ public:
 
     std::make_shared<Listener>(shared_)->run();
 
-    thread_ = std::thread{[shared = shared_] {
-      shared->ioc.run();
-    }};
+    thread_ = std::thread{[shared = shared_] { shared->ioc.run(); }};
 
     std::cout << "websocket server listening: ws://127.0.0.1:"
               << shared_->acceptor.local_endpoint().port() << '\n';
   }
 
-  auto stop() -> void
-  {
+  auto stop() -> void {
     if (!running_) {
       return;
     }
@@ -301,23 +296,16 @@ public:
     }
   }
 
-  auto publish(const WebRuntimeState& state) -> void
-  {
+  auto publish(const WebRuntimeState &state) -> void {
     const auto message = to_json_string(state);
 
     net::post(shared_->ioc, [shared = shared_, message] {
       shared->sessions.erase(
-        std::remove_if(
-          shared->sessions.begin(),
-          shared->sessions.end(),
-          [](const auto& session) {
-            return session.expired();
-          }
-        ),
-        shared->sessions.end()
-      );
+          std::remove_if(shared->sessions.begin(), shared->sessions.end(),
+                         [](const auto &session) { return session.expired(); }),
+          shared->sessions.end());
 
-      for (const auto& weak_session : shared->sessions) {
+      for (const auto &weak_session : shared->sessions) {
         if (const auto session = weak_session.lock()) {
           session->send(message);
         }
@@ -325,9 +313,18 @@ public:
     });
   }
 
-  [[nodiscard]] auto consume_panic_requested() -> bool
-  {
+  [[nodiscard]] auto consume_panic_requested() -> bool {
     return shared_->panic_requested.exchange(false);
+  }
+
+  [[nodiscard]] auto consume_capture_device_request() -> std::optional<int> {
+    const auto request = shared_->capture_device_request.exchange(-2);
+
+    if (request == -2) {
+      return std::nullopt;
+    }
+
+    return request;
   }
 
 private:
@@ -337,30 +334,24 @@ private:
 };
 
 WebSocketServer::WebSocketServer(std::uint16_t port)
-  : impl_{std::make_unique<Impl>(port)}
-{
-}
+    : impl_{std::make_unique<Impl>(port)} {}
 
 WebSocketServer::~WebSocketServer() = default;
 
-auto WebSocketServer::start() -> void
-{
-  impl_->start();
-}
+auto WebSocketServer::start() -> void { impl_->start(); }
 
-auto WebSocketServer::stop() -> void
-{
-  impl_->stop();
-}
+auto WebSocketServer::stop() -> void { impl_->stop(); }
 
-auto WebSocketServer::publish(const WebRuntimeState& state) -> void
-{
+auto WebSocketServer::publish(const WebRuntimeState &state) -> void {
   impl_->publish(state);
 }
 
-auto WebSocketServer::consume_panic_requested() -> bool
-{
+auto WebSocketServer::consume_panic_requested() -> bool {
   return impl_->consume_panic_requested();
+}
+
+auto WebSocketServer::consume_capture_device_request() -> std::optional<int> {
+  return impl_->consume_capture_device_request();
 }
 
 } // namespace analogno

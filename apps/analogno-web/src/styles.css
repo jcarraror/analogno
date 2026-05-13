@@ -170,6 +170,32 @@ h1 {
   font-size: 0.98rem;
 }
 
+.field {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.field span {
+  color: #8e97aa;
+  font-size: 0.82rem;
+}
+
+.field select {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 0 12px;
+  color: #f2f5f9;
+  background: #151a25;
+}
+
+.field select:disabled {
+  color: #8e97aa;
+  opacity: 0.7;
+}
+
 .meter {
   margin-bottom: 16px;
 }
@@ -213,6 +239,36 @@ h1 {
   width: 1px;
   height: 100%;
   background: rgba(255, 255, 255, 0.35);
+}
+
+.waveform {
+  height: 112px;
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.waveform svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.waveform-center {
+  stroke: rgba(255, 255, 255, 0.18);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.waveform-line {
+  fill: none;
+  stroke: #8dffa8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
 }
 
 .vec3 {

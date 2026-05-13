@@ -70,7 +70,8 @@ auto MidiOutput::apply(const MusicalIntent &intent) -> void {
 
   pitch_bend(intent.controls.pitch_bend);
   control_change(cc_expression, control_value(intent.controls.expression));
-  control_change(cc_filter_cutoff, control_value(intent.controls.filter_cutoff));
+  control_change(cc_filter_cutoff,
+                 control_value(intent.controls.filter_cutoff));
   control_change(cc_filter_resonance,
                  control_value(intent.controls.filter_resonance));
   control_change(cc_modulation, control_value(intent.controls.modulation));

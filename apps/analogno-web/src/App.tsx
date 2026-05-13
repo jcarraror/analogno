@@ -32,6 +32,18 @@ type RuntimeState = {
     vibrato: number;
     activeNotes: number[];
   };
+  audio: {
+    devices: Array<{
+      index: number;
+      name: string;
+      isDefault: boolean;
+    }>;
+    selectedDeviceIndex: number | null;
+    captureRunning: boolean;
+    captureDevice: string;
+    micLevel: number;
+    waveform: number[];
+  };
 };
 
 type ConnectionState = "connecting" | "online" | "offline";
@@ -94,6 +106,29 @@ function Meter({ label, value }: { label: string; value: number }) {
       <div className="meter-track">
         <div className="meter-fill" style={{ width: `${percent}%` }} />
       </div>
+    </div>
+  );
+}
+
+function Waveform({ samples }: { samples: number[] }) {
+  const points = samples.length > 1
+    ? samples
+        .map((sample, index) => {
+          const x = (index / (samples.length - 1)) * 100;
+          const clamped = Math.max(-1, Math.min(1, sample));
+          const y = 50 - clamped * 45;
+
+          return `${x.toFixed(2)},${y.toFixed(2)}`;
+        })
+        .join(" ")
+    : "";
+
+  return (
+    <div className="waveform">
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        <line className="waveform-center" x1="0" y1="50" x2="100" y2="50" />
+        <polyline className="waveform-line" points={points} />
+      </svg>
     </div>
   );
 }
@@ -185,8 +220,16 @@ export function App() {
     socket?.send(JSON.stringify({ type: "panic" }));
   }
 
+  function selectCaptureDevice(value: string) {
+    socket?.send(JSON.stringify({
+      type: "setCaptureDevice",
+      deviceIndex: value === "default" ? null : Number(value)
+    }));
+  }
+
   const controller = runtime?.controller;
   const music = runtime?.music;
+  const audio = runtime?.audio;
 
   return (
     <main className="app">
@@ -245,6 +288,33 @@ export function App() {
           <Meter label="Resonance" value={music?.filterResonance ?? 0} />
           <Meter label="Modulation" value={music?.modulation ?? 0} />
           <Meter label="Vibrato" value={music?.vibrato ?? 0} />
+        </Panel>
+
+        <Panel title="Microphone">
+          <StateLine
+            label="Capture"
+            value={audio?.captureRunning ? "running" : "stopped"}
+          />
+          <StateLine label="Device" value={audio?.captureDevice ?? "none"} />
+          <label className="field">
+            <span>Input</span>
+            <select
+              value={audio?.selectedDeviceIndex == null
+                ? "default"
+                : String(audio.selectedDeviceIndex)}
+              onChange={(event) => selectCaptureDevice(event.target.value)}
+              disabled={connection !== "online"}
+            >
+              <option value="default">System default</option>
+              {(audio?.devices ?? []).map((device) => (
+                <option key={device.index} value={device.index}>
+                  {device.name}{device.isDefault ? " (default)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Meter label="Mic level" value={audio?.micLevel ?? 0} />
+          <Waveform samples={audio?.waveform ?? []} />
         </Panel>
       </div>
     </main>
