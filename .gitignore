@@ -1,1 +1,4 @@
 /build*
+# web
+apps/analogno-web/node_modules/
+apps/analogno-web/dist/
