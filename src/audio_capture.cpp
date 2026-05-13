@@ -113,10 +113,10 @@ void AudioCapture::stop() {
   }
 
   waveform_write_index_.store(0);
+  recording_write_index_.store(0);
 
   {
     const auto lock = std::scoped_lock{sample_mutex_};
-    recording_sample_.clear();
     captured_sample_.clear();
   }
 }
@@ -125,8 +125,7 @@ bool AudioCapture::is_running() const { return running_; }
 
 void AudioCapture::begin_sample_recording() {
   const auto lock = std::scoped_lock{sample_mutex_};
-  recording_sample_.clear();
-  recording_sample_.reserve(max_sample_frames);
+  recording_write_index_.store(0);
   sample_recording_.store(true);
   captured_sample_frames_.store(0);
 }
@@ -134,13 +133,18 @@ void AudioCapture::begin_sample_recording() {
 void AudioCapture::end_sample_recording() {
   const auto lock = std::scoped_lock{sample_mutex_};
   sample_recording_.store(false);
+  const auto sample_count =
+      std::min(recording_write_index_.load(), max_sample_frames);
 
-  if (!recording_sample_.empty()) {
-    captured_sample_ = recording_sample_;
-    captured_sample_frames_.store(captured_sample_.size());
+  captured_sample_.clear();
+  captured_sample_.reserve(sample_count);
+
+  for (std::size_t i = 0; i < sample_count; ++i) {
+    captured_sample_.push_back(recording_sample_[i].load());
   }
 
-  recording_sample_.clear();
+  captured_sample_frames_.store(captured_sample_.size());
+  recording_write_index_.store(0);
 }
 
 bool AudioCapture::is_sample_recording() const {
@@ -351,16 +355,19 @@ void AudioCapture::capture_callback(ma_device *device, void *output,
 
   self->waveform_write_index_.store(write_index, std::memory_order_release);
 
-  if (self->sample_recording_.load() && self->sample_mutex_.try_lock()) {
+  if (self->sample_recording_.load()) {
     const auto remaining =
-        max_sample_frames > self->recording_sample_.size()
-            ? max_sample_frames - self->recording_sample_.size()
+        max_sample_frames > self->recording_write_index_.load()
+            ? max_sample_frames - self->recording_write_index_.load()
             : std::size_t{0};
     const auto copy_count = std::min(sample_count, remaining);
+    auto recording_write_index = self->recording_write_index_.load();
 
-    self->recording_sample_.insert(self->recording_sample_.end(), samples,
-                                   samples + copy_count);
-    self->sample_mutex_.unlock();
+    for (std::size_t i = 0; i < copy_count; ++i) {
+      self->recording_sample_[recording_write_index + i].store(samples[i]);
+    }
+
+    self->recording_write_index_.store(recording_write_index + copy_count);
   }
 }
 

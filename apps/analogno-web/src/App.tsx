@@ -250,6 +250,7 @@ export function App() {
   const controller = runtime?.controller;
   const music = runtime?.music;
   const audio = runtime?.audio;
+  const sampleMode = audio?.sampleReady ?? false;
 
   return (
     <main className="app">
@@ -277,8 +278,11 @@ export function App() {
           <BipolarMeter label="Left Y" value={controller?.leftY ?? 0} />
           <BipolarMeter label="Right X / resonance" value={controller?.rightX ?? 0} />
           <BipolarMeter label="Right Y / cutoff" value={controller?.rightY ?? 0} />
-          <Meter label="L2 / expression" value={controller?.l2 ?? 0} />
-          <Meter label="R2 / modulation" value={controller?.r2 ?? 0} />
+          <Meter
+            label={sampleMode ? "L2 / sample gain" : "L2 / expression"}
+            value={controller?.l2 ?? 0}
+          />
+          <Meter label="R2 / vibrato depth" value={controller?.r2 ?? 0} />
         </Panel>
 
         <Panel title="Motion">
@@ -303,7 +307,10 @@ export function App() {
 
         <Panel title="Continuous controls">
           <BipolarMeter label="Pitch bend" value={music?.pitchBend ?? 0} />
-          <Meter label="Expression" value={music?.expression ?? 0} />
+          <Meter
+            label={sampleMode ? "Sample gain" : "Expression"}
+            value={music?.expression ?? 0}
+          />
           <Meter label="Filter cutoff" value={music?.filterCutoff ?? 0} />
           <Meter label="Resonance" value={music?.filterResonance ?? 0} />
           <Meter label="Modulation" value={music?.modulation ?? 0} />
@@ -327,6 +334,10 @@ export function App() {
             value={audio?.sampleReady
               ? `${(audio.sampleFrames / 48000).toFixed(2)}s ready`
               : "waiting"}
+          />
+          <StateLine
+            label="Mode"
+            value={sampleMode ? "sampler" : "MIDI"}
           />
           <div className="trim">
             <label>

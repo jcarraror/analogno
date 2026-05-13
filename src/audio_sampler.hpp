@@ -3,8 +3,10 @@
 #include <miniaudio.h>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <mutex>
+#include <memory>
 #include <vector>
 
 namespace analogno {
@@ -49,14 +51,14 @@ private:
   static constexpr auto release_frames = float{960.0F};
 
   ma_device device_{};
-  std::vector<float> sample_{};
+  std::shared_ptr<const std::vector<float>> sample_{};
   std::array<Voice, voice_count> voices_{};
   mutable std::mutex mutex_{};
-  float trim_start_{};
-  float trim_end_{1.0F};
-  float gain_{};
-  float pitch_bend_{};
-  float vibrato_depth_{};
+  std::atomic<float> trim_start_{};
+  std::atomic<float> trim_end_{1.0F};
+  std::atomic<float> gain_{};
+  std::atomic<float> pitch_bend_{};
+  std::atomic<float> vibrato_depth_{};
   float vibrato_phase_{};
   bool device_ready_{};
   bool running_{};
@@ -64,7 +66,8 @@ private:
 
   static void playback_callback(ma_device *device, void *output,
                                 const void *input, ma_uint32 frame_count);
-  [[nodiscard]] float sample_at(float position) const;
+  [[nodiscard]] static float sample_at(const std::vector<float> &sample,
+                                       float position);
 };
 
 } // namespace analogno

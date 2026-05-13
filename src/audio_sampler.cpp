@@ -43,9 +43,9 @@ AudioSampler::~AudioSampler() {
 
 void AudioSampler::set_sample(std::vector<float> sample) {
   const auto lock = std::scoped_lock{mutex_};
-  sample_ = std::move(sample);
-  trim_start_ = 0.0F;
-  trim_end_ = 1.0F;
+  sample_ = std::make_shared<const std::vector<float>>(std::move(sample));
+  trim_start_.store(0.0F);
+  trim_end_.store(1.0F);
 
   for (auto &voice : voices_) {
     voice = {};
@@ -54,9 +54,9 @@ void AudioSampler::set_sample(std::vector<float> sample) {
 
 void AudioSampler::clear_sample() {
   const auto lock = std::scoped_lock{mutex_};
-  sample_.clear();
-  trim_start_ = 0.0F;
-  trim_end_ = 1.0F;
+  sample_.reset();
+  trim_start_.store(0.0F);
+  trim_end_.store(1.0F);
 
   for (auto &voice : voices_) {
     voice = {};
@@ -68,10 +68,12 @@ void AudioSampler::set_trim(float start, float end) {
   const auto safe_start = std::clamp(start, 0.0F, 1.0F);
   const auto safe_end = std::clamp(end, 0.0F, 1.0F);
 
-  trim_start_ = std::min(safe_start, safe_end - 0.001F);
-  trim_end_ = std::max(safe_end, trim_start_ + 0.001F);
-  trim_start_ = std::clamp(trim_start_, 0.0F, 1.0F);
-  trim_end_ = std::clamp(trim_end_, trim_start_, 1.0F);
+  auto trim_start = std::min(safe_start, safe_end - 0.001F);
+  auto trim_end = std::max(safe_end, trim_start + 0.001F);
+  trim_start = std::clamp(trim_start, 0.0F, 1.0F);
+  trim_end = std::clamp(trim_end, trim_start, 1.0F);
+  trim_start_.store(trim_start);
+  trim_end_.store(trim_end);
 
   for (auto &voice : voices_) {
     voice = {};
@@ -80,19 +82,19 @@ void AudioSampler::set_trim(float start, float end) {
 
 void AudioSampler::set_gain(float gain) {
   const auto lock = std::scoped_lock{mutex_};
-  gain_ = std::clamp(gain, 0.0F, 1.0F);
+  gain_.store(std::clamp(gain, 0.0F, 1.0F));
 }
 
 void AudioSampler::set_pitch_controls(float pitch_bend, float vibrato_depth) {
   const auto lock = std::scoped_lock{mutex_};
-  pitch_bend_ = std::clamp(pitch_bend, -1.0F, 1.0F);
-  vibrato_depth_ = std::clamp(vibrato_depth, 0.0F, 1.0F);
+  pitch_bend_.store(std::clamp(pitch_bend, -1.0F, 1.0F));
+  vibrato_depth_.store(std::clamp(vibrato_depth, 0.0F, 1.0F));
 }
 
 void AudioSampler::trigger(float rate) {
   const auto lock = std::scoped_lock{mutex_};
 
-  if (sample_.empty()) {
+  if (!sample_ || sample_->empty()) {
     return;
   }
 
@@ -100,7 +102,8 @@ void AudioSampler::trigger(float rate) {
   voice = Voice{
       .active = true,
       .releasing = false,
-      .position = trim_start_ * static_cast<float>(sample_.size()),
+      .position =
+          trim_start_.load() * static_cast<float>(sample_->size()),
       .rate = std::clamp(rate, 0.25F, 4.0F),
       .envelope = 0.0F,
   };
@@ -110,22 +113,20 @@ void AudioSampler::trigger(float rate) {
 
 bool AudioSampler::has_sample() const {
   const auto lock = std::scoped_lock{mutex_};
-  return !sample_.empty();
+  return sample_ && !sample_->empty();
 }
 
 std::size_t AudioSampler::sample_frames() const {
   const auto lock = std::scoped_lock{mutex_};
-  return sample_.size();
+  return sample_ ? sample_->size() : 0U;
 }
 
 float AudioSampler::trim_start() const {
-  const auto lock = std::scoped_lock{mutex_};
-  return trim_start_;
+  return trim_start_.load();
 }
 
 float AudioSampler::trim_end() const {
-  const auto lock = std::scoped_lock{mutex_};
-  return trim_end_;
+  return trim_end_.load();
 }
 
 bool AudioSampler::is_running() const { return running_; }
@@ -140,17 +141,28 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
 
   std::fill(out, out + static_cast<std::size_t>(frame_count) * channels, 0.0F);
 
-  if (self == nullptr || !self->mutex_.try_lock()) {
+  if (self == nullptr) {
     return;
   }
 
-  if (self->sample_.empty()) {
-    self->mutex_.unlock();
+  std::shared_ptr<const std::vector<float>> sample{};
+  std::array<Voice, voice_count> voices{};
+
+  {
+    const auto lock = std::scoped_lock{self->mutex_};
+    sample = self->sample_;
+    voices = self->voices_;
+  }
+
+  if (!sample || sample->empty()) {
     return;
   }
 
   const auto trim_end =
-      self->trim_end_ * static_cast<float>(self->sample_.size());
+      self->trim_end_.load() * static_cast<float>(sample->size());
+  const auto gain = self->gain_.load();
+  const auto pitch_bend = self->pitch_bend_.load();
+  const auto vibrato_depth = self->vibrato_depth_.load();
   constexpr auto pitch_bend_range_semitones = 2.0F;
   constexpr auto vibrato_range_semitones = 0.75F;
   constexpr auto vibrato_frequency = 6.0F;
@@ -159,20 +171,19 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
   for (ma_uint32 frame = 0; frame < frame_count; ++frame) {
     auto mixed = 0.0F;
     const auto vibrato =
-        std::sin(self->vibrato_phase_) * self->vibrato_depth_ *
-        vibrato_range_semitones;
+        std::sin(self->vibrato_phase_) * vibrato_depth * vibrato_range_semitones;
     const auto pitch_semitones =
-        self->pitch_bend_ * pitch_bend_range_semitones + vibrato;
+        pitch_bend * pitch_bend_range_semitones + vibrato;
     const auto pitch_rate = std::pow(2.0F, pitch_semitones / 12.0F);
 
-    for (auto &voice : self->voices_) {
+    for (auto &voice : voices) {
       if (!voice.active) {
         continue;
       }
 
       const auto index = static_cast<std::size_t>(voice.position);
 
-      if (index >= self->sample_.size() || voice.position >= trim_end) {
+      if (index >= sample->size() || voice.position >= trim_end) {
         voice.releasing = true;
       }
 
@@ -189,7 +200,7 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
         continue;
       }
 
-      mixed += self->sample_at(voice.position) * voice.envelope * self->gain_;
+      mixed += sample_at(*sample, voice.position) * voice.envelope * gain;
       voice.position += voice.rate * pitch_rate;
     }
 
@@ -206,24 +217,28 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
     out[output_index + 1] = mixed;
   }
 
-  self->mutex_.unlock();
+  {
+    const auto lock = std::scoped_lock{self->mutex_};
+    self->voices_ = voices;
+  }
 }
 
-float AudioSampler::sample_at(float position) const {
-  if (sample_.empty()) {
+float AudioSampler::sample_at(const std::vector<float> &sample,
+                              float position) {
+  if (sample.empty()) {
     return 0.0F;
   }
 
   const auto lower_index = static_cast<std::size_t>(position);
 
-  if (lower_index >= sample_.size()) {
+  if (lower_index >= sample.size()) {
     return 0.0F;
   }
 
-  const auto upper_index = std::min(lower_index + 1, sample_.size() - 1);
+  const auto upper_index = std::min(lower_index + 1, sample.size() - 1);
   const auto fraction = position - static_cast<float>(lower_index);
-  const auto lower = sample_[lower_index];
-  const auto upper = sample_[upper_index];
+  const auto lower = sample[lower_index];
+  const auto upper = sample[upper_index];
 
   return lower + (upper - lower) * fraction;
 }

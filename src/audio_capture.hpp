@@ -68,8 +68,9 @@ private:
   std::atomic<bool> sample_recording_{false};
   std::uint32_t onset_cooldown_frames_{};
   std::array<std::atomic<float>, waveform_sample_count> waveform_{};
+  std::array<std::atomic<float>, max_sample_frames> recording_sample_{};
   std::atomic<std::size_t> waveform_write_index_{};
-  std::vector<float> recording_sample_{};
+  std::atomic<std::size_t> recording_write_index_{};
   std::vector<float> captured_sample_{};
   std::mutex sample_mutex_{};
   bool context_ready_{};

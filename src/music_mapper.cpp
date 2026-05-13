@@ -155,7 +155,7 @@ MusicMapper::map_controls(const ControllerState &controller) const {
           ? std::clamp(controller.gyro().z * 0.12F, -0.35F, 0.35F)
           : 0.0F;
 
-  const auto vibrato_amount = controller.left_trigger();
+  const auto vibrato_amount = controller.right_trigger();
 
   const auto pitch_bend = std::clamp(
       controller.left_x() + gyro_vibrato * vibrato_amount, -1.0F, 1.0F);
@@ -165,7 +165,7 @@ MusicMapper::map_controls(const ControllerState &controller) const {
       .expression = controller.left_trigger(),
       .filter_cutoff = positive_from_axis(-controller.right_y()),
       .filter_resonance = positive_from_axis(controller.right_x()),
-      .modulation = controller.right_trigger(),
+      .modulation = 0.0F,
       .vibrato = std::abs(gyro_vibrato) * vibrato_amount,
   };
 }
