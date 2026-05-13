@@ -30,6 +30,7 @@ FetchContent_MakeAvailable(SDL3)
 
 add_executable(analogno
   src/main.cpp
+  src/controller_state.cpp
 )
 
 target_include_directories(analogno

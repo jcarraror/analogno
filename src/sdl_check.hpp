@@ -8,14 +8,12 @@
 
 namespace analogno {
 
-[[noreturn]] inline void fail_sdl(std::string_view message)
-{
+[[noreturn]] inline void fail_sdl(std::string_view message) {
   std::cerr << "fatal: " << message << ": " << SDL_GetError() << '\n';
   std::exit(EXIT_FAILURE);
 }
 
-inline void warn_sdl(std::string_view message)
-{
+inline void warn_sdl(std::string_view message) {
   std::cerr << "warning: " << message << ": " << SDL_GetError() << '\n';
 }
 
