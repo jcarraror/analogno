@@ -16,7 +16,7 @@ public:
   };
 
   struct PatchRequest final {
-    std::uint8_t bank{};
+    int bank{};
     std::uint8_t program{};
   };
 
@@ -70,6 +70,7 @@ public:
   [[nodiscard]] std::optional<int> consume_seq_select_step();
   [[nodiscard]] std::optional<int> consume_seq_select_track();
   [[nodiscard]] std::optional<SeqConfig> consume_seq_config();
+  [[nodiscard]] std::optional<std::string> consume_soundfont_request();
 
 private:
   class Impl;

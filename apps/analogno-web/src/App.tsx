@@ -122,6 +122,9 @@ type RuntimeState = {
       steps: Array<{ active: boolean; degree: number; velocity: number; midiNote: number }>;
     }>;
   };
+  presets: Array<{ bank: number; program: number; name: string }>;
+  soundfonts: string[];
+  activeSoundfont: string;
 };
 
 type ConnectionState = "connecting" | "online" | "offline";
@@ -173,6 +176,36 @@ function Panel({
       <h2>{title}</h2>
       {children}
     </section>
+  );
+}
+
+function ConfigModal({
+  open,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+  return (
+    <div className="config-backdrop" onClick={onClose}>
+      <div className="config-modal" onClick={e => e.stopPropagation()}>
+        <div className="config-modal-header">
+          <span className="config-modal-title">Config</span>
+          <button type="button" className="config-modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="config-modal-body">{children}</div>
+      </div>
+    </div>
   );
 }
 
@@ -872,6 +905,10 @@ export function App() {
     socket?.send(JSON.stringify({ type: "setPatch", bank, program }));
   }
 
+  function setSoundfont(path: string) {
+    socket?.send(JSON.stringify({ type: "setSoundfont", path }));
+  }
+
   function sendWavetable(samples: number[]) {
     socket?.send(JSON.stringify({ type: "setWavetable", data: samples }));
   }
@@ -885,6 +922,8 @@ export function App() {
   function seqChange(cfg: { bpm: number; gatePct: number; tracks: SeqTrackEdit[] }) {
     socket?.send(JSON.stringify({ type: "setSeq", ...cfg }));
   }
+
+  const [configOpen, setConfigOpen] = useState(false);
 
   const controller = runtime?.controller;
   const music = runtime?.music;
@@ -904,75 +943,165 @@ export function App() {
 
         <div className="hero-actions">
           <StatusPill state={connection} />
+          <button className="config-button" onClick={() => setConfigOpen(true)} type="button">
+            Config
+          </button>
           <button className="panic-button" onClick={panic} type="button">
             Panic
           </button>
         </div>
       </header>
 
-      <div className="layout">
-        <Panel title="Controller">
+      <ConfigModal open={configOpen} onClose={() => setConfigOpen(false)}>
+        <section className="config-section">
+          <h3>Controller</h3>
           <BipolarMeter label="Left X / pitch bend" value={controller?.leftX ?? 0} />
           <BipolarMeter label="Left Y" value={controller?.leftY ?? 0} />
           <BipolarMeter label="Right X / resonance" value={controller?.rightX ?? 0} />
           <BipolarMeter label="Right Y / cutoff" value={controller?.rightY ?? 0} />
-          <Meter
-            label={sampleMode ? "L2 / sample gain" : "L2 / expression"}
-            value={controller?.l2 ?? 0}
-          />
+          <Meter label={sampleMode ? "L2 / sample gain" : "L2 / expression"} value={controller?.l2 ?? 0} />
           <Meter label="R2 / vibrato depth" value={controller?.r2 ?? 0} />
-        </Panel>
-
-        <Panel title="Music">
+        </section>
+        <section className="config-section">
+          <h3>Audio input</h3>
+          <StateLine label="Capture" value={audio?.captureRunning ? "running" : "stopped"} />
+          <StateLine label="Gate" value={audio?.gateOpen ? "open" : "closed"} />
+          <StateLine label="Velocity" value={audio?.velocity ?? 0} />
+          <label className="field">
+            <span>Input device</span>
+            <select
+              value={audio?.selectedDeviceIndex == null ? "default" : String(audio.selectedDeviceIndex)}
+              onChange={(event) => selectCaptureDevice(event.target.value)}
+              disabled={connection !== "online"}
+            >
+              <option value="default">System default</option>
+              {(audio?.devices ?? []).map((device) => (
+                <option key={device.index} value={device.index}>
+                  {device.name}{device.isDefault ? " (default)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Meter label="Mic level" value={audio?.micLevel ?? 0} />
+          <Meter label="Envelope" value={(audio?.envelope ?? 0) * 8} />
+          <Waveform samples={audio?.waveform ?? []} />
+        </section>
+        <section className="config-section">
+          <h3>Motion</h3>
+          <StateLine label="Gyro" value={controller?.hasGyro ? "available" : "missing"} />
+          <StateLine label="Accelerometer" value={controller?.hasAccel ? "available" : "missing"} />
+          <Vec3Readout label="gyro" value={controller?.gyro ?? { x: 0, y: 0, z: 0 }} />
+          <Vec3Readout label="accel" value={controller?.accel ?? { x: 0, y: 0, z: 0 }} />
+        </section>
+        <section className="config-section">
+          <h3>Music</h3>
           <StateLine label="Root" value={music ? `${midiNoteName(music.rootMidiNote)} / ${music.rootMidiNote}` : "—"} />
           <StateLine label="Scale" value={music?.scale ?? "—"} />
           <StateLine label="Octave offset" value={music?.octaveOffset ?? "—"} />
           <StateLine label="Active notes" value={activeNoteText} />
           <BipolarMeter label="Pitch bend" value={music?.pitchBend ?? 0} />
-          <Meter
-            label={sampleMode ? "Sample gain" : "Expression"}
-            value={music?.expression ?? 0}
-          />
+          <Meter label={sampleMode ? "Sample gain" : "Expression"} value={music?.expression ?? 0} />
           <Meter label="Filter cutoff" value={music?.filterCutoff ?? 0} />
           <Meter label="Resonance" value={music?.filterResonance ?? 0} />
           <Meter label="Vibrato" value={music?.vibrato ?? 0} />
-        </Panel>
+        </section>
+      </ConfigModal>
+
+      <div className="layout">
 
         <Panel title="Synth patches" wide>
-          <div className="patch-header">
-            <label className="field patch-bank-field">
-              <span>MIDI bank</span>
-              <select
-                value={activeBank}
-                disabled={connection !== "online" || sampleMode}
-                onChange={(e) => setPatch(Number(e.target.value), activePatch)}
-              >
-                {Array.from({ length: 128 }, (_, i) => (
-                  <option key={i} value={i}>Bank {i}</option>
-                ))}
-              </select>
-            </label>
-            <p className="patch-active-name">
-              {sampleMode ? "Sampler mode — MIDI synth inactive" : `${activePatch + 1}. ${GM_PROGRAMS[activePatch] ?? "Program " + (activePatch + 1)}`}
-            </p>
-          </div>
-          <div className="patch-grid">
-            {GM_PROGRAMS.map((name, i) => (
-              <button
-                key={i}
-                type="button"
-                className={`patch-btn${
-                  i === activePatch && !sampleMode ? " patch-active" : ""
-                }`}
-                disabled={connection !== "online" || sampleMode}
-                onClick={() => setPatch(activeBank, i)}
-                title={name}
-              >
-                <span className="patch-num">{i + 1}</span>
-                <span className="patch-name">{name}</span>
-              </button>
-            ))}
-          </div>
+          {(() => {
+            const presets = runtime?.presets ?? [];
+            const hasSf2 = presets.length > 0;
+
+            // Group presets by bank, sorted by bank number.
+            const bankMap = new Map<number, Array<{ program: number; name: string }>>();
+            for (const p of presets) {
+              const list = bankMap.get(p.bank) ?? [];
+              list.push({ program: p.program, name: p.name });
+              bankMap.set(p.bank, list);
+            }
+            const banks = Array.from(bankMap.entries()).sort((a, b) => a[0] - b[0]);
+            for (const [, list] of bankMap) list.sort((a, b) => a.program - b.program);
+
+            // Which bank tab is being browsed — sync once with active bank.
+            const visibleBank = hasSf2
+              ? (bankMap.has(activeBank) ? activeBank : (banks[0]?.[0] ?? 0))
+              : 0;
+            const visiblePresets = hasSf2
+              ? (bankMap.get(visibleBank) ?? [])
+              : GM_PROGRAMS.map((name, i) => ({ program: i, name }));
+
+            return (
+              <>
+                {(runtime?.soundfonts ?? []).length > 0 && (
+                  <div className="sf2-selector">
+                    <label htmlFor="sf2-select">Soundfont</label>
+                    <select
+                      id="sf2-select"
+                      value={runtime?.activeSoundfont ?? ''}
+                      disabled={connection !== 'online'}
+                      onChange={(e) => setSoundfont(e.target.value)}>
+                      {(runtime?.soundfonts ?? []).map(path => (
+                        <option key={path} value={path}>
+                          {path.split('/').pop()}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div className="patch-header">
+                  {hasSf2 ? (
+                    <div className="patch-bank-tabs">
+                      {banks.map(([bank]) => (
+                        <button key={bank} type="button"
+                          className={`patch-bank-tab${bank === visibleBank ? ' patch-bank-tab-active' : ''}`}
+                          disabled={connection !== 'online' || sampleMode}
+                          onClick={() => setPatch(bank, activePatch)}>
+                          {bank === 128 ? 'Drums' : `Bank ${bank}`}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <label className="field patch-bank-field">
+                      <span>MIDI bank <em className="patch-bank-hint">(synth-specific, 0 = GM)</em></span>
+                      <input type="number" className="patch-bank-input"
+                        min={0} max={127} value={activeBank}
+                        disabled={connection !== 'online' || sampleMode}
+                        onChange={(e) => {
+                          const v = Math.max(0, Math.min(127, Number(e.target.value)));
+                          if (!Number.isNaN(v)) setPatch(v, activePatch);
+                        }} />
+                    </label>
+                  )}
+                  <p className="patch-active-name">
+                    {sampleMode
+                      ? 'Sampler mode — MIDI synth inactive'
+                      : (() => {
+                          const hit = presets.find(p => p.bank === activeBank && p.program === activePatch);
+                          return hit
+                            ? `${hit.program + 1}. ${hit.name}`
+                            : `${activePatch + 1}. ${GM_PROGRAMS[activePatch] ?? 'Program ' + (activePatch + 1)}`;
+                        })()}
+                  </p>
+                </div>
+                <div className="patch-grid">
+                  {visiblePresets.map(({ program, name }) => (
+                    <button key={program} type="button"
+                      className={`patch-btn${
+                        program === activePatch && visibleBank === activeBank && !sampleMode ? ' patch-active' : ''
+                      }`}
+                      disabled={connection !== 'online' || sampleMode}
+                      onClick={() => setPatch(visibleBank, program)}
+                      title={name}>
+                      <span className="patch-num">{program + 1}</span>
+                      <span className="patch-name">{name}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            );
+          })()}
         </Panel>
 
         <Panel title="Sampler" wide>
@@ -1062,45 +1191,6 @@ export function App() {
               </div>
             </div>
           </div>
-        </Panel>
-
-        <Panel title="Audio input">
-          <StateLine label="Capture" value={audio?.captureRunning ? "running" : "stopped"} />
-          <StateLine label="Gate" value={audio?.gateOpen ? "open" : "closed"} />
-          <StateLine label="Velocity" value={audio?.velocity ?? 0} />
-          <label className="field">
-            <span>Input device</span>
-            <select
-              value={audio?.selectedDeviceIndex == null
-                ? "default"
-                : String(audio.selectedDeviceIndex)}
-              onChange={(event) => selectCaptureDevice(event.target.value)}
-              disabled={connection !== "online"}
-            >
-              <option value="default">System default</option>
-              {(audio?.devices ?? []).map((device) => (
-                <option key={device.index} value={device.index}>
-                  {device.name}{device.isDefault ? " (default)" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-          <Meter label="Mic level" value={audio?.micLevel ?? 0} />
-          <Meter label="Envelope" value={(audio?.envelope ?? 0) * 8} />
-          <Waveform samples={audio?.waveform ?? []} />
-        </Panel>
-
-        <Panel title="Motion">
-          <StateLine label="Gyro" value={controller?.hasGyro ? "available" : "missing"} />
-          <StateLine label="Accelerometer" value={controller?.hasAccel ? "available" : "missing"} />
-          <Vec3Readout
-            label="gyro"
-            value={controller?.gyro ?? { x: 0, y: 0, z: 0 }}
-          />
-          <Vec3Readout
-            label="accel"
-            value={controller?.accel ?? { x: 0, y: 0, z: 0 }}
-          />
         </Panel>
 
         <Panel title="Sequencer" wide>

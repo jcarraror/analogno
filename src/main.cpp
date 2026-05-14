@@ -6,6 +6,7 @@
 #include "music_types.hpp"
 #include "sdl_check.hpp"
 #include "sdl_gamepad.hpp"
+#include "sf2_reader.hpp"
 #include "web_server.hpp"
 #include "web_state.hpp"
 
@@ -23,6 +24,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -31,6 +33,7 @@
 #include <span>
 #include <thread>
 #include <utility>
+#include <deque>
 #include <vector>
 
 namespace {
@@ -468,6 +471,7 @@ struct Sequencer {
 struct SeqTick {
   std::vector<analogno::Note> note_ons{};
   std::vector<analogno::Note> note_offs{};
+  bool stepped{false}; // true the frame a new step fires
 };
 
 SeqTick tick_sequencer(Sequencer &seq, const analogno::MusicalIntent &ctx) {
@@ -492,6 +496,7 @@ SeqTick tick_sequencer(Sequencer &seq, const analogno::MusicalIntent &ctx) {
   if (elapsed >= step_dur) {
     seq.current_step = (seq.current_step + 1) % Sequencer::step_count;
     seq.step_start = now;
+    result.stepped = true;
 
     for (std::size_t t = 0; t < seq.tracks.size(); ++t) {
       auto &track = seq.tracks[t];
@@ -559,10 +564,13 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                const AudioCapture &audio_capture,
                const AudioSampler &audio_sampler,
                const analogno::AudioFeatures &audio_features,
-               std::uint8_t midi_program,
-               std::uint8_t midi_bank,
+               int midi_program,
+               int midi_bank,
                const WaveformSketch &sketch,
-               const Sequencer &seq) {
+               const Sequencer &seq,
+               const std::vector<analogno::WebPreset> &sf2_presets,
+               const std::vector<std::string> &available_soundfonts,
+               const std::string &active_soundfont) {
   std::vector<analogno::WebCaptureDevice> capture_devices{};
 
   for (const auto &device : audio_capture.devices()) {
@@ -659,10 +667,60 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
               }(),
           },
       .seq = seq_web_state(seq),
+      .presets = sf2_presets,
+      .soundfonts = available_soundfonts,
+      .active_soundfont = active_soundfont,
   };
 }
 
-void run_event_loop() {
+// Map a GM program number (0-127) to an RGB colour for the DS5 lightbar.
+std::array<std::uint8_t, 3> program_led_color(int program) {
+  
+  const auto family = std::clamp(program, 0, 127) / 8;
+  const float hue = static_cast<float>(family) / 16.0F; // 0..1
+  const float h6 = hue * 6.0F;
+  const float frac = h6 - std::floor(h6);
+  const auto sector = static_cast<int>(h6) % 6;
+  float r{}, g{}, b{};
+  switch (sector) {
+    case 0: r=1; g=frac;   b=0;      break;
+    case 1: r=1-frac; g=1; b=0;      break;
+    case 2: r=0; g=1;      b=frac;   break;
+    case 3: r=0; g=1-frac; b=1;      break;
+    case 4: r=frac; g=0;   b=1;      break;
+    default: r=1; g=0;     b=1-frac; break;
+  }
+  return {
+    static_cast<std::uint8_t>(r * 255.0F),
+    static_cast<std::uint8_t>(g * 255.0F),
+    static_cast<std::uint8_t>(b * 255.0F),
+  };
+}
+
+std::vector<std::string> scan_soundfonts() {
+  namespace fs = std::filesystem;
+  std::vector<std::string> result;
+  std::vector<std::string> dirs = {
+      "/usr/share/sounds/sf2",
+      "/usr/share/soundfonts",
+  };
+  if (const char *home = std::getenv("HOME"))
+    dirs.push_back(std::string{home} + "/.local/share/sounds/sf2");
+  for (const auto &dir : dirs) {
+    std::error_code ec;
+    for (const auto &entry : fs::directory_iterator(dir, ec)) {
+      if (entry.path().extension() == ".sf2")
+        result.push_back(entry.path().string());
+    }
+  }
+  std::sort(result.begin(), result.end());
+  return result;
+}
+
+void run_event_loop(Gamepad &gamepad,
+                    std::vector<analogno::WebPreset> sf2_presets,
+                    std::string active_soundfont,
+                    const std::vector<std::string> &available_soundfonts) {
   std::cout << "polyphonic MIDI controller running. press Ctrl+C or close the "
                "window to quit.\n\n";
 
@@ -683,10 +741,15 @@ void run_event_loop() {
   MusicalIntent last_intent{};
   analogno::AudioFeatures last_audio_features{};
   auto was_sample_record_button_active = false;
-  auto current_midi_bank = std::uint8_t{0};
-  auto current_midi_program = std::uint8_t{0};
+  auto current_midi_bank = int{0};
+  auto current_midi_program = int{0};
   WaveformSketch sketch{};
   Sequencer seq{};
+  
+  using tp = std::chrono::steady_clock::time_point;
+  struct LedFlash { std::array<std::uint8_t, 3> color{}; tp show_until{}; };
+  std::deque<LedFlash> led_sequence{};
+  constexpr auto led_slot_ms = std::chrono::milliseconds{80};
 
   while (running) {
     SDL_Event event{};
@@ -765,6 +828,13 @@ void run_event_loop() {
                   << " program=" << static_cast<int>(current_midi_program)
                   << " ch=" << ch << '\n';
       }
+    }
+
+    if (auto sf_req = web.consume_soundfont_request()) {
+      active_soundfont = std::move(*sf_req);
+      sf2_presets = analogno::read_sf2_presets(active_soundfont);
+      std::cout << "soundfont presets updated from: " << active_soundfont
+                << " (" << sf2_presets.size() << " presets)\n";
     }
 
     if (auto wt = web.consume_wavetable_request()) {
@@ -864,9 +934,7 @@ void run_event_loop() {
         seq.selected_step = -1;
         // Resend program changes so MIDI channels still have correct programs.
         for (const auto &t : seq.tracks)
-          midi.program_change(static_cast<std::uint8_t>(t.midi_program),
-                              static_cast<std::uint8_t>(t.midi_bank),
-                              t.midi_channel);
+          midi.program_change(t.midi_program, t.midi_bank, t.midi_channel);
         std::cout << "seq: removed track " << idx << '\n';
       }
     }
@@ -1000,21 +1068,61 @@ void run_event_loop() {
     }
 
     // Sequencer tick — runs every frame independent of controller changes
-    if (const auto tick = tick_sequencer(seq, last_intent);
-        !tick.note_ons.empty() || !tick.note_offs.empty()) {
-      if (audio_sampler.has_sample()) {
-        constexpr auto sampler_root = 48;
-        for (const auto &note : tick.note_offs) {
-          audio_sampler.release(std::pow(2.0F,
-              static_cast<float>(note.midi_note - sampler_root) / 12.0F));
+    {
+      const auto tick = tick_sequencer(seq, last_intent);
+      if (!tick.note_ons.empty() || !tick.note_offs.empty()) {
+        if (audio_sampler.has_sample()) {
+          constexpr auto sampler_root = 48;
+          for (const auto &note : tick.note_offs) {
+            audio_sampler.release(std::pow(2.0F,
+                static_cast<float>(note.midi_note - sampler_root) / 12.0F));
+          }
+          MusicalIntent seq_intent{};
+          seq_intent.note_ons = tick.note_ons;
+          trigger_sampler_notes(seq_intent, audio_sampler);
+        } else {
+          // apply_notes_only: no CC/pitch-bend side-effects that would override
+          // the live player's expression, filter, modulation, etc.
+          midi.apply_notes_only(tick.note_offs, tick.note_ons);
         }
-        MusicalIntent seq_intent{};
-        seq_intent.note_ons = tick.note_ons;
-        trigger_sampler_notes(seq_intent, audio_sampler);
+      }
+      // Lightbar: enqueue one colour flash per note_on, preserving order.
+      if (!tick.note_ons.empty()) {
+        // Build channel->program map for colour lookup.
+        std::array<int, 16> ch_prog{};
+        for (const auto &track : seq.tracks) {
+          const auto ch = std::clamp(track.midi_channel, 0, 15);
+          ch_prog[static_cast<std::size_t>(ch)] = track.midi_program;
+        }
+        for (const auto &note : tick.note_ons) {
+          const auto ch = std::clamp(note.channel, 0, 15);
+          // Schedule: starts after all previously queued entries finish.
+          const auto starts_at = led_sequence.empty()
+              ? std::chrono::steady_clock::now()
+              : led_sequence.back().show_until;
+          led_sequence.push_back({program_led_color(ch_prog[static_cast<std::size_t>(ch)]),
+                                   starts_at + led_slot_ms});
+        }
+      }
+    }
+
+    // Sequential microflash: show front entry until its time expires, then advance.
+    if (seq.playing) {
+      const auto led_now = std::chrono::steady_clock::now();
+      // Pop any expired entries.
+      while (!led_sequence.empty() && led_now >= led_sequence.front().show_until) {
+        led_sequence.pop_front();
+      }
+      if (!led_sequence.empty()) {
+        const auto &front = led_sequence.front();
+        gamepad.set_led(front.color[0], front.color[1], front.color[2]);
       } else {
-        // apply_notes_only: no CC/pitch-bend side-effects that would override
-        // the live player's expression, filter, modulation, etc.
-        midi.apply_notes_only(tick.note_offs, tick.note_ons);
+        gamepad.set_led(0, 0, 0);
+      }
+    } else {
+      if (!led_sequence.empty()) {
+        led_sequence.clear();
+        gamepad.set_led(0, 0, 0);
       }
     }
 
@@ -1029,7 +1137,8 @@ void run_event_loop() {
                                  audio_capture, audio_sampler,
                                  last_audio_features,
                                  current_midi_program, current_midi_bank,
-                                 sketch, seq));
+                                 sketch, seq, sf2_presets,
+                                 available_soundfonts, active_soundfont));
       last_web_publish = now;
     }
 
@@ -1039,7 +1148,24 @@ void run_event_loop() {
 
 } // namespace
 
-int main(int, char **) {
+int main(int argc, char *argv[]) {
+  std::string soundfont_path{};
+  for (int i = 1; i < argc; ++i) {
+    if (std::string_view{argv[i]} == "--soundfont" && i + 1 < argc) {
+      soundfont_path = argv[++i];
+    }
+  }
+
+  auto sf2_presets = soundfont_path.empty()
+      ? std::vector<analogno::WebPreset>{}
+      : analogno::read_sf2_presets(soundfont_path);
+
+  if (!sf2_presets.empty()) {
+    std::cout << "loaded " << sf2_presets.size() << " presets from " << soundfont_path << '\n';
+  }
+
+  const auto available_soundfonts = scan_soundfonts();
+
   const Sdl sdl{};
 
   auto gamepad = open_first_gamepad();
@@ -1050,7 +1176,8 @@ int main(int, char **) {
 
   print_capabilities(*gamepad);
   enable_motion_sensors(*gamepad);
-  run_event_loop();
+  run_event_loop(*gamepad, std::move(sf2_presets), std::move(soundfont_path),
+                 available_soundfonts);
 
   return EXIT_SUCCESS;
 }

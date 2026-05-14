@@ -8,6 +8,12 @@
 
 namespace analogno {
 
+struct WebPreset final {
+  int bank{};
+  int program{};
+  std::string name{};
+};
+
 struct WebVec3 final {
   float x{};
   float y{};
@@ -110,6 +116,9 @@ struct WebRuntimeState final {
   WebMusicState music{};
   WebAudioState audio{};
   WebSeqState seq{};
+  std::vector<WebPreset> presets{};
+  std::vector<std::string> soundfonts{};   // available SF2 files on disk
+  std::string active_soundfont{};          // currently browsed soundfont path
 };
 
 } // namespace analogno

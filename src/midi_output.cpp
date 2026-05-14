@@ -224,7 +224,11 @@ void MidiOutput::set_live_channel(int ch) {
   last_pitch_bend_.reset();
 }
 
-void MidiOutput::program_change(std::uint8_t program, std::uint8_t bank_msb, int ch) {
+void MidiOutput::program_change(int program, int bank, int ch) {
+  // SF2 bank 128 = GM percussion
+  const bool is_percussion = (bank == 128);
+  if (is_percussion) ch = 9;
+
   for (auto n = 0; n < static_cast<int>(midi_note_count); ++n) {
     const auto note = Note{.midi_note = n, .channel = ch};
     if (active_notes_[note_index(note)]) {
@@ -237,17 +241,17 @@ void MidiOutput::program_change(std::uint8_t program, std::uint8_t bank_msb, int
                   byte(0),
               });
 
-  if (bank_msb > 0) {
+  if (!is_percussion && bank > 0) {
     send(midi_, {
                     status(status_control_change, ch),
                     byte(cc_bank_select_msb),
-                    byte(bank_msb),
+                    static_cast<unsigned char>(bank & 0x7F),
                 });
   }
 
   send(midi_, {
                   status(status_program_change, ch),
-                  byte(program),
+                  static_cast<unsigned char>(program & 0x7F),
               });
 }
 

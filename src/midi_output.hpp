@@ -28,7 +28,7 @@ public:
   void apply_notes_only(const std::vector<Note> &note_offs,
                         const std::vector<Note> &note_ons);
   void all_notes_off();
-  void program_change(std::uint8_t program, std::uint8_t bank_msb = 0, int ch = 0);
+  void program_change(int program, int bank = 0, int ch = 0);
   void set_live_channel(int ch); // reroutes CCs and pitch-bend to the given channel
 
 private:

@@ -134,7 +134,7 @@ fi
 
 echo "starting Analogno runtime..."
 
-"${ANALOGNO_BIN}" &
+"${ANALOGNO_BIN}" --soundfont "${SOUNDFONT}" &
 ANALOGNO_PID=$!
 
 echo "waiting for MIDI ports..."

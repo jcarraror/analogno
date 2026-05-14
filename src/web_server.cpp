@@ -166,6 +166,19 @@ std::string to_json_string(const WebRuntimeState &state) {
             };
           }(),
       },
+      {"presets", [&] {
+          Json arr = Json::array();
+          for (const auto &p : state.presets) {
+              arr.push_back({{"bank", p.bank}, {"program", p.program}, {"name", p.name}});
+          }
+          return arr;
+      }()},
+      {"soundfonts", [&] {
+          Json arr = Json::array();
+          for (const auto &s : state.soundfonts) arr.push_back(s);
+          return arr;
+      }()},
+      {"activeSoundfont", state.active_soundfont},
   };
 
   return json.dump();
@@ -199,6 +212,8 @@ public:
   std::atomic_int  seq_remove_track_cmd{-1}; // -1 = no pending; >=0 = remove that index
   std::mutex seq_config_mutex{};
   std::optional<WebSocketServer::SeqConfig> seq_config{};
+  std::mutex soundfont_mutex{};
+  std::optional<std::string> soundfont_request{};
 };
 
 class Session final : public std::enable_shared_from_this<Session> {
@@ -292,12 +307,16 @@ private:
       } else if (json.value("type", "") == "setPatch") {
         const auto bank = json.value("bank", 0);
         const auto program = json.value("program", 0);
-        if (bank >= 0 && bank < 128 && program >= 0 && program < 128) {
+        if (bank >= 0 && bank <= 128 && program >= 0 && program < 128) {
           const auto lock = std::scoped_lock{shared_->patch_mutex};
           shared_->patch_request = WebSocketServer::PatchRequest{
-              .bank = static_cast<std::uint8_t>(bank),
+              .bank = bank,
               .program = static_cast<std::uint8_t>(program),
           };
+        }
+      } else if (json.value("type", "") == "setSoundfont") {
+        if (json.contains("path") && json["path"].is_string()) {
+          shared_->soundfont_request = json["path"].get<std::string>();
         }
       } else if (json.value("type", "") == "setWavetable") {
         if (json.contains("data") && json["data"].is_array()) {
@@ -579,6 +598,11 @@ public:
     return std::exchange(shared_->seq_config, std::nullopt);
   }
 
+  [[nodiscard]] std::optional<std::string> consume_soundfont_request() {
+    const auto lock = std::scoped_lock{shared_->soundfont_mutex};
+    return std::exchange(shared_->soundfont_request, std::nullopt);
+  }
+
 private:
   std::shared_ptr<SharedState> shared_;
   std::thread thread_{};
@@ -653,6 +677,10 @@ std::optional<int> WebSocketServer::consume_seq_select_track() {
 
 std::optional<WebSocketServer::SeqConfig> WebSocketServer::consume_seq_config() {
   return impl_->consume_seq_config();
+}
+
+std::optional<std::string> WebSocketServer::consume_soundfont_request() {
+  return impl_->consume_soundfont_request();
 }
 
 } // namespace analogno

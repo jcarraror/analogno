@@ -85,6 +85,10 @@ public:
     std::cout << "sensor enabled: " << name << '\n';
   }
 
+  void set_led(std::uint8_t r, std::uint8_t g, std::uint8_t b) const {
+    SDL_SetGamepadLED(handle_, r, g, b);
+  }
+
 private:
   SDL_Gamepad *handle_{nullptr};
 };
