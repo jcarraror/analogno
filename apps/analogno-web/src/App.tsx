@@ -105,6 +105,21 @@ type RuntimeState = {
     touchpadDrawing: boolean;
     touchpadRawPoints: [number, number][];
   };
+  seq: {
+    playing: boolean;
+    activeTrack: number;
+    selectedStep: number;
+    bpm: number;
+    currentStep: number;
+    gatePct: number;
+    tracks: Array<{
+      midiChannel: number;
+      midiProgram: number;
+      midiBank: number;
+      muted: boolean;
+      steps: Array<{ active: boolean; degree: number; velocity: number; midiNote: number }>;
+    }>;
+  };
 };
 
 type ConnectionState = "connecting" | "online" | "offline";
@@ -119,6 +134,23 @@ function midiNoteName(note: number): string {
   const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
   const octave = Math.floor(note / 12) - 1;
   return `${names[note % 12]}${octave}`;
+}
+
+const SCALE_SEMITONES: Record<string, number[]> = {
+  minor_pentatonic: [0, 3, 5, 7, 10],
+  major:            [0, 2, 4, 5, 7, 9, 11],
+  natural_minor:    [0, 2, 3, 5, 7, 8, 10],
+  dorian:           [0, 2, 3, 5, 7, 9, 10],
+  phrygian:         [0, 1, 3, 5, 7, 8, 10],
+  chromatic:        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+};
+
+function stepNoteName(degree: number, rootMidi: number, scaleName: string): string {
+  const semitones = SCALE_SEMITONES[scaleName] ?? SCALE_SEMITONES['major'];
+  const idx = ((degree % semitones.length) + semitones.length) % semitones.length;
+  const octaveBonus = Math.floor(degree / semitones.length);
+  const midi = rootMidi + semitones[idx] + octaveBonus * 12;
+  return midiNoteName(Math.max(0, Math.min(127, midi)));
 }
 
 function StatusPill({ state }: { state: ConnectionState }) {
@@ -433,6 +465,208 @@ function WaveformEditor({
   );
 }
 
+// --- Sequencer ---
+
+type SeqStepEdit = { active: boolean; degree: number; velocity: number; midiNote: number };
+type SeqTrackEdit = { midiChannel: number; midiProgram: number; midiBank: number; muted: boolean; steps: SeqStepEdit[] };
+
+function SequencerPanel({
+  seq,
+  connection,
+  onPlay,
+  onStop,
+  onSelectTrack,
+  onSelectStep,
+  onAddTrack,
+  onRemoveTrack,
+  onChange,
+}: {
+  seq: RuntimeState['seq'] | undefined;
+  connection: ConnectionState;
+  onPlay: () => void;
+  onStop: () => void;
+  onSelectTrack: (track: number) => void;
+  onSelectStep: (step: number) => void;
+  onAddTrack: () => void;
+  onRemoveTrack: (track: number) => void;
+  onChange: (cfg: { bpm: number; gatePct: number; tracks: SeqTrackEdit[] }) => void;
+}) {
+  const initialized = useRef(false);
+  const [bpm, setBpm] = useState(120);
+  const [gate, setGate] = useState(50);
+  const [tracks, setTracks] = useState<SeqTrackEdit[]>(
+    Array.from({ length: 4 }, (_, ti) => ({
+      midiChannel: ti, midiProgram: 0, midiBank: 0, muted: false,
+      steps: Array.from({ length: 16 }, () => ({ active: false, degree: 0, velocity: 100, midiNote: -1 })),
+    }))
+  );
+
+  const activeTrack = seq?.activeTrack ?? 0;
+  const selectedStep = seq?.selectedStep ?? -1;
+
+  // Mirror server state (controller arm-writes notes in)
+  useEffect(() => {
+    if (!seq) return;
+    if (!initialized.current) {
+      initialized.current = true;
+      setBpm(seq.bpm);
+      setGate(seq.gatePct);
+    }
+    setTracks(seq.tracks.map(t => ({
+      midiChannel: t.midiChannel,
+      midiProgram: t.midiProgram,
+      midiBank: t.midiBank,
+      muted: t.muted,
+      steps: t.steps.map(s => ({ ...s })),
+    })));
+  }, [seq]);
+
+  const disabled = connection !== 'online';
+  const currentStep = seq?.currentStep ?? -1;
+  const playing = seq?.playing ?? false;
+
+  function send(t: SeqTrackEdit[], b: number, g: number) {
+    onChange({ bpm: b, gatePct: g, tracks: t });
+  }
+
+  function handleStepClick(trackIdx: number, stepIdx: number) {
+    if (activeTrack !== trackIdx) {
+      onSelectTrack(trackIdx);
+    }
+    onSelectStep(activeTrack === trackIdx && selectedStep === stepIdx ? -1 : stepIdx);
+  }
+
+  function clearArmedStep() {
+    if (selectedStep < 0) return;
+    const next = tracks.map((t, ti) =>
+      ti === activeTrack
+        ? { ...t, steps: t.steps.map((s, si) => si === selectedStep ? { active: false, degree: 0, velocity: 100, midiNote: -1 } : s) }
+        : t
+    );
+    setTracks(next);
+    send(next, bpm, gate);
+    onSelectStep(-1);
+  }
+
+  function handleBpm(v: number) {
+    const c = Math.max(20, Math.min(300, v));
+    setBpm(c); send(tracks, c, gate);
+  }
+
+  function handleGate(v: number) {
+    setGate(v); send(tracks, bpm, v);
+  }
+
+  const armedStep = selectedStep >= 0 ? tracks[activeTrack]?.steps[selectedStep] : null;
+
+  return (
+    <div className="sequencer">
+      <div className="seq-controls">
+        <button type="button" className={`seq-playstop${playing ? ' seq-playing' : ''}`}
+          disabled={disabled} onClick={playing ? onStop : onPlay}>
+          {playing ? '\u25a0 Stop' : '\u25b6 Play'}
+        </button>
+        <label className="seq-label">
+          BPM
+          <input type="number" className="seq-bpm-input" min={20} max={300}
+            value={bpm} disabled={disabled}
+            onChange={e => handleBpm(Number(e.target.value))} />
+        </label>
+        <label className="seq-label">
+          Gate&nbsp;{gate}%
+          <input type="range" className="seq-gate-range" min={5} max={100}
+            value={gate} disabled={disabled}
+            onChange={e => handleGate(Number(e.target.value))} />
+        </label>
+        {selectedStep >= 0 && (
+          <span className="seq-armed-info">
+            T{activeTrack + 1} &middot; step {selectedStep + 1}
+            {armedStep && armedStep.midiNote >= 0
+              ? ` \u00b7 ${midiNoteName(armedStep.midiNote)}`
+              : armedStep?.active
+                ? ` \u00b7 scale deg ${armedStep.degree}`
+                : ' \u00b7 empty \u2014 press a face button'}
+          </span>
+        )}
+        {selectedStep >= 0 && armedStep?.active && (
+          <button type="button" className="seq-picker-clear" disabled={disabled}
+            onClick={clearArmedStep}>
+            &#x2715; Clear
+          </button>
+        )}
+      </div>
+
+      <div className="seq-tracks">
+        {tracks.map((track, ti) => (
+          <div key={ti} className={`seq-track-row${tracks[ti].muted ? ' seq-track-muted' : ''}`}>
+            <div
+              className={`seq-track-header${ti === activeTrack ? ' seq-track-active' : ''}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => { if (!disabled) onSelectTrack(ti); }}
+              onKeyDown={e => { if (e.key === 'Enter' && !disabled) onSelectTrack(ti); }}
+              title={`Track ${ti + 1} — MIDI ch ${(track.midiChannel ?? ti) + 1} — ${GM_PROGRAMS[track.midiProgram] ?? 'Prog ' + track.midiProgram}`}>
+              <div className="seq-track-header-top">
+                <span className="seq-track-id">T{ti + 1} <small>ch{(track.midiChannel ?? ti) + 1}</small></span>
+                <button type="button" className={`seq-track-mute-btn${track.muted ? ' seq-track-muted-active' : ''}`}
+                  disabled={disabled}
+                  title={track.muted ? 'Unmute track' : 'Mute track'}
+                  onClick={e => {
+                    e.stopPropagation();
+                    const next = tracks.map((t, i) => i === ti ? { ...t, muted: !t.muted } : t);
+                    setTracks(next);
+                    send(next, bpm, gate);
+                  }}>
+                  M
+                </button>
+                <button type="button" className="seq-track-remove-btn"
+                  disabled={disabled || tracks.length <= 1}
+                  title="Remove track"
+                  onClick={e => { e.stopPropagation(); onRemoveTrack(ti); }}>
+                  &#x2715;
+                </button>
+              </div>
+              <span className="seq-track-name">{GM_PROGRAMS[track.midiProgram] ?? `Prog ${track.midiProgram}`}</span>
+            </div>
+            <div className="seq-track-steps">
+              {track.steps.map((step, si) => {
+                const label = step.midiNote >= 0 ? midiNoteName(step.midiNote) : '';
+                const isArmed = ti === activeTrack && selectedStep === si;
+                const isCurrent = currentStep === si && playing;
+                return (
+                  <button key={si} type="button"
+                    className={[
+                      'seq-step-btn',
+                      step.active ? 'seq-step-on' : '',
+                      isCurrent ? 'seq-step-current' : '',
+                      isArmed ? 'seq-step-armed' : '',
+                    ].filter(Boolean).join(' ')}
+                    disabled={disabled}
+                    onClick={() => handleStepClick(ti, si)}
+                    title={`T${ti + 1} step ${si + 1}${step.active ? ` \u2014 ${label || 'scale'} vel ${step.velocity}` : ''}`}>
+                    <span className="seq-step-num">{si + 1}</span>
+                    {step.active && label && <span className="seq-step-note">{label}</span>}
+                    {step.active && (
+                      <span className="seq-step-vel-dot"
+                        style={{ width: `${Math.round(step.velocity / 127 * 100)}%` }} />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <button type="button" className="seq-add-track-btn"
+        disabled={disabled || tracks.length >= 16}
+        onClick={onAddTrack}>
+        + Track
+      </button>
+    </div>
+  );
+}
+
 function BipolarMeter({ label, value }: { label: string; value: number }) {
   const clamped = Math.max(-1, Math.min(1, value));
   const left = clamped < 0 ? 50 + clamped * 50 : 50;
@@ -554,6 +788,16 @@ export function App() {
     socket?.send(JSON.stringify({ type: "setWavetable", data: samples }));
   }
 
+  function seqPlay() { socket?.send(JSON.stringify({ type: "seqPlay" })); }
+  function seqStop() { socket?.send(JSON.stringify({ type: "seqStop" })); }
+  function seqSelectStep(step: number) { socket?.send(JSON.stringify({ type: "selectSeqStep", step })); }
+  function seqSelectTrack(track: number) { socket?.send(JSON.stringify({ type: "selectSeqTrack", track })); }
+  function seqAddTrack() { socket?.send(JSON.stringify({ type: "seqAddTrack" })); }
+  function seqRemoveTrack(track: number) { socket?.send(JSON.stringify({ type: "seqRemoveTrack", track })); }
+  function seqChange(cfg: { bpm: number; gatePct: number; tracks: SeqTrackEdit[] }) {
+    socket?.send(JSON.stringify({ type: "setSeq", ...cfg }));
+  }
+
   const controller = runtime?.controller;
   const music = runtime?.music;
   const audio = runtime?.audio;
@@ -567,10 +811,6 @@ export function App() {
         <div>
           <p className="eyebrow">DualSense MIDI workstation</p>
           <h1>Analogno</h1>
-          <p className="subtitle">
-            C++ owns controller input, MIDI, timing, and future audio. This UI
-            observes and edits runtime state.
-          </p>
         </div>
 
         <div className="hero-actions">
@@ -786,6 +1026,20 @@ export function App() {
           <Vec3Readout
             label="accel"
             value={controller?.accel ?? { x: 0, y: 0, z: 0 }}
+          />
+        </Panel>
+
+        <Panel title="Sequencer" wide>
+          <SequencerPanel
+            seq={runtime?.seq}
+            connection={connection}
+            onPlay={seqPlay}
+            onStop={seqStop}
+            onSelectTrack={seqSelectTrack}
+            onSelectStep={seqSelectStep}
+            onAddTrack={seqAddTrack}
+            onRemoveTrack={seqRemoveTrack}
+            onChange={seqChange}
           />
         </Panel>
       </div>

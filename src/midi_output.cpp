@@ -84,6 +84,28 @@ void MidiOutput::apply(const MusicalIntent &intent) {
   control_change(cc_vibrato, control_value(intent.controls.vibrato));
 }
 
+void MidiOutput::apply_notes_only(const std::vector<Note> &note_offs,
+                                  const std::vector<Note> &note_ons) {
+  for (const auto &note : note_offs) {
+    note_off(note);
+  }
+
+  std::uint16_t channels_reset{0}; // bitfield for ch 0-15
+  for (const auto &note : note_ons) {
+    const auto ch_bit = static_cast<std::uint16_t>(
+        std::uint16_t{1} << static_cast<unsigned>(std::clamp(note.channel, 0, 15)));
+    if ((channels_reset & ch_bit) == 0) {
+      channels_reset = static_cast<std::uint16_t>(channels_reset | ch_bit);
+      send(midi_, {
+                      status(status_control_change, note.channel),
+                      byte(cc_expression),
+                      byte(std::uint8_t{127}),
+                  });
+    }
+    note_on(note);
+  }
+}
+
 void MidiOutput::all_notes_off() {
   for (auto channel_index = std::size_t{0}; channel_index < midi_channel_count;
        ++channel_index) {
@@ -168,7 +190,7 @@ void MidiOutput::control_change(std::uint8_t controller, std::uint8_t value) {
   last_cc_[index] = value;
 
   send(midi_, {
-                  status(status_control_change, static_cast<int>(channel)),
+                  status(status_control_change, live_channel_),
                   byte(controller),
                   byte(value),
               });
@@ -188,25 +210,43 @@ void MidiOutput::pitch_bend(float normalized) {
   const auto msb = static_cast<std::uint8_t>((bend >> 7) & 0x7F);
 
   send(midi_, {
-                  status(status_pitch_bend, static_cast<int>(channel)),
+                  status(status_pitch_bend, live_channel_),
                   byte(lsb),
                   byte(msb),
               });
 }
 
-void MidiOutput::program_change(std::uint8_t program, std::uint8_t bank_msb) {
-  all_notes_off();
+void MidiOutput::set_live_channel(int ch) {
+  ch = std::clamp(ch, 0, 15);
+  if (live_channel_ == ch) return;
+  live_channel_ = ch;
+  last_cc_.fill(std::nullopt);
+  last_pitch_bend_.reset();
+}
+
+void MidiOutput::program_change(std::uint8_t program, std::uint8_t bank_msb, int ch) {
+  for (auto n = 0; n < static_cast<int>(midi_note_count); ++n) {
+    const auto note = Note{.midi_note = n, .channel = ch};
+    if (active_notes_[note_index(note)]) {
+      note_off(note);
+    }
+  }
+  send(midi_, {
+                  status(status_control_change, ch),
+                  byte(cc_all_notes_off),
+                  byte(0),
+              });
 
   if (bank_msb > 0) {
     send(midi_, {
-                    status(status_control_change, static_cast<int>(channel)),
+                    status(status_control_change, ch),
                     byte(cc_bank_select_msb),
                     byte(bank_msb),
                 });
   }
 
   send(midi_, {
-                  status(status_program_change, static_cast<int>(channel)),
+                  status(status_program_change, ch),
                   byte(program),
               });
 }

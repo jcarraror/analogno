@@ -420,8 +420,134 @@ void update_sampler_controls(const ContinuousControls &controls,
 
 bool sample_record_button_active(const ControllerState &controller) {
   return controller.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) &&
-         controller.button(SDL_GAMEPAD_BUTTON_TOUCHPAD);
+         controller.button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
 }
+
+// ---------------------------------------------------------------------------
+// Step sequencer
+// ---------------------------------------------------------------------------
+
+struct SeqStep {
+  bool active{false};
+  int degree{0};
+  int velocity{100};
+  int midi_note{-1}; // -1 = compute from root/scale/octave; >=0 = absolute pitch
+};
+
+struct SeqTrack {
+  static constexpr int step_count = 16;
+  int midi_channel{0}; // persists across track reordering
+  int midi_program{0};
+  int midi_bank{0};
+  bool muted{false};
+  std::array<SeqStep, step_count> steps{};
+  std::optional<analogno::Note> pending_note_off{};
+};
+
+struct Sequencer {
+  static constexpr int step_count = SeqTrack::step_count;
+  static constexpr int max_tracks = 16;
+  bool playing{false};
+  int active_track{0};
+  int selected_step{-1}; // step in active_track armed for controller input; -1 = none
+  float bpm{120.0F};
+  int gate_pct{50};
+  int current_step{-1};
+  std::chrono::steady_clock::time_point step_start{};
+  std::vector<SeqTrack> tracks = [] {
+    std::vector<SeqTrack> v(4);
+    for (int i = 0; i < 4; ++i) v[static_cast<std::size_t>(i)].midi_channel = i;
+    return v;
+  }();
+};
+
+struct SeqTick {
+  std::vector<analogno::Note> note_ons{};
+  std::vector<analogno::Note> note_offs{};
+};
+
+SeqTick tick_sequencer(Sequencer &seq, const analogno::MusicalIntent &ctx) {
+  if (!seq.playing) return {};
+
+  const auto now = std::chrono::steady_clock::now();
+  using ms = std::chrono::duration<double, std::milli>;
+  const auto step_dur = ms{60000.0 / static_cast<double>(seq.bpm) / 4.0};
+  const auto gate_dur = step_dur * (seq.gate_pct / 100.0);
+  const auto elapsed  = std::chrono::duration_cast<ms>(now - seq.step_start);
+
+  SeqTick result{};
+
+  // Gate close — per track
+  for (auto &track : seq.tracks) {
+    if (track.pending_note_off.has_value() && elapsed >= gate_dur) {
+      result.note_offs.push_back(*track.pending_note_off);
+      track.pending_note_off.reset();
+    }
+  }
+
+  if (elapsed >= step_dur) {
+    seq.current_step = (seq.current_step + 1) % Sequencer::step_count;
+    seq.step_start = now;
+
+    for (std::size_t t = 0; t < seq.tracks.size(); ++t) {
+      auto &track = seq.tracks[t];
+      // Flush any still-held note on this track (gate_pct=100 case)
+      if (track.pending_note_off.has_value()) {
+        result.note_offs.push_back(*track.pending_note_off);
+        track.pending_note_off.reset();
+      }
+
+      const auto &step = track.steps[static_cast<std::size_t>(seq.current_step)];
+      if (step.active && !track.muted) {
+        const auto scale    = analogno::scale_for(ctx.scale);
+        const auto wrapped  = step.degree % scale.size;
+        const auto xoct     = step.degree / scale.size;
+        const auto semitone = scale.semitones[static_cast<std::size_t>(wrapped)];
+        const auto computed = std::clamp(
+            ctx.root_midi_note + semitone + (ctx.octave_offset + xoct) * 12,
+            0, 127);
+        const auto midi_note = step.midi_note >= 0 ? step.midi_note : computed;
+
+        const analogno::Note note{
+            .midi_note = midi_note,
+            .degree    = step.degree,
+            .octave    = ctx.octave_offset + xoct,
+            .velocity  = step.velocity,
+            .channel   = track.midi_channel, // stored, not derived from index
+        };
+        result.note_ons.push_back(note);
+        track.pending_note_off = note;
+      }
+    }
+  }
+
+  return result;
+}
+
+analogno::WebSeqState seq_web_state(const Sequencer &seq) {
+  analogno::WebSeqState s{};
+  s.playing       = seq.playing;
+  s.active_track  = seq.active_track;
+  s.selected_step = seq.selected_step;
+  s.bpm           = seq.bpm;
+  s.current_step  = seq.current_step;
+  s.gate_pct      = seq.gate_pct;
+  for (const auto &track : seq.tracks) {
+    analogno::WebSeqTrack wt{};
+    wt.midi_channel = track.midi_channel;
+    wt.midi_program = track.midi_program;
+    wt.midi_bank    = track.midi_bank;
+    wt.muted        = track.muted;
+    wt.steps.reserve(Sequencer::step_count);
+    for (const auto &step : track.steps) {
+      wt.steps.push_back({step.active, step.degree, step.velocity, step.midi_note});
+    }
+    s.tracks.push_back(std::move(wt));
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------------------
 
 analogno::WebRuntimeState
 make_web_state(const ControllerState &controller, const MusicalIntent &intent,
@@ -431,7 +557,8 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                const analogno::AudioFeatures &audio_features,
                std::uint8_t midi_program,
                std::uint8_t midi_bank,
-               const WaveformSketch &sketch) {
+               const WaveformSketch &sketch,
+               const Sequencer &seq) {
   std::vector<analogno::WebCaptureDevice> capture_devices{};
 
   for (const auto &device : audio_capture.devices()) {
@@ -525,6 +652,7 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                 return out;
               }(),
           },
+      .seq = seq_web_state(seq),
   };
 }
 
@@ -552,6 +680,7 @@ void run_event_loop() {
   auto current_midi_bank = std::uint8_t{0};
   auto current_midi_program = std::uint8_t{0};
   WaveformSketch sketch{};
+  Sequencer seq{};
 
   while (running) {
     SDL_Event event{};
@@ -619,13 +748,21 @@ void run_event_loop() {
     if (const auto patch = web.consume_patch_request()) {
       current_midi_bank = patch->bank;
       current_midi_program = patch->program;
-      midi.program_change(current_midi_program, current_midi_bank);
-      std::cout << "program change: bank=" << static_cast<int>(current_midi_bank)
-                << " program=" << static_cast<int>(current_midi_program) << '\n';
+      const auto at = seq.active_track;
+      if (at >= 0 && static_cast<std::size_t>(at) < seq.tracks.size()) {
+        auto &active = seq.tracks[static_cast<std::size_t>(at)];
+        active.midi_program = current_midi_program;
+        active.midi_bank    = current_midi_bank;
+        const auto ch = active.midi_channel;
+        midi.program_change(current_midi_program, current_midi_bank, ch);
+        std::cout << "program change: bank=" << static_cast<int>(current_midi_bank)
+                  << " program=" << static_cast<int>(current_midi_program)
+                  << " ch=" << ch << '\n';
+      }
     }
 
     if (auto wt = web.consume_wavetable_request()) {
-      sketch.committed = *wt; // store for display
+      sketch.committed = *wt;
       // Resample from the UI's resolution to wavetable_length via linear interp.
       const auto src_n = wt->size();
       std::vector<float> full(wavetable_length);
@@ -640,6 +777,92 @@ void run_event_loop() {
       }
       audio_sampler.set_wavetable(std::move(full));
       std::cout << "wavetable set from UI\n";
+    }
+
+    // Sequencer commands
+    if (web.consume_seq_play()) {
+      seq.playing = true;
+      seq.current_step = -1;
+      seq.step_start = std::chrono::steady_clock::now();
+      std::cout << "seq: play\n";
+    }
+    if (web.consume_seq_stop()) {
+      seq.playing = false;
+      for (auto &track : seq.tracks) {
+        if (track.pending_note_off.has_value()) {
+          midi.apply_notes_only({*track.pending_note_off}, {});
+          track.pending_note_off.reset();
+        }
+      }
+      std::cout << "seq: stop\n";
+    }
+    if (auto cfg = web.consume_seq_config()) {
+      seq.bpm      = cfg->bpm;
+      seq.gate_pct = cfg->gate_pct;
+      if (!cfg->tracks.empty()) {
+        seq.tracks.resize(cfg->tracks.size());
+        for (std::size_t t = 0; t < cfg->tracks.size(); ++t) {
+          // Only adopt midi_channel from config if explicitly provided (>= 0).
+          if (cfg->tracks[t].midi_channel >= 0)
+            seq.tracks[t].midi_channel = cfg->tracks[t].midi_channel;
+          seq.tracks[t].midi_program = cfg->tracks[t].midi_program;
+          seq.tracks[t].midi_bank    = cfg->tracks[t].midi_bank;
+          seq.tracks[t].muted        = cfg->tracks[t].muted;
+          for (std::size_t i = 0; i < static_cast<std::size_t>(Sequencer::step_count); ++i) {
+            const auto &sc = cfg->tracks[t].steps[i];
+            seq.tracks[t].steps[i] = {sc.active, sc.degree, sc.velocity, sc.midi_note};
+          }
+        }
+        seq.active_track = std::clamp(seq.active_track, 0,
+            static_cast<int>(seq.tracks.size()) - 1);
+      }
+    }
+
+    if (const auto sel = web.consume_seq_select_step()) {
+      seq.selected_step = *sel;
+      if (*sel >= 0) std::cout << "seq: arm step " << *sel << '\n';
+      else           std::cout << "seq: disarm\n";
+    }
+
+    if (const auto trk = web.consume_seq_select_track()) {
+      seq.active_track  = std::clamp(*trk, 0, static_cast<int>(seq.tracks.size()) - 1);
+      seq.selected_step = -1;
+      std::cout << "seq: active track " << seq.active_track << '\n';
+    }
+
+    if (web.consume_seq_add_track()) {
+      if (static_cast<int>(seq.tracks.size()) < Sequencer::max_tracks) {
+        // Assign the lowest MIDI channel not already in use.
+        std::vector<bool> used(16, false);
+        for (const auto &t : seq.tracks)
+          if (t.midi_channel >= 0 && t.midi_channel < 16)
+            used[static_cast<std::size_t>(t.midi_channel)] = true;
+        int new_ch = 0;
+        while (new_ch < 16 && used[static_cast<std::size_t>(new_ch)]) ++new_ch;
+        SeqTrack new_track{};
+        new_track.midi_channel = new_ch < 16 ? new_ch : 0;
+        seq.tracks.push_back(new_track);
+        std::cout << "seq: added track on ch " << new_track.midi_channel << '\n';
+      }
+    }
+
+    if (const auto rm = web.consume_seq_remove_track()) {
+      const auto idx = static_cast<std::size_t>(*rm);
+      if (seq.tracks.size() > 1 && idx < seq.tracks.size()) {
+        if (seq.tracks[idx].pending_note_off) {
+          midi.apply_notes_only({*seq.tracks[idx].pending_note_off}, {});
+        }
+        seq.tracks.erase(seq.tracks.begin() + static_cast<std::ptrdiff_t>(idx));
+        seq.active_track = std::clamp(seq.active_track, 0,
+            static_cast<int>(seq.tracks.size()) - 1);
+        seq.selected_step = -1;
+        // Resend program changes so MIDI channels still have correct programs.
+        for (const auto &t : seq.tracks)
+          midi.program_change(static_cast<std::uint8_t>(t.midi_program),
+                              static_cast<std::uint8_t>(t.midi_bank),
+                              t.midi_channel);
+        std::cout << "seq: removed track " << idx << '\n';
+      }
     }
 
     if (const auto save_request = web.consume_save_sample_request()) {
@@ -720,6 +943,17 @@ void run_event_loop() {
     if (should_map) {
       auto intent = mapper.map(state);
 
+      // Route live play to the active track's MIDI channel so the DS5 always
+      // sounds like the instrument selected on that track.
+      const auto live_ch = [&] {
+        const auto at = seq.active_track;
+        if (at >= 0 && static_cast<std::size_t>(at) < seq.tracks.size())
+          return seq.tracks[static_cast<std::size_t>(at)].midi_channel;
+        return 0;
+      }();
+      for (auto &n : intent.note_ons)  n.channel = live_ch;
+      for (auto &n : intent.note_offs) n.channel = live_ch;
+
       if (audio_sampler.has_sample()) {
         // Release sampler voices on note-off (important for looping wavetables).
         constexpr auto sampler_root_for_release = 48;
@@ -731,12 +965,23 @@ void run_event_loop() {
         trigger_sampler_notes(intent, audio_sampler);
         active_notes.apply(intent);
       } else {
+        midi.set_live_channel(live_ch);
         midi.apply(intent);
         active_notes.apply(intent);
       }
 
       last_intent = intent;
       last_audio_features = audio_features;
+
+      // Arm recording: write any note-on into the selected (armed) step,
+      // then auto-advance the arm to the next step.
+      if (seq.selected_step >= 0 && !intent.note_ons.empty()) {
+        const auto &n = intent.note_ons[0];
+        const auto tidx = static_cast<std::size_t>(seq.active_track);
+        const auto sidx = static_cast<std::size_t>(seq.selected_step);
+        seq.tracks[tidx].steps[sidx] = {true, n.degree, n.velocity, n.midi_note};
+        seq.selected_step = (seq.selected_step + 1) % Sequencer::step_count;
+      }
 
       const auto now = std::chrono::steady_clock::now();
 
@@ -746,6 +991,25 @@ void run_event_loop() {
       }
 
       state.clear_frame_edges();
+    }
+
+    // Sequencer tick — runs every frame independent of controller changes
+    if (const auto tick = tick_sequencer(seq, last_intent);
+        !tick.note_ons.empty() || !tick.note_offs.empty()) {
+      if (audio_sampler.has_sample()) {
+        constexpr auto sampler_root = 48;
+        for (const auto &note : tick.note_offs) {
+          audio_sampler.release(std::pow(2.0F,
+              static_cast<float>(note.midi_note - sampler_root) / 12.0F));
+        }
+        MusicalIntent seq_intent{};
+        seq_intent.note_ons = tick.note_ons;
+        trigger_sampler_notes(seq_intent, audio_sampler);
+      } else {
+        // apply_notes_only: no CC/pitch-bend side-effects that would override
+        // the live player's expression, filter, modulation, etc.
+        midi.apply_notes_only(tick.note_offs, tick.note_ons);
+      }
     }
 
     const auto now = std::chrono::steady_clock::now();
@@ -759,7 +1023,7 @@ void run_event_loop() {
                                  audio_capture, audio_sampler,
                                  last_audio_features,
                                  current_midi_program, current_midi_bank,
-                                 sketch));
+                                 sketch, seq));
       last_web_publish = now;
     }
 

@@ -31,6 +31,13 @@ if [[ ! -d "${WEB_DIR}/node_modules" ]]; then
   (cd "${WEB_DIR}" && npm install)
 fi
 
+# Free port 5173 if a stale process holds it.
+if lsof -ti tcp:5173 &>/dev/null; then
+  echo "freeing port 5173..."
+  kill $(lsof -ti tcp:5173) 2>/dev/null || true
+  sleep 0.5
+fi
+
 cleanup() {
   echo
   echo "stopping Analogno dev stack..."

@@ -131,6 +131,39 @@ std::string to_json_string(const WebRuntimeState &state) {
               {"touchpadRawPoints", state.audio.touchpad_raw_points},
           },
       },
+      {
+          "seq",
+          [&] {
+            auto tracks = Json::array();
+            for (const auto &track : state.seq.tracks) {
+              auto steps = Json::array();
+              for (const auto &s : track.steps) {
+                steps.push_back({
+                    {"active", s.active},
+                    {"degree", s.degree},
+                    {"velocity", s.velocity},
+                    {"midiNote", s.midi_note},
+                });
+              }
+              tracks.push_back({
+                  {"midiChannel", track.midi_channel},
+                  {"midiProgram", track.midi_program},
+                  {"midiBank", track.midi_bank},
+                  {"muted", track.muted},
+                  {"steps", std::move(steps)},
+              });
+            }
+            return Json{
+                {"playing", state.seq.playing},
+                {"activeTrack", state.seq.active_track},
+                {"selectedStep", state.seq.selected_step},
+                {"bpm", state.seq.bpm},
+                {"currentStep", state.seq.current_step},
+                {"gatePct", state.seq.gate_pct},
+                {"tracks", std::move(tracks)},
+            };
+          }(),
+      },
   };
 
   return json.dump();
@@ -156,6 +189,14 @@ public:
   std::optional<WebSocketServer::PatchRequest> patch_request{};
   std::mutex wavetable_mutex{};
   std::optional<std::vector<float>> wavetable_request{};
+  std::atomic_bool seq_play_cmd{false};
+  std::atomic_bool seq_stop_cmd{false};
+  std::atomic_int  seq_select_step_cmd{-2};  // -2 = no pending; -1 = deselect; 0..15 = arm
+  std::atomic_int  seq_select_track_cmd{-2}; // -2 = no pending; 0..15 = select track
+  std::atomic_bool seq_add_track_cmd{false};
+  std::atomic_int  seq_remove_track_cmd{-1}; // -1 = no pending; >=0 = remove that index
+  std::mutex seq_config_mutex{};
+  std::optional<WebSocketServer::SeqConfig> seq_config{};
 };
 
 class Session final : public std::enable_shared_from_this<Session> {
@@ -271,6 +312,58 @@ private:
             shared_->wavetable_request = std::move(samples);
           }
         }
+      } else if (json.value("type", "") == "seqPlay") {
+        shared_->seq_play_cmd.store(true);
+      } else if (json.value("type", "") == "seqStop") {
+        shared_->seq_stop_cmd.store(true);
+      } else if (json.value("type", "") == "selectSeqStep") {
+        const auto step = json.value("step", -1);
+        shared_->seq_select_step_cmd.store(std::clamp(step, -1, 15));
+      } else if (json.value("type", "") == "selectSeqTrack") {
+        const auto track = json.value("track", 0);
+        shared_->seq_select_track_cmd.store(std::clamp(track, 0, 15));
+      } else if (json.value("type", "") == "seqAddTrack") {
+        shared_->seq_add_track_cmd.store(true);
+      } else if (json.value("type", "") == "seqRemoveTrack") {
+        const auto track = json.value("track", -1);
+        if (track >= 0) shared_->seq_remove_track_cmd.store(track);
+      } else if (json.value("type", "") == "setSeq") {
+        WebSocketServer::SeqConfig cfg{};
+        if (json.contains("bpm") && json["bpm"].is_number()) {
+          cfg.bpm = std::clamp(json["bpm"].get<float>(), 20.0F, 300.0F);
+        }
+        if (json.contains("gatePct") && json["gatePct"].is_number_integer()) {
+          cfg.gate_pct = std::clamp(json["gatePct"].get<int>(), 5, 100);
+        }
+        if (json.contains("tracks") && json["tracks"].is_array()) {
+          const auto &tarr = json["tracks"];
+          const auto nt = std::min(tarr.size(),
+              static_cast<std::size_t>(WebSocketServer::SeqConfig::max_tracks));
+          cfg.tracks.resize(nt);
+          for (std::size_t t = 0; t < nt; ++t) {
+            const auto &tj = tarr[t];
+            cfg.tracks[t].midi_channel = std::clamp(tj.value("midiChannel", -1), -1, 15);
+            cfg.tracks[t].midi_program = std::clamp(tj.value("midiProgram", 0), 0, 127);
+            cfg.tracks[t].midi_bank    = std::clamp(tj.value("midiBank",    0), 0, 127);
+            cfg.tracks[t].muted        = tj.value("muted", false);
+            if (tj.contains("steps") && tj["steps"].is_array()) {
+              const auto &arr = tj["steps"];
+              const auto n = std::min(arr.size(),
+                  static_cast<std::size_t>(WebSocketServer::SeqConfig::step_count));
+              for (std::size_t i = 0; i < n; ++i) {
+                const auto &s = arr[i];
+                cfg.tracks[t].steps[i] = WebSocketServer::SeqStepConfig{
+                    .active    = s.value("active", false),
+                    .degree    = std::clamp(s.value("degree", 0), 0, 27),
+                    .velocity  = std::clamp(s.value("velocity", 100), 1, 127),
+                    .midi_note = s.value("midiNote", -1),
+                };
+              }
+            }
+          }
+        }
+        const auto lock = std::scoped_lock{shared_->seq_config_mutex};
+        shared_->seq_config = cfg;
       }
     } catch (const std::exception &exception) {
       std::cerr << "invalid websocket JSON: " << exception.what() << '\n';
@@ -443,6 +536,41 @@ public:
     return std::exchange(shared_->wavetable_request, std::nullopt);
   }
 
+  [[nodiscard]] bool consume_seq_play() {
+    return shared_->seq_play_cmd.exchange(false);
+  }
+
+  [[nodiscard]] bool consume_seq_stop() {
+    return shared_->seq_stop_cmd.exchange(false);
+  }
+
+  [[nodiscard]] bool consume_seq_add_track() {
+    return shared_->seq_add_track_cmd.exchange(false);
+  }
+
+  [[nodiscard]] std::optional<int> consume_seq_remove_track() {
+    const auto v = shared_->seq_remove_track_cmd.exchange(-1);
+    if (v < 0) return std::nullopt;
+    return v;
+  }
+
+  [[nodiscard]] std::optional<int> consume_seq_select_step() {
+    const auto v = shared_->seq_select_step_cmd.exchange(-2);
+    if (v == -2) return std::nullopt;
+    return v;
+  }
+
+  [[nodiscard]] std::optional<int> consume_seq_select_track() {
+    const auto v = shared_->seq_select_track_cmd.exchange(-2);
+    if (v == -2) return std::nullopt;
+    return v;
+  }
+
+  [[nodiscard]] std::optional<WebSocketServer::SeqConfig> consume_seq_config() {
+    const auto lock = std::scoped_lock{shared_->seq_config_mutex};
+    return std::exchange(shared_->seq_config, std::nullopt);
+  }
+
 private:
   std::shared_ptr<SharedState> shared_;
   std::thread thread_{};
@@ -489,6 +617,34 @@ std::optional<WebSocketServer::PatchRequest> WebSocketServer::consume_patch_requ
 
 std::optional<std::vector<float>> WebSocketServer::consume_wavetable_request() {
   return impl_->consume_wavetable_request();
+}
+
+bool WebSocketServer::consume_seq_play() {
+  return impl_->consume_seq_play();
+}
+
+bool WebSocketServer::consume_seq_stop() {
+  return impl_->consume_seq_stop();
+}
+
+bool WebSocketServer::consume_seq_add_track() {
+  return impl_->consume_seq_add_track();
+}
+
+std::optional<int> WebSocketServer::consume_seq_remove_track() {
+  return impl_->consume_seq_remove_track();
+}
+
+std::optional<int> WebSocketServer::consume_seq_select_step() {
+  return impl_->consume_seq_select_step();
+}
+
+std::optional<int> WebSocketServer::consume_seq_select_track() {
+  return impl_->consume_seq_select_track();
+}
+
+std::optional<WebSocketServer::SeqConfig> WebSocketServer::consume_seq_config() {
+  return impl_->consume_seq_config();
 }
 
 } // namespace analogno

@@ -78,10 +78,36 @@ struct WebMusicState final {
   int midi_bank{};
 };
 
+struct WebSeqStep final {
+  bool active{};
+  int degree{};
+  int velocity{100};
+  int midi_note{-1};
+};
+
+struct WebSeqTrack final {
+  int midi_channel{0};
+  int midi_program{0};
+  int midi_bank{0};
+  bool muted{false};
+  std::vector<WebSeqStep> steps{};
+};
+
+struct WebSeqState final {
+  bool playing{};
+  int active_track{0};
+  int selected_step{-1};
+  float bpm{120.0F};
+  int current_step{-1};
+  int gate_pct{50};
+  std::vector<WebSeqTrack> tracks{};
+};
+
 struct WebRuntimeState final {
   WebControllerState controller{};
   WebMusicState music{};
   WebAudioState audio{};
+  WebSeqState seq{};
 };
 
 } // namespace analogno

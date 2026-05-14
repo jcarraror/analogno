@@ -25,14 +25,17 @@ public:
   ~MidiOutput();
 
   void apply(const MusicalIntent &intent);
+  void apply_notes_only(const std::vector<Note> &note_offs,
+                        const std::vector<Note> &note_ons);
   void all_notes_off();
-  void program_change(std::uint8_t program, std::uint8_t bank_msb = 0);
+  void program_change(std::uint8_t program, std::uint8_t bank_msb = 0, int ch = 0);
+  void set_live_channel(int ch); // reroutes CCs and pitch-bend to the given channel
 
 private:
-  static constexpr auto channel = std::uint8_t{0};
   static constexpr auto midi_channel_count = std::size_t{16};
   static constexpr auto midi_cc_count = std::size_t{128};
   static constexpr auto midi_note_count = std::size_t{128};
+  int live_channel_{0};
 
   RtMidiOut midi_;
   std::array<bool, midi_channel_count * midi_note_count> active_notes_{};
