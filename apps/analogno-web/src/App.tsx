@@ -669,6 +669,19 @@ function SequencerPanel({
     onSelectStep(-1);
   }
 
+  function handleStepRightClick(trackIdx: number, stepIdx: number, e: React.MouseEvent) {
+    e.preventDefault();
+    if (!tracks[trackIdx]?.steps[stepIdx]?.active) return;
+    const next = tracks.map((t, ti) =>
+      ti === trackIdx
+        ? { ...t, steps: t.steps.map((s, si) => si === stepIdx ? { active: false, degree: 0, velocity: 100, midiNote: -1 } : s) }
+        : t
+    );
+    setTracks(next);
+    send(next, bpm, gate);
+    if (trackIdx === activeTrack && selectedStep === stepIdx) onSelectStep(-1);
+  }
+
   function handleBpm(v: number) {
     const c = Math.max(20, Math.min(300, v));
     setBpm(c); send(tracks, c, gate);
@@ -708,12 +721,6 @@ function SequencerPanel({
                 ? ` \u00b7 scale deg ${armedStep.degree}`
                 : ' \u00b7 empty \u2014 press a face button'}
           </span>
-        )}
-        {selectedStep >= 0 && armedStep?.active && (
-          <button type="button" className="seq-picker-clear" disabled={disabled}
-            onClick={clearArmedStep}>
-            &#x2715; Clear
-          </button>
         )}
       </div>
 
@@ -764,6 +771,7 @@ function SequencerPanel({
                     ].filter(Boolean).join(' ')}
                     disabled={disabled}
                     onClick={() => handleStepClick(ti, si)}
+                    onContextMenu={(e) => { if (!disabled) handleStepRightClick(ti, si, e); }}
                     title={`T${ti + 1} step ${si + 1}${step.active ? ` \u2014 ${label || 'scale'} vel ${step.velocity}` : ''}`}>
                     <span className="seq-step-num">{si + 1}</span>
                     {step.active && label && <span className="seq-step-note">{label}</span>}

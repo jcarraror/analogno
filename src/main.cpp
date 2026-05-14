@@ -745,7 +745,10 @@ void run_event_loop(Gamepad &gamepad,
   auto current_midi_program = int{0};
   WaveformSketch sketch{};
   Sequencer seq{};
-  
+// Touchpad swipe for seq step navigation active when a step is armed
+  struct TouchSwipe { float prev_x{0.0f}; float prev_y{0.0f}; bool active{false}; };
+  TouchSwipe tp_swipe{};
+
   using tp = std::chrono::steady_clock::time_point;
   struct LedFlash { std::array<std::uint8_t, 3> color{}; tp show_until{}; };
   std::deque<LedFlash> led_sequence{};
@@ -757,32 +760,87 @@ void run_event_loop(Gamepad &gamepad,
     while (SDL_PollEvent(&event)) {
       running = handle_event(event, state);
 
+      // Touchpad physical click while a step is armed del note.
+      if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+          event.gbutton.button == SDL_GAMEPAD_BUTTON_TOUCHPAD &&
+          seq.selected_step >= 0) {
+        const auto tidx = static_cast<std::size_t>(seq.active_track);
+        const auto sidx = static_cast<std::size_t>(seq.selected_step);
+        if (tidx < seq.tracks.size()) {
+          seq.tracks[tidx].steps[sidx] = {false, 0, 100, -1};
+          std::cout << "seq: cleared step " << seq.selected_step << " on track "
+                    << seq.active_track << '\n';
+        }
+      }
 
-      if ((event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN ||
-           event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION) &&
-          event.gtouchpad.touchpad == 0 && event.gtouchpad.finger == 0) {
+      if (event.gtouchpad.touchpad == 0 && event.gtouchpad.finger == 0) {
         const bool l1_held = state.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
         const bool tp_click = state.button(SDL_GAMEPAD_BUTTON_TOUCHPAD);
-        if (!l1_held && !tp_click) {
-          if (!sketch.active) {
-            sketch.active = true;
+
+        if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN) {
+          if (seq.selected_step >= 0 && !l1_held && !tp_click) {
+            // Seq armed — enter swipe-to-navigate mode.
+            tp_swipe = { event.gtouchpad.x, event.gtouchpad.y, true };
+          } else if (!l1_held && !tp_click) {
+            if (!sketch.active) {
+              sketch.active = true;
+              sketch.points.clear();
+            }
+            sketch.points.emplace_back(event.gtouchpad.x, event.gtouchpad.y);
+          }
+        } else if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION) {
+          if (tp_swipe.active) {
+            constexpr float step_threshold = 0.10f;
+            constexpr float track_threshold = 0.12f;
+            const float dx = event.gtouchpad.x - tp_swipe.prev_x;
+            const float dy = event.gtouchpad.y - tp_swipe.prev_y;
+            if (std::abs(dx) >= std::abs(dy)) {
+              // Horizontal: step navigation.
+              if (dx > step_threshold) {
+                seq.selected_step = (seq.selected_step + 1) % Sequencer::step_count;
+                tp_swipe.prev_x = event.gtouchpad.x;
+                tp_swipe.prev_y = event.gtouchpad.y;
+              } else if (dx < -step_threshold) {
+                seq.selected_step = (seq.selected_step - 1 + Sequencer::step_count) % Sequencer::step_count;
+                tp_swipe.prev_x = event.gtouchpad.x;
+                tp_swipe.prev_y = event.gtouchpad.y;
+              }
+            } else {
+              // Vertical: track switching.
+              if (dy > track_threshold) {
+                seq.active_track = std::min(seq.active_track + 1,
+                    static_cast<int>(seq.tracks.size()) - 1);
+                tp_swipe.prev_x = event.gtouchpad.x;
+                tp_swipe.prev_y = event.gtouchpad.y;
+              } else if (dy < -track_threshold) {
+                seq.active_track = std::max(seq.active_track - 1, 0);
+                tp_swipe.prev_x = event.gtouchpad.x;
+                tp_swipe.prev_y = event.gtouchpad.y;
+              }
+            }
+          } else if (!l1_held && !tp_click) {
+            if (!sketch.active) {
+              sketch.active = true;
+              sketch.points.clear();
+            }
+            sketch.points.emplace_back(event.gtouchpad.x, event.gtouchpad.y);
+          }
+        } else if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
+          if (tp_swipe.active) {
+            tp_swipe.active = false;
+          } else if (sketch.active) {
+            sketch.active = false;
+            auto wavetable = build_wavetable(sketch.points, wavetable_length);
+            if (!wavetable.empty()) {
+              sketch.committed = build_wavetable(sketch.points, 128);
+              sketch.committed_points = sketch.points;
+              std::cout << "wavetable drawn: " << sketch.points.size()
+                        << " points\n";
+              audio_sampler.set_wavetable(std::move(wavetable));
+            }
             sketch.points.clear();
           }
-          sketch.points.emplace_back(event.gtouchpad.x, event.gtouchpad.y);
         }
-      } else if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP &&
-                 event.gtouchpad.touchpad == 0 &&
-                 event.gtouchpad.finger == 0 && sketch.active) {
-        sketch.active = false;
-        auto wavetable = build_wavetable(sketch.points, wavetable_length);
-        if (!wavetable.empty()) {
-          sketch.committed = build_wavetable(sketch.points, 128);
-          sketch.committed_points = sketch.points;
-          std::cout << "wavetable drawn: " << sketch.points.size()
-                    << " points\n";
-          audio_sampler.set_wavetable(std::move(wavetable));
-        }
-        sketch.points.clear();
       }
     }
 
@@ -967,11 +1025,30 @@ void run_event_loop(Gamepad &gamepad,
     }
 
 
-    if (state.button_pressed(SDL_GAMEPAD_BUTTON_START)) {
+    if (state.button_pressed(SDL_GAMEPAD_BUTTON_BACK)) {
       const auto cur = audio_sampler.active_bank();
       const auto prev = (cur == 0 ? AudioSampler::bank_count : cur) - 1;
       audio_sampler.set_active_bank(prev);
       std::cout << "bank: " << prev << '\n';
+    }
+
+    // Start button: toggle sequencer play/stop.
+    if (state.button_pressed(SDL_GAMEPAD_BUTTON_START)) {
+      if (seq.playing) {
+        seq.playing = false;
+        for (auto &track : seq.tracks) {
+          if (track.pending_note_off.has_value()) {
+            midi.apply_notes_only({*track.pending_note_off}, {});
+            track.pending_note_off.reset();
+          }
+        }
+        std::cout << "seq: stop (controller)\n";
+      } else {
+        seq.playing = true;
+        seq.current_step = -1;
+        seq.step_start = std::chrono::steady_clock::now();
+        std::cout << "seq: play (controller)\n";
+      }
     }
 
     if (audio_sampler.has_sample() &&
