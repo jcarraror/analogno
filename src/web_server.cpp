@@ -51,6 +51,7 @@ Json sample_banks_json(const std::vector<WebSampleBank> &banks) {
         {"frames", bank.frames},
         {"trimStart", bank.trim_start},
         {"trimEnd", bank.trim_end},
+        {"isWavetable", bank.is_wavetable},
     });
   }
 
@@ -124,6 +125,7 @@ std::string to_json_string(const WebRuntimeState &state) {
               {"sampleFrames", state.audio.sample_frames},
               {"sampleTrimStart", state.audio.sample_trim_start},
               {"sampleTrimEnd", state.audio.sample_trim_end},
+              {"sampleWaveform", state.audio.sample_waveform},
               {"banks", sample_banks_json(state.audio.banks)},
               {"activeBank", state.audio.active_bank},
               {"touchpadDrawing", state.audio.touchpad_drawing},
@@ -475,7 +477,13 @@ public:
   }
 
   void publish(const WebRuntimeState &state) {
-    const auto message = to_json_string(state);
+    std::string message;
+    try {
+      message = to_json_string(state);
+    } catch (const std::exception &e) {
+      std::cerr << "[ws] publish serialization error: " << e.what() << '\n';
+      return;
+    }
 
     net::post(shared_->ioc, [shared = shared_, message] {
       shared->sessions.erase(

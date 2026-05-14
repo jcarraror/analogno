@@ -200,14 +200,32 @@ void AudioSampler::trigger(float rate) {
     return;
   }
 
+  const auto clamped_rate = std::clamp(rate, 0.25F, 4.0F);
+  const auto trim_pos =
+      bank_trim_start_[bank].load() * static_cast<float>(banks_[bank]->size());
+  const auto is_wavetable = bank_is_wavetable_[bank].load();
+
+  // Choke-on-retrigger: if a voice is already playing this bank at the same
+  // pitch, restart it in place rather than layering a new one.  This gives
+  // mono behaviour for repeated notes while still allowing polyphony across
+  // different pitches (different rates).
+  for (auto &voice : voices_) {
+    if (voice.active && voice.bank_index == bank &&
+        std::abs(voice.rate - clamped_rate) < 0.005F) {
+      voice.releasing = false;
+      voice.position = trim_pos;
+      voice.envelope = 0.0F;
+      return;
+    }
+  }
+
   auto &voice = voices_[next_voice_];
   voice = Voice{
       .active = true,
       .releasing = false,
-      .loop = bank_is_wavetable_[bank].load(),
-      .position =
-          bank_trim_start_[bank].load() * static_cast<float>(banks_[bank]->size()),
-      .rate = std::clamp(rate, 0.25F, 4.0F),
+      .loop = is_wavetable,
+      .position = trim_pos,
+      .rate = clamped_rate,
       .envelope = 0.0F,
       .bank_index = bank,
   };
@@ -222,7 +240,12 @@ void AudioSampler::release(float rate) {
   for (auto &voice : voices_) {
     if (voice.active && !voice.releasing &&
         std::abs(voice.rate - clamped_rate) < 0.005F) {
-      voice.releasing = true;
+      // One-shot samples (mic recordings) play to their natural trim_end and
+      // release themselves — ignore note_off so the full sample is heard.
+      // Looping voices (wavetables) are gate-controlled: stop on note_off.
+      if (voice.loop) {
+        voice.releasing = true;
+      }
     }
   }
 }
@@ -269,6 +292,31 @@ std::size_t AudioSampler::active_bank() const {
   return active_bank_.load();
 }
 
+std::vector<float> AudioSampler::sample_waveform(std::size_t n_points) const {
+  const auto bank = active_bank_.load();
+  const auto lock = std::scoped_lock{mutex_};
+  const auto &ptr = banks_[bank];
+  if (!ptr || ptr->empty() || n_points == 0) {
+    return std::vector<float>(n_points, 0.0F);
+  }
+  const auto &raw = *ptr;
+  // Stereo interleaved: each frame has `channels` floats.
+  const auto frame_count = raw.size() / static_cast<std::size_t>(channels);
+  std::vector<float> result(n_points, 0.0F);
+  for (std::size_t i = 0; i < n_points; ++i) {
+    const auto f0 = (i * frame_count) / n_points;
+    const auto f1 = ((i + 1U) * frame_count) / n_points;
+    float peak = 0.0F;
+    for (auto f = f0; f < f1; ++f) {
+      for (ma_uint32 c = 0; c < channels; ++c) {
+        peak = std::max(peak, std::abs(raw[f * static_cast<std::size_t>(channels) + c]));
+      }
+    }
+    result[i] = std::isfinite(peak) ? std::clamp(peak, 0.0F, 1.0F) : 0.0F;
+  }
+  return result;
+}
+
 bool AudioSampler::bank_has_sample(std::size_t bank) const {
   if (bank >= bank_count) {
     return false;
@@ -297,6 +345,13 @@ float AudioSampler::bank_trim_end(std::size_t bank) const {
     return 1.0F;
   }
   return bank_trim_end_[bank].load();
+}
+
+bool AudioSampler::bank_is_wavetable(std::size_t bank) const {
+  if (bank >= bank_count) {
+    return false;
+  }
+  return bank_is_wavetable_[bank].load();
 }
 
 bool AudioSampler::is_running() const { return running_; }

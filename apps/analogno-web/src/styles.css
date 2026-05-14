@@ -202,6 +202,42 @@ h1 {
   margin: 16px 0;
 }
 
+.sample-waveform-svg {
+  display: block;
+  width: 100%;
+  height: 80px;
+  border-radius: 4px;
+  background: #0d1117;
+  pointer-events: none;
+  user-select: none;
+}
+
+.swv-interactive {
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+
+.swv-bar-on {
+  fill: #60a5fa;
+  opacity: 0.85;
+}
+
+.swv-bar-off {
+  fill: #2a3347;
+  opacity: 0.9;
+}
+
+.swv-excluded {
+  fill: rgba(0, 0, 0, 0.55);
+}
+
+.swv-marker {
+  stroke: #fbbf24;
+  stroke-width: 1.5;
+  opacity: 0.95;
+  vector-effect: non-scaling-stroke;
+}
+
 .trim label {
   display: grid;
   gap: 8px;

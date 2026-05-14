@@ -413,8 +413,12 @@ void trigger_sampler_notes(const MusicalIntent &intent, AudioSampler &sampler) {
 }
 
 void update_sampler_controls(const ContinuousControls &controls,
-                             AudioSampler &sampler) {
-  sampler.set_gain(controls.expression);
+                             AudioSampler &sampler,
+                             bool seq_playing) {
+  // During sequencer playback, play at full gain so notes are heard without
+  // holding any trigger. The trigger only controls gain for live play.
+  const auto gain = seq_playing ? 1.0F : controls.expression;
+  sampler.set_gain(gain);
   sampler.set_pitch_controls(controls.pitch_bend, controls.vibrato);
 }
 
@@ -578,6 +582,7 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
         .frames = static_cast<std::uint32_t>(audio_sampler.bank_frames(i)),
         .trim_start = audio_sampler.bank_trim_start(i),
         .trim_end = audio_sampler.bank_trim_end(i),
+        .is_wavetable = audio_sampler.bank_is_wavetable(i),
     });
   }
 
@@ -638,6 +643,7 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                   static_cast<std::uint32_t>(audio_sampler.sample_frames()),
               .sample_trim_start = audio_sampler.trim_start(),
               .sample_trim_end = audio_sampler.trim_end(),
+              .sample_waveform = audio_sampler.sample_waveform(),
               .banks = std::move(sample_banks),
               .active_bank = audio_sampler.active_bank(),
               .touchpad_sketch = sketch.active
@@ -937,7 +943,7 @@ void run_event_loop() {
     }
 
     const auto audio_features = audio_capture.consume_features();
-    update_sampler_controls(mapper.map_controls(state), audio_sampler);
+    update_sampler_controls(mapper.map_controls(state), audio_sampler, seq.playing);
     const auto should_map = state.changed_this_frame();
 
     if (should_map) {

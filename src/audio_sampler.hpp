@@ -44,12 +44,15 @@ public:
   [[nodiscard]] float trim_start() const;
   [[nodiscard]] float trim_end() const;
   [[nodiscard]] std::size_t active_bank() const;
+  // Returns N peak-abs values downsampled from the active bank's sample.
+  [[nodiscard]] std::vector<float> sample_waveform(std::size_t n_points = 256) const;
 
   // Per-bank queries
   [[nodiscard]] bool bank_has_sample(std::size_t bank) const;
   [[nodiscard]] std::size_t bank_frames(std::size_t bank) const;
   [[nodiscard]] float bank_trim_start(std::size_t bank) const;
   [[nodiscard]] float bank_trim_end(std::size_t bank) const;
+  [[nodiscard]] bool bank_is_wavetable(std::size_t bank) const;
 
   [[nodiscard]] bool is_running() const;
 
