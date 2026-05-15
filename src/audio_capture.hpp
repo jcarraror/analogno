@@ -43,6 +43,8 @@ public:
   [[nodiscard]] float level() const;
   [[nodiscard]] AudioFeatures consume_features();
   [[nodiscard]] std::vector<float> waveform() const;
+  [[nodiscard]] std::vector<float> spec_samples() const;
+  void start_loopback();
   [[nodiscard]] std::optional<std::vector<float>> consume_captured_sample();
   [[nodiscard]] std::size_t captured_sample_frames() const;
   [[nodiscard]] const std::string &selected_device_name() const;
@@ -50,10 +52,14 @@ public:
 
 private:
   static constexpr auto waveform_sample_count = std::size_t{128};
+  static constexpr auto spec_sample_count     = std::size_t{2048};
   static constexpr auto max_sample_frames = std::size_t{480000};
 
   ma_context context_{};
   ma_device device_{};
+  ma_context loopback_context_{};
+  ma_device loopback_device_{};
+  std::atomic<bool> loopback_ready_{false};
 
   std::vector<CaptureDeviceInfo> devices_{};
   std::string selected_device_name_{"none"};
@@ -68,8 +74,10 @@ private:
   std::atomic<bool> sample_recording_{false};
   std::uint32_t onset_cooldown_frames_{};
   std::array<std::atomic<float>, waveform_sample_count> waveform_{};
+  std::array<std::atomic<float>, spec_sample_count>     spec_{};
   std::array<std::atomic<float>, max_sample_frames> recording_sample_{};
   std::atomic<std::size_t> waveform_write_index_{};
+  std::atomic<std::size_t> spec_write_index_{};
   std::atomic<std::size_t> recording_write_index_{};
   std::vector<float> captured_sample_{};
   std::mutex sample_mutex_{};
@@ -84,6 +92,8 @@ private:
 
   static void capture_callback(ma_device *device, void *output,
                                const void *input, ma_uint32 frame_count);
+  static void loopback_callback(ma_device *device, void *output,
+                                const void *input, ma_uint32 frame_count);
 };
 
 } // namespace analogno

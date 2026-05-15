@@ -573,10 +573,12 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                const std::vector<std::string> &available_soundfonts,
                const std::string &active_soundfont,
                bool piano_roll_visible,
+               bool spectrogram_visible,
                bool blow_mode,
                float blow_sensitivity,
                bool blow_active,
-               float blow_level) {
+               float blow_level,
+               const std::vector<float>& spec_samples) {
   std::vector<analogno::WebCaptureDevice> capture_devices{};
 
   for (const auto &device : audio_capture.devices()) {
@@ -688,12 +690,14 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
               .blow_sensitivity  = blow_sensitivity,
               .blow_active       = blow_active,
               .blow_level        = blow_level,
+              .spec_samples      = spec_samples,
           },
       .seq = seq_web_state(seq),
       .presets = sf2_presets,
       .soundfonts = available_soundfonts,
       .active_soundfont = active_soundfont,
       .piano_roll_visible = piano_roll_visible,
+      .spectrogram_visible = spectrogram_visible,
   };
 }
 
@@ -786,12 +790,14 @@ void run_event_loop(Gamepad &gamepad,
   ActiveNoteTracker active_notes{};
   AudioCapture audio_capture{};
   audio_capture.start();
+  audio_capture.start_loopback();
   AudioSampler audio_sampler{};
   WebSocketServer web{};
   web.start();
 
   bool running = true;
   bool piano_roll_visible = true;
+  bool spectrogram_visible = true;
   auto last_print = std::chrono::steady_clock::now();
   auto last_web_publish = std::chrono::steady_clock::now();
 
@@ -876,12 +882,15 @@ void run_event_loop(Gamepad &gamepad,
             const int vel = std::clamp(
                 static_cast<int>((1.0f - event.gtouchpad.y) * 100.0f + 27.0f), 1, 127);
             auto &rf = ribbon[fi];
-            if (rf.active && rf.midi_note >= 0)
+            if (rf.active && rf.midi_note >= 0) {
               midi.apply_notes_only({{Note{.midi_note = rf.midi_note, .channel = rf.midi_channel}}}, {});
+              active_notes.apply(MusicalIntent{.note_offs = {{Note{.midi_note = rf.midi_note}}}});
+            }
             rf.active   = true;
             rf.midi_note = note;
             midi.program_change(current_midi_program, current_midi_bank, rf.midi_channel);
             midi.apply_notes_only({}, {{Note{.midi_note = note, .velocity = vel, .channel = rf.midi_channel}}});
+            active_notes.apply(MusicalIntent{.note_ons = {{Note{.midi_note = note, .velocity = vel}}}});
           }
         } else if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION) {
           if (fi == 0 && tp_swipe.active) {
@@ -919,6 +928,9 @@ void run_event_loop(Gamepad &gamepad,
               midi.apply_notes_only(
                   {{Note{.midi_note = rf.midi_note, .channel = rf.midi_channel}}},
                   {{Note{.midi_note = new_note, .velocity = vel, .channel = rf.midi_channel}}});
+              active_notes.apply(MusicalIntent{
+                  .note_ons  = {{Note{.midi_note = new_note, .velocity = vel}}},
+                  .note_offs = {{Note{.midi_note = rf.midi_note}}}});
               rf.midi_note = new_note;
             }
           }
@@ -939,6 +951,7 @@ void run_event_loop(Gamepad &gamepad,
             auto &rf = ribbon[fi];
             if (rf.midi_note >= 0)
               midi.apply_notes_only({{Note{.midi_note = rf.midi_note, .channel = rf.midi_channel}}}, {});
+            active_notes.apply(MusicalIntent{.note_offs = {{Note{.midi_note = rf.midi_note}}}});
             rf.active    = false;
             rf.midi_note = -1;
           }
@@ -1169,6 +1182,11 @@ void run_event_loop(Gamepad &gamepad,
     if (state.button_pressed(SDL_GAMEPAD_BUTTON_RIGHT_STICK)) {
       piano_roll_visible = !piano_roll_visible;
       std::cout << "piano roll: " << (piano_roll_visible ? "on" : "off") << '\n';
+    }
+
+    if (state.button_pressed(SDL_GAMEPAD_BUTTON_LEFT_STICK)) {
+      spectrogram_visible = !spectrogram_visible;
+      std::cout << "spectrogram: " << (spectrogram_visible ? "on" : "off") << '\n';
     }
 
     // Start button: toggle sequencer play/stop.
@@ -1446,6 +1464,11 @@ void run_event_loop(Gamepad &gamepad,
         last_audio_features = audio_features;
       }
 
+      static int spec_counter = 0;
+      const auto spec_data = (spectrogram_visible && (++spec_counter % 3 == 0))
+                                 ? audio_capture.spec_samples()
+                                 : std::vector<float>{};
+
       web.publish(make_web_state(state, last_intent, active_notes,
                                  audio_capture, audio_sampler,
                                  last_audio_features,
@@ -1453,13 +1476,15 @@ void run_event_loop(Gamepad &gamepad,
                                  sketch, seq, sf2_presets,
                                  available_soundfonts, active_soundfont,
                                  piano_roll_visible,
+                                 spectrogram_visible,
                                  blow.enabled,
                                  blow.sensitivity,
                                  blow.is_blowing,
                                  // blow_level: breath signal above ambient relative to trigger threshold.
                                  std::clamp(blow.signal_level(audio_features.envelope) /
                                                 blow.signal_threshold(),
-                                            0.0F, 2.0F)));
+                                            0.0F, 2.0F),
+                                 spec_data));
       last_web_publish = now;
     }
 

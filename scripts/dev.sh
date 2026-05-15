@@ -134,6 +134,8 @@ fi
 
 echo "starting Analogno runtime..."
 
+fuser -k 8765/tcp 2>/dev/null || true
+
 "${ANALOGNO_BIN}" --soundfont "${SOUNDFONT}" &
 ANALOGNO_PID=$!
 

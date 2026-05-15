@@ -73,6 +73,7 @@ struct WebAudioState final {
   float blow_sensitivity{0.5F};  // 0..1 user-adjustable threshold
   bool blow_active{};            // note currently held by breath
   float blow_level{};            // 0..2: envelope relative to on_threshold (1.0 = at gate)
+  std::vector<float> spec_samples{}; // 2048 raw audio samples for frontend FFT
 };
 
 struct WebMusicState final {
@@ -125,6 +126,7 @@ struct WebRuntimeState final {
   std::vector<std::string> soundfonts{};   // available SF2 files on disk
   std::string active_soundfont{};          // currently browsed soundfont path
   bool piano_roll_visible{true};
+  bool spectrogram_visible{true};
 };
 
 } // namespace analogno

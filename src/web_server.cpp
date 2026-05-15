@@ -136,6 +136,7 @@ std::string to_json_string(const WebRuntimeState &state) {
               {"blowSensitivity", state.audio.blow_sensitivity},
               {"blowActive", state.audio.blow_active},
               {"blowLevel", state.audio.blow_level},
+              {"specSamples", state.audio.spec_samples},
           },
       },
       {
@@ -185,6 +186,7 @@ std::string to_json_string(const WebRuntimeState &state) {
       }()},
       {"activeSoundfont", state.active_soundfont},
       {"pianoRollVisible", state.piano_roll_visible},
+      {"spectrogramVisible", state.spectrogram_visible},
   };
 
   return json.dump();

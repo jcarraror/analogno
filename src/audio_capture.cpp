@@ -32,6 +32,11 @@ AudioCapture::AudioCapture() {
 AudioCapture::~AudioCapture() {
   stop();
 
+  if (loopback_ready_.load()) {
+    ma_device_uninit(&loopback_device_);
+    ma_context_uninit(&loopback_context_);
+  }
+
   if (context_ready_) {
     ma_context_uninit(&context_);
   }
@@ -185,6 +190,28 @@ std::vector<float> AudioCapture::waveform() const {
   }
 
   return samples;
+}
+
+std::vector<float> AudioCapture::spec_samples() const {
+  std::vector<float> result{};
+  result.reserve(spec_sample_count);
+
+  const auto write_index = spec_write_index_.load(std::memory_order_acquire);
+  const auto available   = std::min(write_index, spec_sample_count);
+  const auto first       = write_index >= spec_sample_count
+                               ? write_index - spec_sample_count
+                               : std::size_t{0};
+
+  for (std::size_t i = 0; i < spec_sample_count - available; ++i) {
+    result.push_back(0.0F);
+  }
+
+  for (std::size_t i = 0; i < available; ++i) {
+    const auto index = (first + i) % spec_sample_count;
+    result.push_back(spec_[index].load(std::memory_order_relaxed));
+  }
+
+  return result;
 }
 
 std::optional<std::vector<float>> AudioCapture::consume_captured_sample() {
@@ -355,6 +382,16 @@ void AudioCapture::capture_callback(ma_device *device, void *output,
 
   self->waveform_write_index_.store(write_index, std::memory_order_release);
 
+  {
+    const auto base = self->spec_write_index_.fetch_add(
+        sample_count, std::memory_order_relaxed);
+    for (std::size_t i = 0; i < sample_count; ++i) {
+      self->spec_[(base + i) % spec_sample_count].store(
+          std::clamp(samples[i], -1.0F, 1.0F),
+          std::memory_order_relaxed);
+    }
+  }
+
   if (self->sample_recording_.load()) {
     const auto remaining =
         max_sample_frames > self->recording_write_index_.load()
@@ -369,6 +406,93 @@ void AudioCapture::capture_callback(ma_device *device, void *output,
 
     self->recording_write_index_.store(recording_write_index + copy_count);
   }
+}
+
+void AudioCapture::loopback_callback(ma_device *device, void *output,
+                                     const void *input,
+                                     ma_uint32 frame_count) {
+  static_cast<void>(output);
+  auto *self = static_cast<AudioCapture *>(device->pUserData);
+  if (self == nullptr || input == nullptr || frame_count == 0) return;
+
+  const auto *in = static_cast<const float *>(input);
+
+  static std::atomic<bool> seen_signal{false};
+  if (!seen_signal.load(std::memory_order_relaxed)) {
+    float peak = 0.0F;
+    for (ma_uint32 i = 0; i < frame_count; ++i)
+      peak = std::max(peak, std::abs((in[i*2] + in[i*2+1]) * 0.5F));
+    if (peak > 0.001F) {
+      std::cout << "loopback: synth audio detected (peak=" << peak << ")\n";
+      seen_signal.store(true, std::memory_order_relaxed);
+    }
+  }
+
+  const auto base = self->spec_write_index_.fetch_add(
+      static_cast<std::size_t>(frame_count), std::memory_order_relaxed);
+  for (ma_uint32 i = 0; i < frame_count; ++i) {
+    const float mono = (in[i * 2] + in[i * 2 + 1]) * 0.5F;
+    self->spec_[(base + i) % spec_sample_count].store(
+        std::clamp(mono, -1.0F, 1.0F), std::memory_order_relaxed);
+  }
+}
+
+void AudioCapture::start_loopback() {
+  if (!context_ready_ || loopback_ready_.load()) return;
+
+  // Enumerate devices from the main context to find the monitor source.
+  ma_device_info *capture_infos = nullptr;
+  ma_uint32 capture_count = 0;
+  if (ma_context_get_devices(&context_, nullptr, nullptr,
+                             &capture_infos, &capture_count) != MA_SUCCESS) return;
+
+  // Pick the speaker/headphone output monitor; skip silent HDMI monitors.
+  ma_device_id chosen_id{};
+  std::string   chosen_name;
+  bool          found = false;
+  ma_device_id  any_id{};
+  std::string   any_name;
+  bool          found_any = false;
+
+  for (ma_uint32 i = 0; i < capture_count; ++i) {
+    const std::string n{capture_infos[i].name};
+    const bool is_mon = n.find("monitor") != std::string::npos ||
+                        n.find("Monitor") != std::string::npos;
+    if (!is_mon) continue;
+
+    const bool is_speaker = n.find("Speaker") != std::string::npos ||
+                            n.find("Headphone") != std::string::npos;
+    const bool is_hdmi    = n.find("HDMI") != std::string::npos ||
+                            n.find("DisplayPort") != std::string::npos;
+    if (is_speaker && !found) { chosen_id = capture_infos[i].id; chosen_name = n; found = true; break; }
+    if (!is_hdmi && !found_any) { any_id = capture_infos[i].id; any_name = n; found_any = true; }
+  }
+  if (!found) { if (!found_any) { std::cout << "loopback: no monitor source, using mic\n"; return; }
+    chosen_id = any_id; chosen_name = any_name; }
+
+  if (ma_context_init(nullptr, 0, nullptr, &loopback_context_) != MA_SUCCESS) {
+    std::cerr << "warning: loopback context init failed\n"; return;
+  }
+
+  ma_device_config cfg  = ma_device_config_init(ma_device_type_capture);
+  cfg.capture.format    = ma_format_f32;
+  cfg.capture.channels  = 2; // monitor sources are always stereo
+  cfg.sampleRate        = sample_rate;
+  cfg.dataCallback      = &AudioCapture::loopback_callback;
+  cfg.pUserData         = this;
+  cfg.capture.pDeviceID = &chosen_id;
+
+  if (ma_device_init(&loopback_context_, &cfg, &loopback_device_) != MA_SUCCESS) {
+    std::cerr << "warning: loopback device init failed\n";
+    ma_context_uninit(&loopback_context_); return;
+  }
+  if (ma_device_start(&loopback_device_) != MA_SUCCESS) {
+    std::cerr << "warning: loopback device start failed\n";
+    ma_device_uninit(&loopback_device_);
+    ma_context_uninit(&loopback_context_); return;
+  }
+  loopback_ready_.store(true);
+  std::cout << "spectrogram loopback: " << chosen_name << '\n';
 }
 
 } // namespace analogno
