@@ -105,6 +105,7 @@ std::string to_json_string(const WebRuntimeState &state) {
               {"activeNotes", state.music.active_notes},
               {"midiProgram", state.music.midi_program},
               {"midiBank", state.music.midi_bank},
+              {"buttonMidiNotes", state.music.button_midi_notes},
           },
       },
       {
@@ -179,6 +180,7 @@ std::string to_json_string(const WebRuntimeState &state) {
           return arr;
       }()},
       {"activeSoundfont", state.active_soundfont},
+      {"pianoRollVisible", state.piano_roll_visible},
   };
 
   return json.dump();

@@ -46,6 +46,7 @@ using analogno::Gamepad;
 using analogno::MidiOutput;
 using analogno::MusicalIntent;
 using analogno::MusicMapper;
+using analogno::Note;
 using analogno::WebSocketServer;
 
 
@@ -570,7 +571,8 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                const Sequencer &seq,
                const std::vector<analogno::WebPreset> &sf2_presets,
                const std::vector<std::string> &available_soundfonts,
-               const std::string &active_soundfont) {
+               const std::string &active_soundfont,
+               bool piano_roll_visible) {
   std::vector<analogno::WebCaptureDevice> capture_devices{};
 
   for (const auto &device : audio_capture.devices()) {
@@ -618,8 +620,19 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                       .z = controller.accel().z,
                   },
           },
-      .music =
-          analogno::WebMusicState{
+      .music = [&] {
+          const auto sc = analogno::scale_for(intent.scale);
+          std::vector<int> btn_notes(8);
+          for (int i = 0; i < 8; ++i) {
+            const int wrapped = i % sc.size;
+            const int extra   = i / sc.size;
+            btn_notes[static_cast<std::size_t>(i)] = std::clamp(
+                intent.root_midi_note +
+                sc.semitones[static_cast<std::size_t>(wrapped)] +
+                (intent.octave_offset + extra) * 12,
+                0, 127);
+          }
+          return analogno::WebMusicState{
               .root_midi_note = intent.root_midi_note,
               .octave_offset = intent.octave_offset,
               .scale = std::string{analogno::scale_name(intent.scale)},
@@ -632,7 +645,9 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
               .active_notes = active_notes.notes(),
               .midi_program = static_cast<int>(midi_program),
               .midi_bank = static_cast<int>(midi_bank),
-          },
+              .button_midi_notes = std::move(btn_notes),
+          };
+      }(),
       .audio =
           analogno::WebAudioState{
               .devices = std::move(capture_devices),
@@ -670,6 +685,7 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
       .presets = sf2_presets,
       .soundfonts = available_soundfonts,
       .active_soundfont = active_soundfont,
+      .piano_roll_visible = piano_roll_visible,
   };
 }
 
@@ -735,6 +751,7 @@ void run_event_loop(Gamepad &gamepad,
   web.start();
 
   bool running = true;
+  bool piano_roll_visible = true;
   auto last_print = std::chrono::steady_clock::now();
   auto last_web_publish = std::chrono::steady_clock::now();
 
@@ -745,9 +762,34 @@ void run_event_loop(Gamepad &gamepad,
   auto current_midi_program = int{0};
   WaveformSketch sketch{};
   Sequencer seq{};
-// Touchpad swipe for seq step navigation active when a step is armed
+  // Touchpad swipe for seq step navigation (active when a step is armed).
   struct TouchSwipe { float prev_x{0.0f}; float prev_y{0.0f}; bool active{false}; };
   TouchSwipe tp_swipe{};
+
+  // Ribbon controller: fingers 0-1 are independent pitched voices.
+  // Each gets a dedicated MIDI channel (12, 13) so pitch/expression don't collide.
+  struct RibbonFinger {
+    bool active{false};
+    int midi_channel{};
+    int midi_note{-1};
+  };
+  constexpr auto ribbon_base_ch = 12;
+  constexpr auto ribbon_max = std::size_t{2};
+  std::array<RibbonFinger, 2> ribbon{};
+  ribbon[0].midi_channel = ribbon_base_ch;
+  ribbon[1].midi_channel = ribbon_base_ch + 1;
+
+  // Map X position [0,1] to a scale note over 2 octaves.
+  const auto ribbon_note_for_x = [](float x, int root, int oct_off,
+                                     analogno::ScaleKind sk) -> int {
+    const auto sc = analogno::scale_for(sk);
+    const int total = sc.size * 2;
+    const int idx = std::clamp(static_cast<int>(x * static_cast<float>(total)), 0, total - 1);
+    const int oct  = idx / sc.size;
+    const int step = idx % sc.size;
+    return std::clamp(root + oct_off * 12 + oct * 12 +
+                      sc.semitones[static_cast<std::size_t>(step)], 0, 127);
+  };
 
   using tp = std::chrono::steady_clock::time_point;
   struct LedFlash { std::array<std::uint8_t, 3> color{}; tp show_until{}; };
@@ -773,72 +815,91 @@ void run_event_loop(Gamepad &gamepad,
         }
       }
 
-      if (event.gtouchpad.touchpad == 0 && event.gtouchpad.finger == 0) {
+      if (event.gtouchpad.touchpad == 0) {
+        const auto fi = static_cast<std::size_t>(event.gtouchpad.finger);
         const bool l1_held = state.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
         const bool tp_click = state.button(SDL_GAMEPAD_BUTTON_TOUCHPAD);
 
         if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN) {
-          if (seq.selected_step >= 0 && !l1_held && !tp_click) {
-            // Seq armed — enter swipe-to-navigate mode.
+          if (fi == 0 && seq.selected_step >= 0 && !l1_held && !tp_click) {
+            // Seq armed, finger 0 → swipe-to-navigate.
             tp_swipe = { event.gtouchpad.x, event.gtouchpad.y, true };
-          } else if (!l1_held && !tp_click) {
-            if (!sketch.active) {
-              sketch.active = true;
-              sketch.points.clear();
-            }
+          } else if (fi == 0 && l1_held && !tp_click) {
+            // L1 + touch → waveform draw.
+            if (!sketch.active) { sketch.active = true; sketch.points.clear(); }
             sketch.points.emplace_back(event.gtouchpad.x, event.gtouchpad.y);
+          } else if (!l1_held && !tp_click && fi < ribbon_max) {
+            // Bare touch → ribbon controller (any finger).
+            const int note = ribbon_note_for_x(event.gtouchpad.x,
+                last_intent.root_midi_note, last_intent.octave_offset, last_intent.scale);
+            const int vel = std::clamp(
+                static_cast<int>((1.0f - event.gtouchpad.y) * 100.0f + 27.0f), 1, 127);
+            auto &rf = ribbon[fi];
+            if (rf.active && rf.midi_note >= 0)
+              midi.apply_notes_only({{Note{.midi_note = rf.midi_note, .channel = rf.midi_channel}}}, {});
+            rf.active   = true;
+            rf.midi_note = note;
+            midi.program_change(current_midi_program, current_midi_bank, rf.midi_channel);
+            midi.apply_notes_only({}, {{Note{.midi_note = note, .velocity = vel, .channel = rf.midi_channel}}});
           }
         } else if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION) {
-          if (tp_swipe.active) {
-            constexpr float step_threshold = 0.10f;
+          if (fi == 0 && tp_swipe.active) {
+            constexpr float step_threshold  = 0.10f;
             constexpr float track_threshold = 0.12f;
             const float dx = event.gtouchpad.x - tp_swipe.prev_x;
             const float dy = event.gtouchpad.y - tp_swipe.prev_y;
             if (std::abs(dx) >= std::abs(dy)) {
-              // Horizontal: step navigation.
               if (dx > step_threshold) {
                 seq.selected_step = (seq.selected_step + 1) % Sequencer::step_count;
-                tp_swipe.prev_x = event.gtouchpad.x;
-                tp_swipe.prev_y = event.gtouchpad.y;
+                tp_swipe.prev_x = event.gtouchpad.x; tp_swipe.prev_y = event.gtouchpad.y;
               } else if (dx < -step_threshold) {
                 seq.selected_step = (seq.selected_step - 1 + Sequencer::step_count) % Sequencer::step_count;
-                tp_swipe.prev_x = event.gtouchpad.x;
-                tp_swipe.prev_y = event.gtouchpad.y;
+                tp_swipe.prev_x = event.gtouchpad.x; tp_swipe.prev_y = event.gtouchpad.y;
               }
             } else {
-              // Vertical: track switching.
               if (dy > track_threshold) {
                 seq.active_track = std::min(seq.active_track + 1,
                     static_cast<int>(seq.tracks.size()) - 1);
-                tp_swipe.prev_x = event.gtouchpad.x;
-                tp_swipe.prev_y = event.gtouchpad.y;
+                tp_swipe.prev_x = event.gtouchpad.x; tp_swipe.prev_y = event.gtouchpad.y;
               } else if (dy < -track_threshold) {
                 seq.active_track = std::max(seq.active_track - 1, 0);
-                tp_swipe.prev_x = event.gtouchpad.x;
-                tp_swipe.prev_y = event.gtouchpad.y;
+                tp_swipe.prev_x = event.gtouchpad.x; tp_swipe.prev_y = event.gtouchpad.y;
               }
             }
-          } else if (!l1_held && !tp_click) {
-            if (!sketch.active) {
-              sketch.active = true;
-              sketch.points.clear();
-            }
+          } else if (fi == 0 && sketch.active) {
             sketch.points.emplace_back(event.gtouchpad.x, event.gtouchpad.y);
+          } else if (fi < ribbon_max && ribbon[fi].active) {
+            const int new_note = ribbon_note_for_x(event.gtouchpad.x,
+                last_intent.root_midi_note, last_intent.octave_offset, last_intent.scale);
+            auto &rf = ribbon[fi];
+            if (new_note != rf.midi_note) {
+              const int vel = std::clamp(
+                  static_cast<int>((1.0f - event.gtouchpad.y) * 100.0f + 27.0f), 1, 127);
+              midi.apply_notes_only(
+                  {{Note{.midi_note = rf.midi_note, .channel = rf.midi_channel}}},
+                  {{Note{.midi_note = new_note, .velocity = vel, .channel = rf.midi_channel}}});
+              rf.midi_note = new_note;
+            }
           }
         } else if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
-          if (tp_swipe.active) {
+          if (fi == 0 && tp_swipe.active) {
             tp_swipe.active = false;
-          } else if (sketch.active) {
+          } else if (fi == 0 && sketch.active) {
             sketch.active = false;
             auto wavetable = build_wavetable(sketch.points, wavetable_length);
             if (!wavetable.empty()) {
               sketch.committed = build_wavetable(sketch.points, 128);
               sketch.committed_points = sketch.points;
-              std::cout << "wavetable drawn: " << sketch.points.size()
-                        << " points\n";
+              std::cout << "wavetable drawn: " << sketch.points.size() << " points\n";
               audio_sampler.set_wavetable(std::move(wavetable));
             }
             sketch.points.clear();
+          } else if (fi < ribbon_max && ribbon[fi].active) {
+            auto &rf = ribbon[fi];
+            if (rf.midi_note >= 0)
+              midi.apply_notes_only({{Note{.midi_note = rf.midi_note, .channel = rf.midi_channel}}}, {});
+            rf.active    = false;
+            rf.midi_note = -1;
           }
         }
       }
@@ -850,6 +911,7 @@ void run_event_loop(Gamepad &gamepad,
       midi.apply(panic);
       active_notes.apply(panic);
       last_intent = panic;
+      for (auto &rf : ribbon) { rf.active = false; rf.midi_note = -1; }
       std::cout << "panic from web UI\n";
     }
 
@@ -886,6 +948,9 @@ void run_event_loop(Gamepad &gamepad,
                   << " program=" << static_cast<int>(current_midi_program)
                   << " ch=" << ch << '\n';
       }
+      // Keep ribbon channels in sync with the active instrument.
+      for (auto &rf : ribbon)
+        midi.program_change(current_midi_program, current_midi_bank, rf.midi_channel);
     }
 
     if (auto sf_req = web.consume_soundfont_request()) {
@@ -1030,6 +1095,11 @@ void run_event_loop(Gamepad &gamepad,
       const auto prev = (cur == 0 ? AudioSampler::bank_count : cur) - 1;
       audio_sampler.set_active_bank(prev);
       std::cout << "bank: " << prev << '\n';
+    }
+
+    if (state.button_pressed(SDL_GAMEPAD_BUTTON_RIGHT_STICK)) {
+      piano_roll_visible = !piano_roll_visible;
+      std::cout << "piano roll: " << (piano_roll_visible ? "on" : "off") << '\n';
     }
 
     // Start button: toggle sequencer play/stop.
@@ -1215,7 +1285,8 @@ void run_event_loop(Gamepad &gamepad,
                                  last_audio_features,
                                  current_midi_program, current_midi_bank,
                                  sketch, seq, sf2_presets,
-                                 available_soundfonts, active_soundfont));
+                                 available_soundfonts, active_soundfont,
+                                 piano_roll_visible));
       last_web_publish = now;
     }
 

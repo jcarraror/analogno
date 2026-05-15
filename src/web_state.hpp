@@ -84,6 +84,7 @@ struct WebMusicState final {
   std::vector<int> active_notes{};
   int midi_program{};
   int midi_bank{};
+  std::vector<int> button_midi_notes{}; // 8 entries: face(0-3) + dpad(4-7)
 };
 
 struct WebSeqStep final {
@@ -119,6 +120,7 @@ struct WebRuntimeState final {
   std::vector<WebPreset> presets{};
   std::vector<std::string> soundfonts{};   // available SF2 files on disk
   std::string active_soundfont{};          // currently browsed soundfont path
+  bool piano_roll_visible{true};
 };
 
 } // namespace analogno

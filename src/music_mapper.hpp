@@ -15,7 +15,7 @@ public:
   map_controls(const ControllerState &controller) const;
 
 private:
-  static constexpr auto playable_button_count = std::size_t{4};
+  static constexpr auto playable_button_count = std::size_t{8};
 
   int root_midi_note_{48};
   int octave_offset_{};
@@ -39,5 +39,7 @@ private:
   [[nodiscard]] Note note_for_degree(int degree) const;
   [[nodiscard]] bool rising_edge(bool current, bool &previous);
 };
+
+[[nodiscard]] Scale scale_for(ScaleKind kind);
 
 } // namespace analogno

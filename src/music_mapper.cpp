@@ -16,13 +16,18 @@ struct PlayableButton final {
   SDL_GamepadButton button{};
   int degree{};
   std::size_t slot{};
+  bool dpad{}; // suppressed when L1 held (becomes shift modifier)
 };
 
 constexpr auto playable_buttons = std::array{
-    PlayableButton{.button = SDL_GAMEPAD_BUTTON_SOUTH, .degree = 0, .slot = 0},
-    PlayableButton{.button = SDL_GAMEPAD_BUTTON_EAST, .degree = 1, .slot = 1},
-    PlayableButton{.button = SDL_GAMEPAD_BUTTON_WEST, .degree = 2, .slot = 2},
-    PlayableButton{.button = SDL_GAMEPAD_BUTTON_NORTH, .degree = 3, .slot = 3},
+    PlayableButton{.button = SDL_GAMEPAD_BUTTON_SOUTH,      .degree = 0, .slot = 0},
+    PlayableButton{.button = SDL_GAMEPAD_BUTTON_EAST,       .degree = 1, .slot = 1},
+    PlayableButton{.button = SDL_GAMEPAD_BUTTON_WEST,       .degree = 2, .slot = 2},
+    PlayableButton{.button = SDL_GAMEPAD_BUTTON_NORTH,      .degree = 3, .slot = 3},
+    PlayableButton{.button = SDL_GAMEPAD_BUTTON_DPAD_UP,    .degree = 4, .slot = 4, .dpad = true},
+    PlayableButton{.button = SDL_GAMEPAD_BUTTON_DPAD_DOWN,  .degree = 5, .slot = 5, .dpad = true},
+    PlayableButton{.button = SDL_GAMEPAD_BUTTON_DPAD_LEFT,  .degree = 6, .slot = 6, .dpad = true},
+    PlayableButton{.button = SDL_GAMEPAD_BUTTON_DPAD_RIGHT, .degree = 7, .slot = 7, .dpad = true},
 };
 
 int clamp_midi(int note) {
@@ -172,8 +177,18 @@ MusicMapper::map_controls(const ControllerState &controller) const {
 
 void MusicMapper::map_note_buttons(const ControllerState &controller,
                                    MusicalIntent &intent) {
+  const bool l1_held = controller.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
   for (const auto playable : playable_buttons) {
     auto &active_note = active_notes_[playable.slot];
+
+    // D-pad buttons become shift controls when L1 is held; release any stuck note.
+    if (playable.dpad && l1_held) {
+      if (active_note.has_value()) {
+        intent.note_offs.push_back(*active_note);
+        active_note.reset();
+      }
+      continue;
+    }
 
     if (controller.button_pressed(playable.button)) {
       const auto note = note_for_degree(playable.degree);
@@ -199,28 +214,27 @@ void MusicMapper::update_mode_buttons(const ControllerState &controller,
   const auto dpad_right = controller.button(SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
   const auto guide = controller.button(SDL_GAMEPAD_BUTTON_GUIDE);
 
-  if (rising_edge(l1, previous_l1_)) {
+  // Compute all dpad edges first (rising_edge mutates previous_ state).
+  const bool dpad_up_edge    = rising_edge(dpad_up,    previous_dpad_up_);
+  const bool dpad_down_edge  = rising_edge(dpad_down,  previous_dpad_down_);
+  const bool dpad_left_edge  = rising_edge(dpad_left,  previous_dpad_left_);
+  const bool dpad_right_edge = rising_edge(dpad_right, previous_dpad_right_);
+  const bool any_dpad_edge   = dpad_up_edge || dpad_down_edge || dpad_left_edge || dpad_right_edge;
+
+  // L1/R1 alone → cycle scale. L1 + dpad → octave/root shift.
+  if (rising_edge(l1, previous_l1_) && !any_dpad_edge) {
     scale_ = previous_scale(scale_);
   }
 
-  if (rising_edge(r1, previous_r1_)) {
+  if (rising_edge(r1, previous_r1_) && !any_dpad_edge) {
     scale_ = next_scale(scale_);
   }
 
-  if (rising_edge(dpad_up, previous_dpad_up_)) {
-    octave_offset_ = clamp_octave(octave_offset_ + 1);
-  }
-
-  if (rising_edge(dpad_down, previous_dpad_down_)) {
-    octave_offset_ = clamp_octave(octave_offset_ - 1);
-  }
-
-  if (rising_edge(dpad_left, previous_dpad_left_)) {
-    root_midi_note_ = clamp_midi(root_midi_note_ - 1);
-  }
-
-  if (rising_edge(dpad_right, previous_dpad_right_)) {
-    root_midi_note_ = clamp_midi(root_midi_note_ + 1);
+  if (l1) {
+    if (dpad_up_edge)    octave_offset_  = clamp_octave(octave_offset_  + 1);
+    if (dpad_down_edge)  octave_offset_  = clamp_octave(octave_offset_  - 1);
+    if (dpad_left_edge)  root_midi_note_ = clamp_midi(root_midi_note_   - 1);
+    if (dpad_right_edge) root_midi_note_ = clamp_midi(root_midi_note_   + 1);
   }
 
   if (rising_edge(guide, previous_guide_)) {
