@@ -132,6 +132,10 @@ std::string to_json_string(const WebRuntimeState &state) {
               {"touchpadDrawing", state.audio.touchpad_drawing},
               {"touchpadSketch", state.audio.touchpad_sketch},
               {"touchpadRawPoints", state.audio.touchpad_raw_points},
+              {"blowMode", state.audio.blow_mode},
+              {"blowSensitivity", state.audio.blow_sensitivity},
+              {"blowActive", state.audio.blow_active},
+              {"blowLevel", state.audio.blow_level},
           },
       },
       {
@@ -216,6 +220,8 @@ public:
   std::optional<WebSocketServer::SeqConfig> seq_config{};
   std::mutex soundfont_mutex{};
   std::optional<std::string> soundfont_request{};
+  std::atomic_int blow_mode_request{-1}; // -1=none, 0=disable, 1=enable
+  std::atomic_int blow_sensitivity_request{-1}; // -1=none, 0..100 = sensitivity%
 };
 
 class Session final : public std::enable_shared_from_this<Session> {
@@ -320,6 +326,11 @@ private:
         if (json.contains("path") && json["path"].is_string()) {
           shared_->soundfont_request = json["path"].get<std::string>();
         }
+      } else if (json.value("type", "") == "setBlowMode") {
+        shared_->blow_mode_request.store(json.value("enabled", false) ? 1 : 0);
+      } else if (json.value("type", "") == "setBlowSensitivity") {
+        const auto v = std::clamp(json.value("sensitivity", 50), 0, 100);
+        shared_->blow_sensitivity_request.store(v);
       } else if (json.value("type", "") == "setWavetable") {
         if (json.contains("data") && json["data"].is_array()) {
           std::vector<float> samples;
@@ -605,6 +616,18 @@ public:
     return std::exchange(shared_->soundfont_request, std::nullopt);
   }
 
+  [[nodiscard]] std::optional<bool> consume_blow_mode_request() {
+    const auto v = shared_->blow_mode_request.exchange(-1);
+    if (v < 0) return std::nullopt;
+    return v != 0;
+  }
+
+  [[nodiscard]] std::optional<float> consume_blow_sensitivity_request() {
+    const auto v = shared_->blow_sensitivity_request.exchange(-1);
+    if (v < 0) return std::nullopt;
+    return static_cast<float>(v) / 100.0F;
+  }
+
 private:
   std::shared_ptr<SharedState> shared_;
   std::thread thread_{};
@@ -683,6 +706,14 @@ std::optional<WebSocketServer::SeqConfig> WebSocketServer::consume_seq_config() 
 
 std::optional<std::string> WebSocketServer::consume_soundfont_request() {
   return impl_->consume_soundfont_request();
+}
+
+std::optional<bool> WebSocketServer::consume_blow_mode_request() {
+  return impl_->consume_blow_mode_request();
+}
+
+std::optional<float> WebSocketServer::consume_blow_sensitivity_request() {
+  return impl_->consume_blow_sensitivity_request();
 }
 
 } // namespace analogno

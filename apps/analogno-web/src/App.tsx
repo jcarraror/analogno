@@ -107,6 +107,10 @@ type RuntimeState = {
     touchpadSketch: number[];
     touchpadDrawing: boolean;
     touchpadRawPoints: [number, number][];
+    blowMode: boolean;
+    blowSensitivity: number;
+    blowActive: boolean;
+    blowLevel: number;  // 0..2, relative to threshold (1.0 = at gate)
   };
   seq: {
     playing: boolean;
@@ -1013,6 +1017,31 @@ function SequencerPanel({
   );
 }
 
+// Meter that shows a threshold line at 50% (1.0 normalised to 0..2 range)
+function BlowMeter({ label, level, active }: { label: string; level: number; active: boolean }) {
+  const pct = Math.min(100, Math.round(level * 50)); // level 2.0 → 100%
+  return (
+    <div className="meter">
+      <div className="meter-head">
+        <span>{label}</span>
+        <strong style={{ color: active ? '#4ade80' : '#eee' }}>{active ? '● BLOWING' : `${pct}%`}</strong>
+      </div>
+      <div className="meter-track" style={{ position: 'relative' }}>
+        <div className="meter-fill" style={{ width: `${pct}%`, background: active ? '#4ade80' : pct >= 50 ? '#facc15' : undefined }} />
+        {/* threshold line at 50% */}
+        <div style={{
+          position: 'absolute', top: 0, bottom: 0, left: '50%',
+          width: '2px', background: '#f87171', opacity: 0.8,
+          transform: 'translateX(-50%)',
+        }} title="trigger threshold" />
+      </div>
+      <div style={{ fontSize: '10px', color: '#555', marginTop: '2px' }}>
+        red line = trigger threshold · fill must pass it to start a note
+      </div>
+    </div>
+  );
+}
+
 function BipolarMeter({ label, value }: { label: string; value: number }) {
   const clamped = Math.max(-1, Math.min(1, value));
   const left = clamped < 0 ? 50 + clamped * 50 : 50;
@@ -1146,6 +1175,14 @@ export function App() {
   function seqRemoveTrack(track: number) { socket?.send(JSON.stringify({ type: "seqRemoveTrack", track })); }
   function seqChange(cfg: { bpm: number; gatePct: number; tracks: SeqTrackEdit[] }) {
     socket?.send(JSON.stringify({ type: "setSeq", ...cfg }));
+  }
+
+  function setBlowMode(enabled: boolean) {
+    socket?.send(JSON.stringify({ type: "setBlowMode", enabled }));
+  }
+
+  function setBlowSensitivity(sensitivity: number) {
+    socket?.send(JSON.stringify({ type: "setBlowSensitivity", sensitivity: Math.round(sensitivity * 100) }));
   }
 
   const [configOpen, setConfigOpen] = useState(false);
@@ -1450,6 +1487,57 @@ export function App() {
             onRemoveTrack={seqRemoveTrack}
             onChange={seqChange}
           />
+        </Panel>
+
+        <Panel title="Breath / wind controller">
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            {/* <p style={{ margin: 0, fontSize: "12px", color: "#888", lineHeight: 1.5 }}>
+              <strong style={{ color: '#4a9eff' }}>Tip for DualSense:</strong> select the
+              <em> DualSense Wireless Controller</em> mic in <strong>Config → Audio input → Input device</strong>
+              and blow directly into the small hole on the front face of the controller — that's the mic.
+              Or use any room mic and point it close to your mouth.
+            </p> */}
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className={`seq-playstop${(audio?.blowMode ?? false) ? " seq-playing" : ""}`}
+                disabled={connection !== "online"}
+                onClick={() => setBlowMode(!(audio?.blowMode ?? false))}
+              >
+                {(audio?.blowMode ?? false) ? "\uD83D\uDCA8 Blow ON" : "\uD83D\uDCA8 Blow OFF"}
+              </button>
+              {(audio?.blowMode ?? false) && (
+                <span style={{ fontSize: "12px", color: '#aaa' }}>
+                  {(audio?.blowActive) ? '🎵 note held' : 'waiting for blow…'}
+                </span>
+              )}
+              {sampleMode && (
+                <span style={{ fontSize: "11px", color: "#e74c3c" }}>⚠ sampler active — disable it to use blow</span>
+              )}
+            </div>
+            <BlowMeter
+              label="Breath level (fill must cross red line to trigger)"
+              level={audio?.blowLevel ?? 0}
+              active={audio?.blowActive ?? false}
+            />
+            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "#aaa" }}>
+                <span>Sensitivity <em style={{color:'#555', fontSize:'10px'}}>(100% = easiest to trigger)</em></span>
+                <span style={{ color: "#eee" }}>{Math.round((audio?.blowSensitivity ?? 0.5) * 100)}%</span>
+              </div>
+              <input
+                type="range" min={0} max={100}
+                value={Math.round((audio?.blowSensitivity ?? 0.5) * 100)}
+                disabled={connection !== "online"}
+                onChange={e => setBlowSensitivity(Number(e.target.value) / 100)}
+                style={{ width: "100%" }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#444' }}>
+                <span>0% — hard blow only</span>
+                <span>100% — very soft breath</span>
+              </div>
+            </div>
+          </div>
         </Panel>
       </div>
     </main>

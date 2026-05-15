@@ -71,6 +71,8 @@ public:
   [[nodiscard]] std::optional<int> consume_seq_select_track();
   [[nodiscard]] std::optional<SeqConfig> consume_seq_config();
   [[nodiscard]] std::optional<std::string> consume_soundfont_request();
+  [[nodiscard]] std::optional<bool> consume_blow_mode_request();
+  [[nodiscard]] std::optional<float> consume_blow_sensitivity_request();
 
 private:
   class Impl;

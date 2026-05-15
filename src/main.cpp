@@ -572,7 +572,11 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                const std::vector<analogno::WebPreset> &sf2_presets,
                const std::vector<std::string> &available_soundfonts,
                const std::string &active_soundfont,
-               bool piano_roll_visible) {
+               bool piano_roll_visible,
+               bool blow_mode,
+               float blow_sensitivity,
+               bool blow_active,
+               float blow_level) {
   std::vector<analogno::WebCaptureDevice> capture_devices{};
 
   for (const auto &device : audio_capture.devices()) {
@@ -680,6 +684,10 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                 for (auto [x, y] : src) out.push_back({x, y});
                 return out;
               }(),
+              .blow_mode        = blow_mode,
+              .blow_sensitivity  = blow_sensitivity,
+              .blow_active       = blow_active,
+              .blow_level        = blow_level,
           },
       .seq = seq_web_state(seq),
       .presets = sf2_presets,
@@ -733,6 +741,38 @@ std::vector<std::string> scan_soundfonts() {
   return result;
 }
 
+// Breath / wind controller state -------------------------------------------
+struct BlowController {
+  bool enabled{false};
+  bool is_blowing{false};       // note currently held
+  std::optional<Note> held_note{};
+  float sensitivity{0.5F};      // 0..1  higher = MORE sensitive = lower threshold
+
+  std::optional<std::chrono::steady_clock::time_point> attack_since{};
+  std::optional<std::chrono::steady_clock::time_point> release_since{};
+  std::chrono::steady_clock::time_point arm_until{};
+  float ambient_floor{0.0F};
+  bool ambient_ready{false};
+
+  static constexpr auto attack_time = std::chrono::milliseconds{45};
+  static constexpr auto release_time = std::chrono::milliseconds{90};
+  static constexpr auto arm_cooldown_time = std::chrono::milliseconds{700};
+
+  [[nodiscard]] float signal_threshold() const {
+    const auto inverse = 1.0F - sensitivity;
+    return 0.00035F + inverse * inverse * 0.00565F;
+  }
+  [[nodiscard]] float signal_level(float raw) const {
+    return std::max(0.0F, raw - ambient_floor);
+  }
+  [[nodiscard]] float on_threshold() const {
+    return ambient_floor + signal_threshold();
+  }
+  [[nodiscard]] float off_threshold() const {
+    return ambient_floor + signal_threshold() * 0.35F;
+  }
+};
+
 void run_event_loop(Gamepad &gamepad,
                     std::vector<analogno::WebPreset> sf2_presets,
                     std::string active_soundfont,
@@ -762,6 +802,7 @@ void run_event_loop(Gamepad &gamepad,
   auto current_midi_program = int{0};
   WaveformSketch sketch{};
   Sequencer seq{};
+  BlowController blow{};
   // Touchpad swipe for seq step navigation (active when a step is armed).
   struct TouchSwipe { float prev_x{0.0f}; float prev_y{0.0f}; bool active{false}; };
   TouchSwipe tp_swipe{};
@@ -958,6 +999,34 @@ void run_event_loop(Gamepad &gamepad,
       sf2_presets = analogno::read_sf2_presets(active_soundfont);
       std::cout << "soundfont presets updated from: " << active_soundfont
                 << " (" << sf2_presets.size() << " presets)\n";
+    }
+
+    if (const auto blow_req = web.consume_blow_mode_request()) {
+      if (!*blow_req && blow.enabled && blow.held_note) {
+        midi.apply_notes_only({*blow.held_note}, {});
+        active_notes.apply(MusicalIntent{.note_offs = {*blow.held_note}});
+        blow.held_note.reset();
+        blow.is_blowing = false;
+      }
+      blow.enabled = *blow_req;
+      if (blow.enabled) {
+        // Ignore mic briefly so UI-click noise cannot fire a note, and use
+        // that window to learn the current room/controller noise floor.
+        const auto now = std::chrono::steady_clock::now();
+        blow.arm_until     = now + BlowController::arm_cooldown_time;
+        blow.attack_since.reset();
+        blow.release_since.reset();
+        blow.ambient_floor = 0.0F;
+        blow.ambient_ready = false;
+        blow.is_blowing    = false;
+        blow.held_note.reset();
+      }
+      std::cout << "blow mode: " << (blow.enabled ? "on" : "off") << '\n';
+    }
+
+    if (const auto sens = web.consume_blow_sensitivity_request()) {
+      blow.sensitivity = *sens;
+      std::cout << "blow sensitivity: " << blow.sensitivity << '\n';
     }
 
     if (auto wt = web.consume_wavetable_request()) {
@@ -1161,17 +1230,103 @@ void run_event_loop(Gamepad &gamepad,
     update_sampler_controls(mapper.map_controls(state), audio_sampler, seq.playing);
     const auto should_map = state.changed_this_frame();
 
+    // Live MIDI channel: follows the active sequencer track.
+    const auto live_ch = [&] {
+      const auto at = seq.active_track;
+      if (at >= 0 && static_cast<std::size_t>(at) < seq.tracks.size())
+        return seq.tracks[static_cast<std::size_t>(at)].midi_channel;
+      return 0;
+    }();
+
+    // Blow / wind controller (WARBL-style breath input via microphone).
+    // Uses audio_features.envelope = raw smoothed RMS (NOT the 8x-normalised level)
+    // so quiet ambient noise is far below threshold.
+    // Attack requires sustained signal; release requires sustained silence.
+    // An arm-cooldown window after enabling ignores the click sound of the web button.
+    if (blow.enabled && !audio_sampler.has_sample()) {
+      const float raw = audio_features.envelope; // raw RMS, typically 0.001..0.150
+      const auto blow_now = std::chrono::steady_clock::now();
+
+      if (blow_now < blow.arm_until) {
+        if (!blow.ambient_ready) {
+          blow.ambient_floor = raw;
+          blow.ambient_ready = true;
+        } else {
+          blow.ambient_floor = blow.ambient_floor * 0.97F + raw * 0.03F;
+        }
+        // Drain any pre-existing tension so arm doesn't latch immediately after cooldown.
+        blow.attack_since.reset();
+        blow.release_since.reset();
+      } else {
+        const auto signal = blow.signal_level(raw);
+
+        // Attack / release timers.
+        if (signal >= blow.signal_threshold()) {
+          if (!blow.attack_since.has_value()) {
+            blow.attack_since = blow_now;
+          }
+          blow.release_since.reset();
+        } else if (signal < blow.signal_threshold() * 0.35F) {
+          if (!blow.release_since.has_value()) {
+            blow.release_since = blow_now;
+          }
+          blow.attack_since.reset();
+          if (!blow.is_blowing) {
+            blow.ambient_floor = blow.ambient_floor * 0.995F + raw * 0.005F;
+          }
+        }
+        // Dead zone between off_threshold and on_threshold: neither timer advances.
+
+        if (!blow.is_blowing && blow.attack_since.has_value() &&
+            blow_now - *blow.attack_since >= BlowController::attack_time) {
+          // Blow started — trigger note-on.
+          const float strength = std::clamp(signal / (blow.signal_threshold() * 3.0F), 0.0F, 1.0F);
+          const auto vel = std::clamp(40 + static_cast<int>(strength * 87.0F), 1, 127);
+          const Note note{
+              .midi_note = last_intent.root_midi_note,
+              .degree    = 0,
+              .octave    = last_intent.octave_offset,
+              .velocity  = vel,
+              .channel   = live_ch,
+          };
+          midi.apply_notes_only({}, {note});
+          blow.held_note  = note;
+          active_notes.apply(MusicalIntent{.note_ons = {note}});
+          blow.is_blowing = true;
+          blow.attack_since.reset();
+          std::cout << "blow: note-on " << note.midi_note << " vel=" << vel << '\n';
+        }
+
+        if (blow.is_blowing && blow.release_since.has_value() &&
+            blow_now - *blow.release_since >= BlowController::release_time) {
+          // Blow stopped — trigger note-off.
+          midi.apply_notes_only({*blow.held_note}, {});
+          active_notes.apply(MusicalIntent{.note_offs = {*blow.held_note}});
+          blow.held_note.reset();
+          blow.is_blowing = false;
+          blow.release_since.reset();
+          std::cout << "blow: note-off\n";
+        }
+      }
+
+      // CC2 (Breath Controller) + CC11 (Expression): sent every frame for real-time dynamics.
+      const float breath = std::clamp(
+          blow.signal_level(raw) / (blow.signal_threshold() * 3.0F), 0.0F, 1.0F);
+      MusicalIntent cc_intent{};
+      cc_intent.controls = {
+          .pitch_bend = last_intent.controls.pitch_bend,
+          .breath     = breath,
+          .expression = breath,
+          .vibrato    = last_intent.controls.vibrato,
+      };
+      midi.set_live_channel(live_ch);
+      midi.apply(cc_intent);
+    }
+
     if (should_map) {
       auto intent = mapper.map(state);
 
-      // Route live play to the active track's MIDI channel so the DS5 always
-      // sounds like the instrument selected on that track.
-      const auto live_ch = [&] {
-        const auto at = seq.active_track;
-        if (at >= 0 && static_cast<std::size_t>(at) < seq.tracks.size())
-          return seq.tracks[static_cast<std::size_t>(at)].midi_channel;
-        return 0;
-      }();
+      // Route live play to the active track's MIDI channel.
       for (auto &n : intent.note_ons)  n.channel = live_ch;
       for (auto &n : intent.note_offs) n.channel = live_ch;
 
@@ -1185,6 +1340,17 @@ void run_event_loop(Gamepad &gamepad,
         }
         trigger_sampler_notes(intent, audio_sampler);
         active_notes.apply(intent);
+      } else if (blow.enabled) {
+        // Blow mode: buttons change note legato while gate is open; the
+        // breath gate alone controls the note’s lifetime.
+        if (blow.is_blowing && blow.held_note && !intent.note_ons.empty()) {
+          auto new_note = intent.note_ons.front();
+          new_note.velocity = blow.held_note->velocity;
+          midi.apply_notes_only({*blow.held_note}, {new_note});
+          active_notes.apply(MusicalIntent{.note_ons = {new_note},
+                                           .note_offs = {*blow.held_note}});
+          blow.held_note = new_note;
+        }
       } else {
         midi.set_live_channel(live_ch);
         midi.apply(intent);
@@ -1286,7 +1452,14 @@ void run_event_loop(Gamepad &gamepad,
                                  current_midi_program, current_midi_bank,
                                  sketch, seq, sf2_presets,
                                  available_soundfonts, active_soundfont,
-                                 piano_roll_visible));
+                                 piano_roll_visible,
+                                 blow.enabled,
+                                 blow.sensitivity,
+                                 blow.is_blowing,
+                                 // blow_level: breath signal above ambient relative to trigger threshold.
+                                 std::clamp(blow.signal_level(audio_features.envelope) /
+                                                blow.signal_threshold(),
+                                            0.0F, 2.0F)));
       last_web_publish = now;
     }
 

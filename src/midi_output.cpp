@@ -18,6 +18,7 @@ constexpr auto status_program_change = std::uint8_t{0xC0};
 constexpr auto status_control_change = std::uint8_t{0xB0};
 constexpr auto status_pitch_bend = std::uint8_t{0xE0};
 
+constexpr auto cc_breath_controller = std::uint8_t{2};
 constexpr auto cc_expression = std::uint8_t{11};
 constexpr auto cc_filter_cutoff = std::uint8_t{74};
 constexpr auto cc_filter_resonance = std::uint8_t{71};
@@ -75,6 +76,7 @@ void MidiOutput::apply(const MusicalIntent &intent) {
   }
 
   pitch_bend(intent.controls.pitch_bend);
+  control_change(cc_breath_controller, control_value(intent.controls.breath));
   control_change(cc_expression, control_value(intent.controls.expression));
   control_change(cc_filter_cutoff,
                  control_value(intent.controls.filter_cutoff));

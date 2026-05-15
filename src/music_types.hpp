@@ -34,6 +34,7 @@ struct Note final {
 
 struct ContinuousControls final {
   float pitch_bend{};       // -1..1
+  float breath{};           // 0..1 → CC2 (breath controller)
   float expression{};       // 0..1
   float filter_cutoff{};    // 0..1
   float filter_resonance{}; // 0..1
