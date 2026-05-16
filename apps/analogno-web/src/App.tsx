@@ -839,6 +839,16 @@ const SEQ_PAGE_SIZE = 16;
 const emptySeqStep = (): SeqStepEdit => ({ active: false, tie: false, degree: 0, velocity: 100, midiNote: -1 });
 const resizeSeqSteps = (steps: SeqStepEdit[], count: number): SeqStepEdit[] =>
   Array.from({ length: count }, (_, i) => steps[i] ? { ...steps[i] } : emptySeqStep());
+const seqTracksSignature = (tracks: RuntimeState['seq']['tracks']): string =>
+  tracks.map(t => [
+    t.midiChannel,
+    t.midiProgram,
+    t.midiBank,
+    t.loopLength,
+    t.muted ? 1 : 0,
+    t.steps.length,
+    t.steps.map(s => `${s.active ? 1 : 0}${s.tie ? 1 : 0}:${s.degree}:${s.velocity}:${s.midiNote}`).join(',')
+  ].join('|')).join(';');
 
 function SequencerPanel({
   seq,
@@ -866,6 +876,7 @@ function SequencerPanel({
   onChange: (cfg: { bpm: number; gatePct: number; stepCount: number; stepDivision: number; tracks: SeqTrackEdit[] }) => void;
 }) {
   const initialized = useRef(false);
+  const tracksSignature = useRef('');
   const [bpm, setBpm] = useState(120);
   const [gate, setGate] = useState(50);
   const [stepCount, setStepCount] = useState(32);
@@ -895,14 +906,18 @@ function SequencerPanel({
     const nextStepDivision = seq.stepDivision ?? 16;
     setStepCount(nextStepCount);
     setStepDivision(nextStepDivision);
-    setTracks(seq.tracks.map(t => ({
-      midiChannel: t.midiChannel,
-      midiProgram: t.midiProgram,
-      midiBank: t.midiBank,
-      loopLength: Math.max(1, Math.min(nextStepCount, t.loopLength ?? nextStepCount)),
-      muted: t.muted,
-      steps: resizeSeqSteps(t.steps.map(s => ({ ...s })), nextStepCount),
-    })));
+    const nextSignature = seqTracksSignature(seq.tracks);
+    if (nextSignature !== tracksSignature.current) {
+      tracksSignature.current = nextSignature;
+      setTracks(seq.tracks.map(t => ({
+        midiChannel: t.midiChannel,
+        midiProgram: t.midiProgram,
+        midiBank: t.midiBank,
+        loopLength: Math.max(1, Math.min(nextStepCount, t.loopLength ?? nextStepCount)),
+        muted: t.muted,
+        steps: resizeSeqSteps(t.steps.map(s => ({ ...s })), nextStepCount),
+      })));
+    }
   }, [seq]);
 
   const disabled = connection !== 'online';
@@ -915,6 +930,10 @@ function SequencerPanel({
   const visibleStart = Math.min(stepPage, pageCount - 1) * SEQ_PAGE_SIZE;
   const visibleEnd = Math.min(stepCount, visibleStart + SEQ_PAGE_SIZE);
   const visibleStepCount = visibleEnd - visibleStart;
+  const visibleTracks = useMemo(() => tracks.map(track => ({
+    ...track,
+    visibleSteps: track.steps.slice(visibleStart, visibleEnd),
+  })), [tracks, visibleStart, visibleEnd]);
 
   useEffect(() => {
     setStepPage(page => Math.min(page, Math.max(0, Math.ceil(stepCount / SEQ_PAGE_SIZE) - 1)));
@@ -1016,6 +1035,7 @@ function SequencerPanel({
       loopLength: Math.max(1, Math.min(nextCount, t.loopLength === stepCount ? nextCount : t.loopLength)),
       steps: resizeSeqSteps(t.steps, nextCount),
     }));
+    tracksSignature.current = '';
     setStepCount(nextCount);
     setTracks(nextTracks);
     if (selectedStep >= nextCount) onSelectStep(-1);
@@ -1032,6 +1052,7 @@ function SequencerPanel({
   function handleLoopLength(trackIdx: number, length: number) {
     const nextLength = Math.max(1, Math.min(stepCount, length));
     const next = tracks.map((t, i) => i === trackIdx ? { ...t, loopLength: nextLength } : t);
+    tracksSignature.current = '';
     setTracks(next);
     if (trackIdx === activeTrack && selectedStep >= nextLength) onSelectStep(-1);
     send(next, bpm, gate);
@@ -1169,7 +1190,7 @@ function SequencerPanel({
       )}
 
       <div className="seq-tracks">
-        {tracks.map((track, ti) => (
+        {visibleTracks.map((track, ti) => (
           <div key={ti}
             className={`seq-track-row${tracks[ti].muted ? ' seq-track-muted' : ''}${ti === activeTrack ? ' seq-row-active' : ''}`}
             style={{ '--seq-track-color': SEQ_TRACK_COLORS[ti % SEQ_TRACK_COLORS.length] } as CSSProperties}>
@@ -1207,7 +1228,7 @@ function SequencerPanel({
               '--seq-step-cols': visibleStepCount,
               '--seq-step-mobile-cols': Math.min(visibleStepCount, 16),
             } as CSSProperties}>
-              {track.steps.slice(visibleStart, visibleEnd).map((step, offset) => {
+              {track.visibleSteps.map((step, offset) => {
                 const si = visibleStart + offset;
                 const label = step.midiNote >= 0 ? midiNoteName(step.midiNote) : '';
                 const isArmed = ti === activeTrack && selectedStep === si;

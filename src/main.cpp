@@ -882,6 +882,24 @@ std::array<std::uint8_t, 3> program_led_color(int program) {
   };
 }
 
+std::array<std::uint8_t, 3> sequencer_led_color(int program) {
+  const auto base = program_led_color(program);
+  const auto max_channel = std::max({base[0], base[1], base[2]});
+  if (max_channel == 0) {
+    return {255, 255, 255};
+  }
+
+  auto saturate = [max_channel](std::uint8_t value) {
+    const auto normalized =
+        static_cast<float>(value) / static_cast<float>(max_channel);
+    const auto shaped = std::pow(normalized, 1.75F);
+    return static_cast<std::uint8_t>(
+        std::clamp(static_cast<int>(std::lround(shaped * 255.0F)), 0, 255));
+  };
+
+  return {saturate(base[0]), saturate(base[1]), saturate(base[2])};
+}
+
 std::vector<std::string> scan_soundfonts() {
   namespace fs = std::filesystem;
   std::vector<std::string> result;
@@ -1654,7 +1672,7 @@ void run_event_loop(Gamepad &gamepad,
           const auto starts_at = led_sequence.empty()
               ? std::chrono::steady_clock::now()
               : led_sequence.back().show_until;
-          led_sequence.push_back({program_led_color(ch_prog[static_cast<std::size_t>(ch)]),
+          led_sequence.push_back({sequencer_led_color(ch_prog[static_cast<std::size_t>(ch)]),
                                    starts_at + led_slot_ms});
         }
       }
@@ -1671,7 +1689,7 @@ void run_event_loop(Gamepad &gamepad,
         const auto &front = led_sequence.front();
         gamepad.set_led(front.color[0], front.color[1], front.color[2]);
       } else {
-        gamepad.set_led(0, 0, 0);
+        gamepad.set_led(10, 10, 14);
       }
     } else {
       if (!led_sequence.empty()) {
