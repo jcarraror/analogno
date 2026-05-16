@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 // General MIDI program names (0-indexed)
 const GM_PROGRAMS: string[] = [
@@ -132,12 +132,16 @@ type RuntimeState = {
     activeTrack: number;
     selectedStep: number;
     bpm: number;
+    playheadStep: number;
     currentStep: number;
     gatePct: number;
+    stepCount: number;
+    stepDivision: number;
     tracks: Array<{
       midiChannel: number;
       midiProgram: number;
       midiBank: number;
+      loopLength: number;
       muted: boolean;
       steps: Array<{ active: boolean; tie: boolean; degree: number; velocity: number; midiNote: number }>;
     }>;
@@ -827,7 +831,14 @@ function WaveformEditor({
 // --- Sequencer ---
 
 type SeqStepEdit = { active: boolean; tie: boolean; degree: number; velocity: number; midiNote: number };
-type SeqTrackEdit = { midiChannel: number; midiProgram: number; midiBank: number; muted: boolean; steps: SeqStepEdit[] };
+type SeqTrackEdit = { midiChannel: number; midiProgram: number; midiBank: number; loopLength: number; muted: boolean; steps: SeqStepEdit[] };
+const SEQ_STEP_COUNTS = [8, 16, 32, 64] as const;
+const SEQ_STEP_DIVISIONS = [8, 16, 32] as const;
+const SEQ_TRACK_COLORS = ['#6ea8fe', '#86efac', '#f59e0b', '#f472b6', '#22d3ee', '#a78bfa', '#fb7185', '#c084fc'];
+const SEQ_PAGE_SIZE = 16;
+const emptySeqStep = (): SeqStepEdit => ({ active: false, tie: false, degree: 0, velocity: 100, midiNote: -1 });
+const resizeSeqSteps = (steps: SeqStepEdit[], count: number): SeqStepEdit[] =>
+  Array.from({ length: count }, (_, i) => steps[i] ? { ...steps[i] } : emptySeqStep());
 
 function SequencerPanel({
   seq,
@@ -852,15 +863,18 @@ function SequencerPanel({
   onSelectStep: (step: number) => void;
   onAddTrack: () => void;
   onRemoveTrack: (track: number) => void;
-  onChange: (cfg: { bpm: number; gatePct: number; tracks: SeqTrackEdit[] }) => void;
+  onChange: (cfg: { bpm: number; gatePct: number; stepCount: number; stepDivision: number; tracks: SeqTrackEdit[] }) => void;
 }) {
   const initialized = useRef(false);
   const [bpm, setBpm] = useState(120);
   const [gate, setGate] = useState(50);
+  const [stepCount, setStepCount] = useState(32);
+  const [stepDivision, setStepDivision] = useState(16);
+  const [stepPage, setStepPage] = useState(0);
   const [tracks, setTracks] = useState<SeqTrackEdit[]>(
     Array.from({ length: 4 }, (_, ti) => ({
-      midiChannel: ti, midiProgram: 0, midiBank: 0, muted: false,
-      steps: Array.from({ length: 32 }, () => ({ active: false, tie: false, degree: 0, velocity: 100, midiNote: -1 })),
+      midiChannel: ti, midiProgram: 0, midiBank: 0, loopLength: 32, muted: false,
+      steps: Array.from({ length: 32 }, emptySeqStep),
     }))
   );
 
@@ -874,25 +888,56 @@ function SequencerPanel({
       initialized.current = true;
       setBpm(seq.bpm);
       setGate(seq.gatePct);
+      setStepCount(seq.stepCount ?? seq.tracks[0]?.steps.length ?? 32);
+      setStepDivision(seq.stepDivision ?? 16);
     }
+    const nextStepCount = seq.stepCount ?? seq.tracks[0]?.steps.length ?? 32;
+    const nextStepDivision = seq.stepDivision ?? 16;
+    setStepCount(nextStepCount);
+    setStepDivision(nextStepDivision);
     setTracks(seq.tracks.map(t => ({
       midiChannel: t.midiChannel,
       midiProgram: t.midiProgram,
       midiBank: t.midiBank,
+      loopLength: Math.max(1, Math.min(nextStepCount, t.loopLength ?? nextStepCount)),
       muted: t.muted,
-      steps: t.steps.map(s => ({ ...s })),
+      steps: resizeSeqSteps(t.steps.map(s => ({ ...s })), nextStepCount),
     })));
   }, [seq]);
 
   const disabled = connection !== 'online';
   const currentStep = seq?.currentStep ?? -1;
+  const playheadStep = seq?.playheadStep ?? currentStep;
   const playing = seq?.playing ?? false;
+  const activeLoopLength = Math.max(1, Math.min(stepCount, tracks[activeTrack]?.loopLength ?? stepCount));
+  const activeTrackCurrentStep = playing && playheadStep >= 0 ? playheadStep % activeLoopLength : -1;
+  const pageCount = Math.max(1, Math.ceil(stepCount / SEQ_PAGE_SIZE));
+  const visibleStart = Math.min(stepPage, pageCount - 1) * SEQ_PAGE_SIZE;
+  const visibleEnd = Math.min(stepCount, visibleStart + SEQ_PAGE_SIZE);
+  const visibleStepCount = visibleEnd - visibleStart;
 
-  function send(t: SeqTrackEdit[], b: number, g: number) {
-    onChange({ bpm: b, gatePct: g, tracks: t });
+  useEffect(() => {
+    setStepPage(page => Math.min(page, Math.max(0, Math.ceil(stepCount / SEQ_PAGE_SIZE) - 1)));
+  }, [stepCount]);
+
+  useEffect(() => {
+    if (selectedStep >= 0) {
+      setStepPage(Math.floor(selectedStep / SEQ_PAGE_SIZE));
+    }
+  }, [selectedStep]);
+
+  useEffect(() => {
+    if (playing && activeTrackCurrentStep >= 0) {
+      setStepPage(Math.floor(activeTrackCurrentStep / SEQ_PAGE_SIZE));
+    }
+  }, [playing, activeTrackCurrentStep]);
+
+  function send(t: SeqTrackEdit[], b: number, g: number, count = stepCount, division = stepDivision) {
+    onChange({ bpm: b, gatePct: g, stepCount: count, stepDivision: division, tracks: t });
   }
 
   function handleStepClick(trackIdx: number, stepIdx: number) {
+    if (stepIdx >= (tracks[trackIdx]?.loopLength ?? stepCount)) return;
     if (activeTrack !== trackIdx) {
       onSelectTrack(trackIdx);
     }
@@ -903,7 +948,7 @@ function SequencerPanel({
     if (selectedStep < 0) return;
     const next = tracks.map((t, ti) =>
       ti === activeTrack
-        ? { ...t, steps: t.steps.map((s, si) => si === selectedStep ? { active: false, tie: false, degree: 0, velocity: 100, midiNote: -1 } : s) }
+        ? { ...t, steps: t.steps.map((s, si) => si === selectedStep ? emptySeqStep() : s) }
         : t
     );
     setTracks(next);
@@ -916,7 +961,7 @@ function SequencerPanel({
     if (!tracks[trackIdx]?.steps[stepIdx]?.active) return;
     const next = tracks.map((t, ti) =>
       ti === trackIdx
-        ? { ...t, steps: t.steps.map((s, si) => si === stepIdx ? { active: false, tie: false, degree: 0, velocity: 100, midiNote: -1 } : s) }
+        ? { ...t, steps: t.steps.map((s, si) => si === stepIdx ? emptySeqStep() : s) }
         : t
     );
     setTracks(next);
@@ -930,7 +975,70 @@ function SequencerPanel({
   }
 
   function handleGate(v: number) {
-    setGate(v); send(tracks, bpm, v);
+    const nextGate = Math.max(5, Math.min(100, Math.round(v)));
+    setGate(nextGate); send(tracks, bpm, nextGate);
+  }
+
+  function handleGatePointer(e: ReactPointerEvent<HTMLSpanElement>) {
+    if (disabled) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const nextGate = ((e.clientX - rect.left) / rect.width) * 100;
+    handleGate(nextGate);
+  }
+
+  function handleGateKey(e: ReactKeyboardEvent<HTMLSpanElement>) {
+    if (disabled) return;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      handleGate(gate - 1);
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      handleGate(gate + 1);
+    } else if (e.key === 'PageDown') {
+      e.preventDefault();
+      handleGate(gate - 10);
+    } else if (e.key === 'PageUp') {
+      e.preventDefault();
+      handleGate(gate + 10);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      handleGate(5);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      handleGate(100);
+    }
+  }
+
+  function handleStepCount(v: number) {
+    const nextCount = SEQ_STEP_COUNTS.includes(v as typeof SEQ_STEP_COUNTS[number]) ? v : 32;
+    const nextTracks = tracks.map(t => ({
+      ...t,
+      loopLength: Math.max(1, Math.min(nextCount, t.loopLength === stepCount ? nextCount : t.loopLength)),
+      steps: resizeSeqSteps(t.steps, nextCount),
+    }));
+    setStepCount(nextCount);
+    setTracks(nextTracks);
+    if (selectedStep >= nextCount) onSelectStep(-1);
+    setStepPage(page => Math.min(page, Math.max(0, Math.ceil(nextCount / SEQ_PAGE_SIZE) - 1)));
+    send(nextTracks, bpm, gate, nextCount, stepDivision);
+  }
+
+  function handleStepDivision(v: number) {
+    const nextDivision = SEQ_STEP_DIVISIONS.includes(v as typeof SEQ_STEP_DIVISIONS[number]) ? v : 16;
+    setStepDivision(nextDivision);
+    send(tracks, bpm, gate, stepCount, nextDivision);
+  }
+
+  function handleLoopLength(trackIdx: number, length: number) {
+    const nextLength = Math.max(1, Math.min(stepCount, length));
+    const next = tracks.map((t, i) => i === trackIdx ? { ...t, loopLength: nextLength } : t);
+    setTracks(next);
+    if (trackIdx === activeTrack && selectedStep >= nextLength) onSelectStep(-1);
+    send(next, bpm, gate);
+  }
+
+  function handleActiveLoopLength(length: number) {
+    handleLoopLength(activeTrack, length);
   }
 
   const armedStep = selectedStep >= 0 ? tracks[activeTrack]?.steps[selectedStep] : null;
@@ -938,22 +1046,95 @@ function SequencerPanel({
   return (
     <div className="sequencer">
       <div className="seq-controls">
-        <button type="button" className={`seq-playstop${playing ? ' seq-playing' : ''}`}
-          disabled={disabled} onClick={playing ? onStop : onPlay}>
-          {playing ? '\u25a0 Stop' : '\u25b6 Play'}
-        </button>
-        <label className="seq-label">
-          BPM
-          <input type="number" className="seq-bpm-input" min={20} max={300}
-            value={bpm} disabled={disabled}
-            onChange={e => handleBpm(Number(e.target.value))} />
-        </label>
-        <label className="seq-label">
-          Gate&nbsp;{gate}%
-          <input type="range" className="seq-gate-range" min={5} max={100}
-            value={gate} disabled={disabled}
-            onChange={e => handleGate(Number(e.target.value))} />
-        </label>
+        <div className="seq-control-group">
+          <span className="seq-group-label">Clock</span>
+          <div className="seq-group-body">
+            <button type="button" className={`seq-playstop${playing ? ' seq-playing' : ''}`}
+              disabled={disabled} onClick={playing ? onStop : onPlay}>
+              {playing ? '\u25a0 Stop' : '\u25b6 Play'}
+            </button>
+            <label className="seq-label">
+              BPM
+              <input type="number" className="seq-bpm-input" min={20} max={300}
+                value={bpm} disabled={disabled}
+                onChange={e => handleBpm(Number(e.target.value))} />
+            </label>
+          </div>
+        </div>
+
+        <div className="seq-control-group seq-step-group">
+          <span className="seq-group-label">Step</span>
+          <div className="seq-group-body">
+            <div className="seq-chip-group">
+              {SEQ_STEP_DIVISIONS.map(n => (
+                <button key={n} type="button"
+                  className={stepDivision === n ? 'seq-chip-active' : ''}
+                  disabled={disabled}
+                  onClick={() => handleStepDivision(n)}>
+                  1/{n}
+                </button>
+              ))}
+            </div>
+            <div className="seq-gate-field">
+              <div className="seq-gate-head">
+                <span>Gate</span>
+                <span>{gate}%</span>
+              </div>
+              <span className={`seq-gate-control${disabled ? ' seq-gate-disabled' : ''}`}
+                role="slider"
+                tabIndex={disabled ? -1 : 0}
+                aria-label="Gate"
+                aria-valuemin={5}
+                aria-valuemax={100}
+                aria-valuenow={gate}
+                aria-valuetext={`${gate}%`}
+                onKeyDown={handleGateKey}
+                onPointerDown={e => {
+                  if (disabled) return;
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  handleGatePointer(e);
+                }}
+                onPointerMove={e => {
+                  if (e.currentTarget.hasPointerCapture(e.pointerId)) handleGatePointer(e);
+                }}
+                onPointerUp={e => {
+                  if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+                }}>
+                <span className="seq-gate-fill" style={{ width: `${gate}%` }} />
+                <span className="seq-gate-handle" style={{ left: `${gate}%` }} />
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="seq-control-group">
+          <span className="seq-group-label">Loop</span>
+          <div className="seq-group-body">
+            <div className="seq-chip-group">
+              {SEQ_STEP_COUNTS.map(n => (
+                <button key={n} type="button"
+                  className={stepCount === n ? 'seq-chip-active' : ''}
+                  disabled={disabled}
+                  onClick={() => handleStepCount(n)}>
+                  {n}
+                </button>
+              ))}
+            </div>
+            <div className="seq-len-stepper">
+              <span>T{activeTrack + 1}</span>
+              <button type="button" disabled={disabled || activeLoopLength <= 1}
+                onClick={() => handleActiveLoopLength(activeLoopLength - 1)}
+                aria-label="Shorten active track loop">-</button>
+              <input type="number" min={1} max={stepCount}
+                value={activeLoopLength} disabled={disabled}
+                onChange={e => handleActiveLoopLength(Number(e.target.value))} />
+              <button type="button" disabled={disabled || activeLoopLength >= stepCount}
+                onClick={() => handleActiveLoopLength(activeLoopLength + 1)}
+                aria-label="Lengthen active track loop">+</button>
+            </div>
+          </div>
+        </div>
+
         {selectedStep >= 0 && (
           <span className="seq-armed-info">
             T{activeTrack + 1} &middot; step {selectedStep + 1}
@@ -966,9 +1147,32 @@ function SequencerPanel({
         )}
       </div>
 
+      {pageCount > 1 && (
+        <div className="seq-page-tabs">
+          {Array.from({ length: pageCount }, (_, page) => {
+            const start = page * SEQ_PAGE_SIZE;
+            const end = Math.min(stepCount, start + SEQ_PAGE_SIZE);
+            const containsCurrent = activeTrackCurrentStep >= start && activeTrackCurrentStep < end;
+            return (
+              <button key={page} type="button"
+                className={[
+                  stepPage === page ? 'seq-page-active' : '',
+                  containsCurrent ? 'seq-page-current' : '',
+                ].filter(Boolean).join(' ')}
+                disabled={disabled}
+                onClick={() => setStepPage(page)}>
+                {start + 1}-{end}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <div className="seq-tracks">
         {tracks.map((track, ti) => (
-          <div key={ti} className={`seq-track-row${tracks[ti].muted ? ' seq-track-muted' : ''}`}>
+          <div key={ti}
+            className={`seq-track-row${tracks[ti].muted ? ' seq-track-muted' : ''}${ti === activeTrack ? ' seq-row-active' : ''}`}
+            style={{ '--seq-track-color': SEQ_TRACK_COLORS[ti % SEQ_TRACK_COLORS.length] } as CSSProperties}>
             <div
               className={`seq-track-header${ti === activeTrack ? ' seq-track-active' : ''}`}
               role="button"
@@ -978,6 +1182,7 @@ function SequencerPanel({
               title={`Track ${ti + 1} — MIDI ch ${(track.midiChannel ?? ti) + 1} — ${sampleMode ? (sampleIsWavetable ? 'Wavetable' : 'Mic sample') : (GM_PROGRAMS[track.midiProgram] ?? 'Prog ' + track.midiProgram)}`}>
               <div className="seq-track-header-top">
                 <span className="seq-track-id">T{ti + 1} <small>ch{(track.midiChannel ?? ti) + 1}</small></span>
+                <span className="seq-track-loop">L{track.loopLength}</span>
                 <button type="button" className={`seq-track-mute-btn${track.muted ? ' seq-track-muted-active' : ''}`}
                   disabled={disabled}
                   title={track.muted ? 'Unmute track' : 'Mute track'}
@@ -998,23 +1203,32 @@ function SequencerPanel({
               </div>
               <span className="seq-track-name">{sampleMode ? (sampleIsWavetable ? 'Wavetable' : 'Mic sample') : (GM_PROGRAMS[track.midiProgram] ?? `Prog ${track.midiProgram}`)}</span>
             </div>
-            <div className="seq-track-steps">
-              {track.steps.map((step, si) => {
+            <div className="seq-track-steps" style={{
+              '--seq-step-cols': visibleStepCount,
+              '--seq-step-mobile-cols': Math.min(visibleStepCount, 16),
+            } as CSSProperties}>
+              {track.steps.slice(visibleStart, visibleEnd).map((step, offset) => {
+                const si = visibleStart + offset;
                 const label = step.midiNote >= 0 ? midiNoteName(step.midiNote) : '';
                 const isArmed = ti === activeTrack && selectedStep === si;
-                const isCurrent = currentStep === si && playing;
+                const loopLength = Math.max(1, Math.min(stepCount, track.loopLength));
+                const isInLoop = si < loopLength;
+                const isCurrent = isInLoop && playheadStep >= 0 && playheadStep % loopLength === si && playing;
                 return (
                   <button key={si} type="button"
                     className={[
                       'seq-step-btn',
+                      !isInLoop ? 'seq-step-out' : '',
+                      si % 16 === 0 ? 'seq-step-page' : '',
+                      si % 4 === 0 ? 'seq-step-beat' : '',
                       step.active ? 'seq-step-on' : '',
                       isCurrent ? 'seq-step-current' : '',
                       isArmed ? 'seq-step-armed' : '',
                     ].filter(Boolean).join(' ')}
-                    disabled={disabled}
+                    disabled={disabled || !isInLoop}
                     onClick={() => handleStepClick(ti, si)}
                     onContextMenu={(e) => { if (!disabled) handleStepRightClick(ti, si, e); }}
-                    title={`T${ti + 1} step ${si + 1}${step.active ? ` \u2014 ${step.tie ? 'tie' : (label || 'scale')} vel ${step.velocity}` : ''}`}>
+                    title={`T${ti + 1} step ${si + 1}${isInLoop ? '' : ' out of loop'}${step.active ? ` \u2014 ${step.tie ? 'tie' : (label || 'scale')} vel ${step.velocity}` : ''}`}>
                     <span className="seq-step-num">{si + 1}</span>
                     {step.active && (
                       <span className="seq-step-note">{step.tie ? '–' : label}</span>
@@ -1475,7 +1689,7 @@ export function App() {
   function seqSelectTrack(track: number) { socket?.send(JSON.stringify({ type: "selectSeqTrack", track })); }
   function seqAddTrack() { socket?.send(JSON.stringify({ type: "seqAddTrack" })); }
   function seqRemoveTrack(track: number) { socket?.send(JSON.stringify({ type: "seqRemoveTrack", track })); }
-  function seqChange(cfg: { bpm: number; gatePct: number; tracks: SeqTrackEdit[] }) {
+  function seqChange(cfg: { bpm: number; gatePct: number; stepCount: number; stepDivision: number; tracks: SeqTrackEdit[] }) {
     socket?.send(JSON.stringify({ type: "setSeq", ...cfg }));
   }
 

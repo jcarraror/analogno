@@ -468,23 +468,27 @@ struct SeqStep {
 };
 
 struct SeqTrack {
-  static constexpr int step_count = 32;
   int midi_channel{0}; // persists across track reordering
   int midi_program{0};
   int midi_bank{0};
+  int loop_length{32};
   bool muted{false};
-  std::array<SeqStep, step_count> steps{};
+  std::vector<SeqStep> steps = std::vector<SeqStep>(32);
   std::optional<analogno::Note> pending_note_off{};
 };
 
 struct Sequencer {
-  static constexpr int step_count = SeqTrack::step_count;
+  static constexpr int min_step_count = 8;
+  static constexpr int max_step_count = 64;
   static constexpr int max_tracks = 16;
   bool playing{false};
   int active_track{0};
   int selected_step{-1}; // step in active_track armed for controller input; -1 = none
   float bpm{120.0F};
   int gate_pct{50};
+  int step_count{32};
+  int step_division{16};
+  int playhead_step{-1};
   int current_step{-1};
   std::chrono::steady_clock::time_point step_start{};
   std::vector<SeqTrack> tracks = [] {
@@ -499,6 +503,52 @@ struct SeqTick {
   std::vector<analogno::Note> note_offs{};
   bool stepped{false}; // true the frame a new step fires
 };
+
+int sequencer_step_count(int value) {
+  if (value <= Sequencer::min_step_count) return Sequencer::min_step_count;
+  if (value <= 16) return 16;
+  if (value <= 32) return 32;
+  return Sequencer::max_step_count;
+}
+
+int sequencer_step_division(int value) {
+  if (value <= 8) return 8;
+  if (value <= 16) return 16;
+  return 32;
+}
+
+int track_loop_length(const SeqTrack &track, int step_count) {
+  return std::clamp(track.loop_length, 1, step_count);
+}
+
+void resize_sequencer_steps(Sequencer &seq, int step_count) {
+  const auto old_step_count = seq.step_count;
+  seq.step_count = sequencer_step_count(step_count);
+  for (auto &track : seq.tracks) {
+    track.steps.resize(static_cast<std::size_t>(seq.step_count));
+    if (track.loop_length == old_step_count) {
+      track.loop_length = seq.step_count;
+    }
+    track.loop_length = std::clamp(track.loop_length, 1, seq.step_count);
+  }
+  if (seq.selected_step >= seq.step_count) {
+    seq.selected_step = -1;
+  }
+  if (seq.current_step >= seq.step_count) {
+    seq.current_step = -1;
+    seq.playhead_step = -1;
+    seq.step_start = std::chrono::steady_clock::now();
+  }
+}
+
+int active_track_loop_length(const Sequencer &seq) {
+  if (seq.active_track < 0 ||
+      static_cast<std::size_t>(seq.active_track) >= seq.tracks.size()) {
+    return seq.step_count;
+  }
+  return track_loop_length(seq.tracks[static_cast<std::size_t>(seq.active_track)],
+                           seq.step_count);
+}
 
 std::optional<analogno::Note> note_for_step(const SeqStep &step,
                                             const SeqTrack &track,
@@ -530,7 +580,9 @@ SeqTick tick_sequencer(Sequencer &seq, const analogno::MusicalIntent &ctx) {
 
   const auto now = std::chrono::steady_clock::now();
   using ms = std::chrono::duration<double, std::milli>;
-  const auto step_dur = ms{60000.0 / static_cast<double>(seq.bpm) / 4.0};
+  const auto step_dur =
+      ms{60000.0 * 4.0 / static_cast<double>(seq.bpm) /
+         static_cast<double>(seq.step_division)};
   const auto gate_dur = step_dur * (seq.gate_pct / 100.0);
   const auto elapsed  = std::chrono::duration_cast<ms>(now - seq.step_start);
 
@@ -539,9 +591,10 @@ SeqTick tick_sequencer(Sequencer &seq, const analogno::MusicalIntent &ctx) {
   // Gate close — per track
   for (auto &track : seq.tracks) {
     if (track.pending_note_off.has_value() && elapsed >= gate_dur) {
+      const auto loop_length = track_loop_length(track, seq.step_count);
       const auto next_step_index =
-          seq.current_step >= 0
-              ? (seq.current_step + 1) % Sequencer::step_count
+          seq.playhead_step >= 0
+              ? (seq.playhead_step + 1) % loop_length
               : 0;
       const auto &next_step =
           track.steps[static_cast<std::size_t>(next_step_index)];
@@ -558,13 +611,16 @@ SeqTick tick_sequencer(Sequencer &seq, const analogno::MusicalIntent &ctx) {
   }
 
   if (elapsed >= step_dur) {
-    seq.current_step = (seq.current_step + 1) % Sequencer::step_count;
+    seq.playhead_step = seq.playhead_step >= 0 ? seq.playhead_step + 1 : 0;
+    seq.current_step = seq.playhead_step % seq.step_count;
     seq.step_start = now;
     result.stepped = true;
 
     for (std::size_t t = 0; t < seq.tracks.size(); ++t) {
       auto &track = seq.tracks[t];
-      const auto &step = track.steps[static_cast<std::size_t>(seq.current_step)];
+      const auto loop_length = track_loop_length(track, seq.step_count);
+      const auto track_step = seq.playhead_step % loop_length;
+      const auto &step = track.steps[static_cast<std::size_t>(track_step)];
       const auto step_note = note_for_step(step, track, ctx);
       const auto tie_continues =
           !track.muted && step.active && step.tie && step_note.has_value() &&
@@ -593,15 +649,19 @@ analogno::WebSeqState seq_web_state(const Sequencer &seq) {
   s.active_track  = seq.active_track;
   s.selected_step = seq.selected_step;
   s.bpm           = seq.bpm;
+  s.playhead_step = seq.playhead_step;
   s.current_step  = seq.current_step;
   s.gate_pct      = seq.gate_pct;
+  s.step_count    = seq.step_count;
+  s.step_division = seq.step_division;
   for (const auto &track : seq.tracks) {
     analogno::WebSeqTrack wt{};
     wt.midi_channel = track.midi_channel;
     wt.midi_program = track.midi_program;
     wt.midi_bank    = track.midi_bank;
+    wt.loop_length  = track_loop_length(track, seq.step_count);
     wt.muted        = track.muted;
-    wt.steps.reserve(Sequencer::step_count);
+    wt.steps.reserve(static_cast<std::size_t>(seq.step_count));
     for (const auto &step : track.steps) {
       wt.steps.push_back({step.active, step.tie, step.degree, step.velocity,
                           step.midi_note});
@@ -998,10 +1058,13 @@ void run_event_loop(Gamepad &gamepad,
             const float dy = event.gtouchpad.y - tp_swipe.prev_y;
             if (std::abs(dx) >= std::abs(dy)) {
               if (dx > step_threshold) {
-                seq.selected_step = (seq.selected_step + 1) % Sequencer::step_count;
+                const auto length = active_track_loop_length(seq);
+                seq.selected_step = (seq.selected_step + 1) % length;
                 tp_swipe.prev_x = event.gtouchpad.x; tp_swipe.prev_y = event.gtouchpad.y;
               } else if (dx < -step_threshold) {
-                seq.selected_step = (seq.selected_step - 1 + Sequencer::step_count) % Sequencer::step_count;
+                const auto length = active_track_loop_length(seq);
+                seq.selected_step =
+                    (seq.selected_step - 1 + length) % length;
                 tp_swipe.prev_x = event.gtouchpad.x; tp_swipe.prev_y = event.gtouchpad.y;
               }
             } else {
@@ -1151,7 +1214,8 @@ void run_event_loop(Gamepad &gamepad,
 
       const auto was_recording = voice_seq.status().recording;
       if (cfg->recording && !was_recording) {
-        voice_seq.start_recording(seq.bpm, Sequencer::step_count);
+        voice_seq.start_recording(seq.bpm, active_track_loop_length(seq),
+                                  seq.step_division);
       } else if (!cfg->recording && was_recording) {
         if (auto pattern = voice_seq.stop_recording(last_intent.root_midi_note,
                                                     last_intent.octave_offset,
@@ -1191,6 +1255,7 @@ void run_event_loop(Gamepad &gamepad,
     if (web.consume_seq_play()) {
       seq.playing = true;
       seq.current_step = -1;
+      seq.playhead_step = -1;
       seq.step_start = std::chrono::steady_clock::now();
       std::cout << "seq: play\n";
     }
@@ -1207,16 +1272,23 @@ void run_event_loop(Gamepad &gamepad,
     if (auto cfg = web.consume_seq_config()) {
       seq.bpm      = cfg->bpm;
       seq.gate_pct = cfg->gate_pct;
+      seq.step_division = sequencer_step_division(cfg->step_division);
+      resize_sequencer_steps(seq, cfg->step_count);
       if (!cfg->tracks.empty()) {
         seq.tracks.resize(cfg->tracks.size());
         for (std::size_t t = 0; t < cfg->tracks.size(); ++t) {
+          seq.tracks[t].steps.resize(static_cast<std::size_t>(seq.step_count));
           // Only adopt midi_channel from config if explicitly provided (>= 0).
           if (cfg->tracks[t].midi_channel >= 0)
             seq.tracks[t].midi_channel = cfg->tracks[t].midi_channel;
           seq.tracks[t].midi_program = cfg->tracks[t].midi_program;
           seq.tracks[t].midi_bank    = cfg->tracks[t].midi_bank;
+          seq.tracks[t].loop_length  =
+              std::clamp(cfg->tracks[t].loop_length, 1, seq.step_count);
           seq.tracks[t].muted        = cfg->tracks[t].muted;
-          for (std::size_t i = 0; i < static_cast<std::size_t>(Sequencer::step_count); ++i) {
+          const auto n = std::min(seq.tracks[t].steps.size(),
+                                  cfg->tracks[t].steps.size());
+          for (std::size_t i = 0; i < n; ++i) {
             const auto &sc = cfg->tracks[t].steps[i];
             seq.tracks[t].steps[i] = {sc.active, sc.tie, sc.degree,
                                       sc.velocity, sc.midi_note};
@@ -1224,11 +1296,15 @@ void run_event_loop(Gamepad &gamepad,
         }
         seq.active_track = std::clamp(seq.active_track, 0,
             static_cast<int>(seq.tracks.size()) - 1);
+        if (seq.selected_step >= active_track_loop_length(seq)) {
+          seq.selected_step = -1;
+        }
       }
     }
 
     if (const auto sel = web.consume_seq_select_step()) {
-      seq.selected_step = *sel;
+      seq.selected_step =
+          *sel < 0 ? -1 : std::clamp(*sel, 0, active_track_loop_length(seq) - 1);
       if (*sel >= 0) std::cout << "seq: arm step " << *sel << '\n';
       else           std::cout << "seq: disarm\n";
     }
@@ -1250,6 +1326,8 @@ void run_event_loop(Gamepad &gamepad,
         while (new_ch < 16 && used[static_cast<std::size_t>(new_ch)]) ++new_ch;
         SeqTrack new_track{};
         new_track.midi_channel = new_ch < 16 ? new_ch : 0;
+        new_track.loop_length = seq.step_count;
+        new_track.steps.resize(static_cast<std::size_t>(seq.step_count));
         seq.tracks.push_back(new_track);
         std::cout << "seq: added track on ch " << new_track.midi_channel << '\n';
       }
@@ -1331,6 +1409,7 @@ void run_event_loop(Gamepad &gamepad,
       } else {
         seq.playing = true;
         seq.current_step = -1;
+        seq.playhead_step = -1;
         seq.step_start = std::chrono::steady_clock::now();
         std::cout << "seq: play (controller)\n";
       }
@@ -1528,7 +1607,8 @@ void run_event_loop(Gamepad &gamepad,
         const auto sidx = static_cast<std::size_t>(seq.selected_step);
         seq.tracks[tidx].steps[sidx] = {true, false, n.degree, n.velocity,
                                         n.midi_note};
-        seq.selected_step = (seq.selected_step + 1) % Sequencer::step_count;
+        seq.selected_step =
+            (seq.selected_step + 1) % active_track_loop_length(seq);
       }
 
       const auto now = std::chrono::steady_clock::now();

@@ -207,8 +207,9 @@ const VoiceSequencerConfig &VoiceSequencer::config() const { return config_; }
 
 VoiceSequencerStatus VoiceSequencer::status() const {
   const auto record_frames =
-      static_cast<float>(sample_rate) * 60.0F /
-      std::max(record_bpm_, 1.0F) / 4.0F *
+      static_cast<float>(sample_rate) * 60.0F * 4.0F /
+      std::max(record_bpm_, 1.0F) /
+      static_cast<float>(std::max(record_step_division_, 1)) *
       static_cast<float>(record_step_count_);
   const auto progress =
       recording_ && record_frames > 0.0F
@@ -240,9 +241,11 @@ VoiceSequencerStatus VoiceSequencer::status() const {
   };
 }
 
-void VoiceSequencer::start_recording(float bpm, int step_count) {
+void VoiceSequencer::start_recording(float bpm, int step_count,
+                                     int step_division) {
   record_bpm_ = std::clamp(bpm, 20.0F, 300.0F);
   record_step_count_ = std::clamp(step_count, 1, 64);
+  record_step_division_ = std::clamp(step_division, 8, 32);
   record_start_frame_ = frame_cursor_;
   segments_.clear();
   events_.clear();
@@ -273,8 +276,9 @@ std::optional<VoiceSequencerPattern> VoiceSequencer::stop_recording(
   pattern.segment_count = segments_.size() + events_.size();
 
   const auto frames_per_step =
-      static_cast<double>(sample_rate) * 60.0 /
-      static_cast<double>(record_bpm_) / 4.0;
+      static_cast<double>(sample_rate) * 60.0 * 4.0 /
+      static_cast<double>(record_bpm_) /
+      static_cast<double>(record_step_division_);
   const auto record_end_frame =
       record_start_frame_ + static_cast<std::uint64_t>(
                                 std::llround(frames_per_step *

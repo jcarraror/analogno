@@ -174,6 +174,7 @@ std::string to_json_string(const WebRuntimeState &state) {
                   {"midiChannel", track.midi_channel},
                   {"midiProgram", track.midi_program},
                   {"midiBank", track.midi_bank},
+                  {"loopLength", track.loop_length},
                   {"muted", track.muted},
                   {"steps", std::move(steps)},
               });
@@ -183,8 +184,11 @@ std::string to_json_string(const WebRuntimeState &state) {
                 {"activeTrack", state.seq.active_track},
                 {"selectedStep", state.seq.selected_step},
                 {"bpm", state.seq.bpm},
+                {"playheadStep", state.seq.playhead_step},
                 {"currentStep", state.seq.current_step},
                 {"gatePct", state.seq.gate_pct},
+                {"stepCount", state.seq.step_count},
+                {"stepDivision", state.seq.step_division},
                 {"tracks", std::move(tracks)},
             };
           }(),
@@ -231,7 +235,7 @@ public:
   std::optional<std::vector<float>> wavetable_request{};
   std::atomic_bool seq_play_cmd{false};
   std::atomic_bool seq_stop_cmd{false};
-  std::atomic_int  seq_select_step_cmd{-2};  // -2 = no pending; -1 = deselect; 0..31 = arm
+  std::atomic_int  seq_select_step_cmd{-2};
   std::atomic_int  seq_select_track_cmd{-2}; // -2 = no pending; 0..15 = select track
   std::atomic_bool seq_add_track_cmd{false};
   std::atomic_int  seq_remove_track_cmd{-1}; // -1 = no pending; >=0 = remove that index
@@ -394,7 +398,7 @@ private:
         shared_->seq_stop_cmd.store(true);
       } else if (json.value("type", "") == "selectSeqStep") {
         const auto step = json.value("step", -1);
-        shared_->seq_select_step_cmd.store(std::clamp(step, -1, 31));
+        shared_->seq_select_step_cmd.store(std::clamp(step, -1, 63));
       } else if (json.value("type", "") == "selectSeqTrack") {
         const auto track = json.value("track", 0);
         shared_->seq_select_track_cmd.store(std::clamp(track, 0, 15));
@@ -411,6 +415,20 @@ private:
         if (json.contains("gatePct") && json["gatePct"].is_number_integer()) {
           cfg.gate_pct = std::clamp(json["gatePct"].get<int>(), 5, 100);
         }
+        if (json.contains("stepCount") && json["stepCount"].is_number_integer()) {
+          const auto value = json["stepCount"].get<int>();
+          if (value <= 8) cfg.step_count = 8;
+          else if (value <= 16) cfg.step_count = 16;
+          else if (value <= 32) cfg.step_count = 32;
+          else cfg.step_count = WebSocketServer::SeqConfig::max_step_count;
+        }
+        if (json.contains("stepDivision") &&
+            json["stepDivision"].is_number_integer()) {
+          const auto value = json["stepDivision"].get<int>();
+          if (value <= 8) cfg.step_division = 8;
+          else if (value <= 16) cfg.step_division = 16;
+          else cfg.step_division = 32;
+        }
         if (json.contains("tracks") && json["tracks"].is_array()) {
           const auto &tarr = json["tracks"];
           const auto nt = std::min(tarr.size(),
@@ -421,11 +439,13 @@ private:
             cfg.tracks[t].midi_channel = std::clamp(tj.value("midiChannel", -1), -1, 15);
             cfg.tracks[t].midi_program = std::clamp(tj.value("midiProgram", 0), 0, 127);
             cfg.tracks[t].midi_bank    = std::clamp(tj.value("midiBank",    0), 0, 127);
+            cfg.tracks[t].loop_length  = std::clamp(tj.value("loopLength", cfg.step_count), 1, cfg.step_count);
             cfg.tracks[t].muted        = tj.value("muted", false);
             if (tj.contains("steps") && tj["steps"].is_array()) {
               const auto &arr = tj["steps"];
               const auto n = std::min(arr.size(),
-                  static_cast<std::size_t>(WebSocketServer::SeqConfig::step_count));
+                  static_cast<std::size_t>(cfg.step_count));
+              cfg.tracks[t].steps.resize(static_cast<std::size_t>(cfg.step_count));
               for (std::size_t i = 0; i < n; ++i) {
                 const auto &s = arr[i];
                 cfg.tracks[t].steps[i] = WebSocketServer::SeqStepConfig{

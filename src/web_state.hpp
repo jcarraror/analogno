@@ -118,6 +118,7 @@ struct WebSeqTrack final {
   int midi_channel{0};
   int midi_program{0};
   int midi_bank{0};
+  int loop_length{32};
   bool muted{false};
   std::vector<WebSeqStep> steps{};
 };
@@ -127,8 +128,11 @@ struct WebSeqState final {
   int active_track{0};
   int selected_step{-1};
   float bpm{120.0F};
+  int playhead_step{-1};
   int current_step{-1};
   int gate_pct{50};
+  int step_count{32};
+  int step_division{16};
   std::vector<WebSeqTrack> tracks{};
 };
 
