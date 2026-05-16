@@ -7,6 +7,7 @@
 #include "sdl_check.hpp"
 #include "sdl_gamepad.hpp"
 #include "sf2_reader.hpp"
+#include "voice_sequencer.hpp"
 #include "web_server.hpp"
 #include "web_state.hpp"
 
@@ -51,6 +52,29 @@ using analogno::WebSocketServer;
 
 
 constexpr auto wavetable_length = std::size_t{367};
+
+analogno::VoiceSequencerMode voice_mode_from_string(std::string_view mode) {
+  if (mode == "harmonic") {
+    return analogno::VoiceSequencerMode::harmonic;
+  }
+  if (mode == "hybrid") {
+    return analogno::VoiceSequencerMode::hybrid;
+  }
+  return analogno::VoiceSequencerMode::percussion;
+}
+
+std::string_view voice_mode_name(analogno::VoiceSequencerMode mode) {
+  switch (mode) {
+  case analogno::VoiceSequencerMode::harmonic:
+    return "harmonic";
+  case analogno::VoiceSequencerMode::hybrid:
+    return "hybrid";
+  case analogno::VoiceSequencerMode::percussion:
+    return "percussion";
+  }
+
+  return "percussion";
+}
 
 struct WaveformSketch {
   bool active{false};
@@ -437,13 +461,14 @@ bool sample_record_button_active(const ControllerState &controller) {
 
 struct SeqStep {
   bool active{false};
+  bool tie{false};
   int degree{0};
   int velocity{100};
   int midi_note{-1}; // -1 = compute from root/scale/octave; >=0 = absolute pitch
 };
 
 struct SeqTrack {
-  static constexpr int step_count = 16;
+  static constexpr int step_count = 32;
   int midi_channel{0}; // persists across track reordering
   int midi_program{0};
   int midi_bank{0};
@@ -475,6 +500,31 @@ struct SeqTick {
   bool stepped{false}; // true the frame a new step fires
 };
 
+std::optional<analogno::Note> note_for_step(const SeqStep &step,
+                                            const SeqTrack &track,
+                                            const analogno::MusicalIntent &ctx) {
+  if (!step.active) {
+    return std::nullopt;
+  }
+
+  const auto scale = analogno::scale_for(ctx.scale);
+  const auto wrapped = step.degree % scale.size;
+  const auto xoct = step.degree / scale.size;
+  const auto semitone = scale.semitones[static_cast<std::size_t>(wrapped)];
+  const auto computed = std::clamp(
+      ctx.root_midi_note + semitone + (ctx.octave_offset + xoct) * 12, 0,
+      127);
+  const auto midi_note = step.midi_note >= 0 ? step.midi_note : computed;
+
+  return analogno::Note{
+      .midi_note = midi_note,
+      .degree = step.degree,
+      .octave = ctx.octave_offset + xoct,
+      .velocity = step.velocity,
+      .channel = track.midi_channel,
+  };
+}
+
 SeqTick tick_sequencer(Sequencer &seq, const analogno::MusicalIntent &ctx) {
   if (!seq.playing) return {};
 
@@ -489,6 +539,19 @@ SeqTick tick_sequencer(Sequencer &seq, const analogno::MusicalIntent &ctx) {
   // Gate close — per track
   for (auto &track : seq.tracks) {
     if (track.pending_note_off.has_value() && elapsed >= gate_dur) {
+      const auto next_step_index =
+          seq.current_step >= 0
+              ? (seq.current_step + 1) % Sequencer::step_count
+              : 0;
+      const auto &next_step =
+          track.steps[static_cast<std::size_t>(next_step_index)];
+      const auto next_note = note_for_step(next_step, track, ctx);
+      const auto held_by_tie =
+          next_step.active && next_step.tie && next_note.has_value() &&
+          next_note->midi_note == track.pending_note_off->midi_note;
+      if (held_by_tie) {
+        continue;
+      }
       result.note_offs.push_back(*track.pending_note_off);
       track.pending_note_off.reset();
     }
@@ -501,32 +564,22 @@ SeqTick tick_sequencer(Sequencer &seq, const analogno::MusicalIntent &ctx) {
 
     for (std::size_t t = 0; t < seq.tracks.size(); ++t) {
       auto &track = seq.tracks[t];
-      // Flush any still-held note on this track (gate_pct=100 case)
-      if (track.pending_note_off.has_value()) {
+      const auto &step = track.steps[static_cast<std::size_t>(seq.current_step)];
+      const auto step_note = note_for_step(step, track, ctx);
+      const auto tie_continues =
+          !track.muted && step.active && step.tie && step_note.has_value() &&
+          track.pending_note_off.has_value() &&
+          step_note->midi_note == track.pending_note_off->midi_note;
+
+      if (track.pending_note_off.has_value() && !tie_continues) {
         result.note_offs.push_back(*track.pending_note_off);
         track.pending_note_off.reset();
       }
 
-      const auto &step = track.steps[static_cast<std::size_t>(seq.current_step)];
-      if (step.active && !track.muted) {
-        const auto scale    = analogno::scale_for(ctx.scale);
-        const auto wrapped  = step.degree % scale.size;
-        const auto xoct     = step.degree / scale.size;
-        const auto semitone = scale.semitones[static_cast<std::size_t>(wrapped)];
-        const auto computed = std::clamp(
-            ctx.root_midi_note + semitone + (ctx.octave_offset + xoct) * 12,
-            0, 127);
-        const auto midi_note = step.midi_note >= 0 ? step.midi_note : computed;
-
-        const analogno::Note note{
-            .midi_note = midi_note,
-            .degree    = step.degree,
-            .octave    = ctx.octave_offset + xoct,
-            .velocity  = step.velocity,
-            .channel   = track.midi_channel, // stored, not derived from index
-        };
-        result.note_ons.push_back(note);
-        track.pending_note_off = note;
+      if (!tie_continues && step.active && !step.tie && !track.muted &&
+          step_note.has_value()) {
+        result.note_ons.push_back(*step_note);
+        track.pending_note_off = *step_note;
       }
     }
   }
@@ -550,11 +603,38 @@ analogno::WebSeqState seq_web_state(const Sequencer &seq) {
     wt.muted        = track.muted;
     wt.steps.reserve(Sequencer::step_count);
     for (const auto &step : track.steps) {
-      wt.steps.push_back({step.active, step.degree, step.velocity, step.midi_note});
+      wt.steps.push_back({step.active, step.tie, step.degree, step.velocity,
+                          step.midi_note});
     }
     s.tracks.push_back(std::move(wt));
   }
   return s;
+}
+
+void apply_voice_pattern_to_seq(Sequencer &seq,
+                                const analogno::VoiceSequencerPattern &pattern) {
+  if (seq.active_track < 0 ||
+      static_cast<std::size_t>(seq.active_track) >= seq.tracks.size()) {
+    return;
+  }
+
+  auto &track = seq.tracks[static_cast<std::size_t>(seq.active_track)];
+  for (std::size_t i = 0;
+       i < track.steps.size() && i < pattern.steps.size(); ++i) {
+    const auto &src = pattern.steps[i];
+    if (!src.active) {
+      track.steps[i] = {};
+      continue;
+    }
+
+    track.steps[i] = SeqStep{
+        .active = true,
+        .tie = src.tie,
+        .degree = src.note.degree,
+        .velocity = src.note.velocity,
+        .midi_note = src.note.midi_note,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -578,6 +658,7 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                float blow_sensitivity,
                bool blow_active,
                float blow_level,
+               const analogno::VoiceSequencerStatus &voice_seq_status,
                const std::vector<float>& spec_samples) {
   std::vector<analogno::WebCaptureDevice> capture_devices{};
 
@@ -690,6 +771,22 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
               .blow_sensitivity  = blow_sensitivity,
               .blow_active       = blow_active,
               .blow_level        = blow_level,
+              .voice_seq_available = voice_seq_status.available,
+              .voice_seq_compiled = voice_seq_status.compiled,
+              .voice_seq_enabled = voice_seq_status.enabled,
+              .voice_seq_recording = voice_seq_status.recording,
+              .voice_seq_mode =
+                  std::string{voice_mode_name(voice_seq_status.mode)},
+              .voice_seq_snap = voice_seq_status.snap_to_scale,
+              .voice_seq_sensitivity = voice_seq_status.sensitivity,
+              .voice_seq_timing_offset_ms =
+                  voice_seq_status.timing_offset_ms,
+              .voice_seq_last_note = voice_seq_status.last_midi_note,
+              .voice_seq_last_velocity = voice_seq_status.last_velocity,
+              .voice_seq_accepted_notes = voice_seq_status.accepted_notes,
+              .voice_seq_rejected_notes = voice_seq_status.rejected_notes,
+              .voice_seq_recorded_segments = voice_seq_status.recorded_segments,
+              .voice_seq_record_progress = voice_seq_status.record_progress,
               .spec_samples      = spec_samples,
           },
       .seq = seq_web_state(seq),
@@ -809,6 +906,7 @@ void run_event_loop(Gamepad &gamepad,
   WaveformSketch sketch{};
   Sequencer seq{};
   BlowController blow{};
+  analogno::VoiceSequencer voice_seq{};
   // Touchpad swipe for seq step navigation (active when a step is armed).
   struct TouchSwipe { float prev_x{0.0f}; float prev_y{0.0f}; bool active{false}; };
   TouchSwipe tp_swipe{};
@@ -856,7 +954,7 @@ void run_event_loop(Gamepad &gamepad,
         const auto tidx = static_cast<std::size_t>(seq.active_track);
         const auto sidx = static_cast<std::size_t>(seq.selected_step);
         if (tidx < seq.tracks.size()) {
-          seq.tracks[tidx].steps[sidx] = {false, 0, 100, -1};
+          seq.tracks[tidx].steps[sidx] = {};
           std::cout << "seq: cleared step " << seq.selected_step << " on track "
                     << seq.active_track << '\n';
         }
@@ -1042,6 +1140,35 @@ void run_event_loop(Gamepad &gamepad,
       std::cout << "blow sensitivity: " << blow.sensitivity << '\n';
     }
 
+    if (const auto cfg = web.consume_voice_seq_config()) {
+      voice_seq.configure({
+          .enabled = cfg->enabled,
+          .mode = voice_mode_from_string(cfg->mode),
+          .snap_to_scale = cfg->snap_to_scale,
+          .sensitivity = cfg->sensitivity,
+          .timing_offset_ms = cfg->timing_offset_ms,
+      });
+
+      const auto was_recording = voice_seq.status().recording;
+      if (cfg->recording && !was_recording) {
+        voice_seq.start_recording(seq.bpm, Sequencer::step_count);
+      } else if (!cfg->recording && was_recording) {
+        if (auto pattern = voice_seq.stop_recording(last_intent.root_midi_note,
+                                                    last_intent.octave_offset,
+                                                    last_intent.scale)) {
+          apply_voice_pattern_to_seq(seq, *pattern);
+          std::cout << "voice seq: quantized " << pattern->segment_count
+                    << " segments to track " << seq.active_track << '\n';
+        }
+      }
+
+      std::cout << "voice seq: " << (cfg->enabled ? "on" : "off")
+                << " mode=" << cfg->mode
+                << " snap=" << (cfg->snap_to_scale ? "scale" : "chromatic")
+                << " recording=" << (cfg->recording ? "on" : "off")
+                << " sensitivity=" << cfg->sensitivity << '\n';
+    }
+
     if (auto wt = web.consume_wavetable_request()) {
       sketch.committed = *wt;
       // Resample from the UI's resolution to wavetable_length via linear interp.
@@ -1091,7 +1218,8 @@ void run_event_loop(Gamepad &gamepad,
           seq.tracks[t].muted        = cfg->tracks[t].muted;
           for (std::size_t i = 0; i < static_cast<std::size_t>(Sequencer::step_count); ++i) {
             const auto &sc = cfg->tracks[t].steps[i];
-            seq.tracks[t].steps[i] = {sc.active, sc.degree, sc.velocity, sc.midi_note};
+            seq.tracks[t].steps[i] = {sc.active, sc.tie, sc.degree,
+                                      sc.velocity, sc.midi_note};
           }
         }
         seq.active_track = std::clamp(seq.active_track, 0,
@@ -1256,11 +1384,25 @@ void run_event_loop(Gamepad &gamepad,
       return 0;
     }();
 
-    // Blow / wind controller (WARBL-style breath input via microphone).
-    // Uses audio_features.envelope = raw smoothed RMS (NOT the 8x-normalised level)
-    // so quiet ambient noise is far below threshold.
-    // Attack requires sustained signal; release requires sustained silence.
-    // An arm-cooldown window after enabling ignores the click sound of the web button.
+    // Voice-to-sequencer records timed note segments from the same mic stream,
+    // then quantizes the completed one-bar take into steps and ties.
+    if (audio_capture.is_sample_recording()) {
+      static_cast<void>(audio_capture.consume_analysis_frames(8192));
+    } else {
+      voice_seq.process(audio_capture, last_intent.root_midi_note,
+                        last_intent.octave_offset, last_intent.scale);
+      const auto voice_status = voice_seq.status();
+      if (voice_status.recording && voice_status.record_progress >= 1.0F) {
+        if (auto pattern = voice_seq.stop_recording(last_intent.root_midi_note,
+                                                    last_intent.octave_offset,
+                                                    last_intent.scale)) {
+          apply_voice_pattern_to_seq(seq, *pattern);
+          std::cout << "voice seq: quantized " << pattern->segment_count
+                    << " segments to track " << seq.active_track << '\n';
+        }
+      }
+    }
+
     if (blow.enabled && !audio_sampler.has_sample()) {
       const float raw = audio_features.envelope; // raw RMS, typically 0.001..0.150
       const auto blow_now = std::chrono::steady_clock::now();
@@ -1384,7 +1526,8 @@ void run_event_loop(Gamepad &gamepad,
         const auto &n = intent.note_ons[0];
         const auto tidx = static_cast<std::size_t>(seq.active_track);
         const auto sidx = static_cast<std::size_t>(seq.selected_step);
-        seq.tracks[tidx].steps[sidx] = {true, n.degree, n.velocity, n.midi_note};
+        seq.tracks[tidx].steps[sidx] = {true, false, n.degree, n.velocity,
+                                        n.midi_note};
         seq.selected_step = (seq.selected_step + 1) % Sequencer::step_count;
       }
 
@@ -1484,6 +1627,7 @@ void run_event_loop(Gamepad &gamepad,
                                  std::clamp(blow.signal_level(audio_features.envelope) /
                                                 blow.signal_threshold(),
                                             0.0F, 2.0F),
+                                 voice_seq.status(),
                                  spec_data));
       last_web_publish = now;
     }

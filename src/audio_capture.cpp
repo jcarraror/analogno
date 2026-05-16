@@ -119,6 +119,8 @@ void AudioCapture::stop() {
 
   waveform_write_index_.store(0);
   recording_write_index_.store(0);
+  analysis_write_index_.store(0);
+  analysis_read_index_.store(0);
 
   {
     const auto lock = std::scoped_lock{sample_mutex_};
@@ -211,6 +213,31 @@ std::vector<float> AudioCapture::spec_samples() const {
     result.push_back(spec_[index].load(std::memory_order_relaxed));
   }
 
+  return result;
+}
+
+std::vector<float> AudioCapture::consume_analysis_frames(std::size_t max_frames) {
+  std::vector<float> result{};
+
+  const auto write_index =
+      analysis_write_index_.load(std::memory_order_acquire);
+  auto read_index = analysis_read_index_.load(std::memory_order_relaxed);
+
+  if (write_index <= read_index) {
+    return result;
+  }
+
+  const auto available = write_index - read_index;
+  const auto read_count = std::min(available, max_frames);
+  result.reserve(read_count);
+
+  for (std::size_t i = 0; i < read_count; ++i) {
+    const auto index = (read_index + i) % analysis_sample_count;
+    result.push_back(analysis_[index].load(std::memory_order_relaxed));
+  }
+
+  read_index += read_count;
+  analysis_read_index_.store(read_index, std::memory_order_release);
   return result;
 }
 
@@ -390,6 +417,33 @@ void AudioCapture::capture_callback(ma_device *device, void *output,
           std::clamp(samples[i], -1.0F, 1.0F),
           std::memory_order_relaxed);
     }
+  }
+
+  {
+    auto read_index =
+        self->analysis_read_index_.load(std::memory_order_acquire);
+    auto analysis_write_index =
+        self->analysis_write_index_.load(std::memory_order_relaxed);
+
+    const auto overflow =
+        analysis_write_index + sample_count > read_index + analysis_sample_count
+            ? analysis_write_index + sample_count -
+                  (read_index + analysis_sample_count)
+            : std::size_t{0};
+
+    if (overflow > 0) {
+      read_index += overflow;
+      self->analysis_read_index_.store(read_index,
+                                       std::memory_order_release);
+    }
+
+    for (std::size_t i = 0; i < sample_count; ++i) {
+      self->analysis_[(analysis_write_index + i) % analysis_sample_count].store(
+          std::clamp(samples[i], -1.0F, 1.0F), std::memory_order_relaxed);
+    }
+
+    self->analysis_write_index_.store(analysis_write_index + sample_count,
+                                      std::memory_order_release);
   }
 
   if (self->sample_recording_.load()) {

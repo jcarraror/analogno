@@ -73,6 +73,20 @@ struct WebAudioState final {
   float blow_sensitivity{0.5F};  // 0..1 user-adjustable threshold
   bool blow_active{};            // note currently held by breath
   float blow_level{};            // 0..2: envelope relative to on_threshold (1.0 = at gate)
+  bool voice_seq_available{};    // aubio-backed voice-to-sequencer is compiled and ready
+  bool voice_seq_compiled{};      // app binary was built with aubio support
+  bool voice_seq_enabled{};      // mic notes are being written into sequencer steps
+  bool voice_seq_recording{};    // timed phrase capture is active
+  std::string voice_seq_mode{"percussion"};
+  bool voice_seq_snap{};         // snap detected notes to current scale before writing
+  float voice_seq_sensitivity{0.65F};
+  float voice_seq_timing_offset_ms{};
+  int voice_seq_last_note{-1};
+  int voice_seq_last_velocity{};
+  std::size_t voice_seq_accepted_notes{};
+  std::size_t voice_seq_rejected_notes{};
+  std::size_t voice_seq_recorded_segments{};
+  float voice_seq_record_progress{};
   std::vector<float> spec_samples{}; // 2048 raw audio samples for frontend FFT
 };
 
@@ -94,6 +108,7 @@ struct WebMusicState final {
 
 struct WebSeqStep final {
   bool active{};
+  bool tie{};
   int degree{};
   int velocity{100};
   int midi_note{-1};

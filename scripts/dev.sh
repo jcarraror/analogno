@@ -9,10 +9,9 @@ SOUNDFONT="/usr/share/sounds/sf2/FluidR3_GM.sf2"
 FLUID_LOG="${TMPDIR:-/tmp}/analogno-fluidsynth.log"
 WEB_LOG="${TMPDIR:-/tmp}/analogno-web.log"
 
-if [[ ! -x "${ANALOGNO_BIN}" ]]; then
-  echo "building Analogno..."
-  cmake --build --preset debug
-fi
+echo "building Analogno..."
+cmake --preset debug
+cmake --build --preset debug
 
 if [[ ! -x "${ANALOGNO_BIN}" ]]; then
   echo "error: missing ${ANALOGNO_BIN}"

@@ -136,6 +136,22 @@ std::string to_json_string(const WebRuntimeState &state) {
               {"blowSensitivity", state.audio.blow_sensitivity},
               {"blowActive", state.audio.blow_active},
               {"blowLevel", state.audio.blow_level},
+              {"voiceSeqAvailable", state.audio.voice_seq_available},
+              {"voiceSeqCompiled", state.audio.voice_seq_compiled},
+              {"voiceSeqEnabled", state.audio.voice_seq_enabled},
+              {"voiceSeqRecording", state.audio.voice_seq_recording},
+              {"voiceSeqMode", state.audio.voice_seq_mode},
+              {"voiceSeqSnap", state.audio.voice_seq_snap},
+              {"voiceSeqSensitivity", state.audio.voice_seq_sensitivity},
+              {"voiceSeqTimingOffsetMs",
+               state.audio.voice_seq_timing_offset_ms},
+              {"voiceSeqLastNote", state.audio.voice_seq_last_note},
+              {"voiceSeqLastVelocity", state.audio.voice_seq_last_velocity},
+              {"voiceSeqAcceptedNotes", state.audio.voice_seq_accepted_notes},
+              {"voiceSeqRejectedNotes", state.audio.voice_seq_rejected_notes},
+              {"voiceSeqRecordedSegments",
+               state.audio.voice_seq_recorded_segments},
+              {"voiceSeqRecordProgress", state.audio.voice_seq_record_progress},
               {"specSamples", state.audio.spec_samples},
           },
       },
@@ -148,6 +164,7 @@ std::string to_json_string(const WebRuntimeState &state) {
               for (const auto &s : track.steps) {
                 steps.push_back({
                     {"active", s.active},
+                    {"tie", s.tie},
                     {"degree", s.degree},
                     {"velocity", s.velocity},
                     {"midiNote", s.midi_note},
@@ -214,7 +231,7 @@ public:
   std::optional<std::vector<float>> wavetable_request{};
   std::atomic_bool seq_play_cmd{false};
   std::atomic_bool seq_stop_cmd{false};
-  std::atomic_int  seq_select_step_cmd{-2};  // -2 = no pending; -1 = deselect; 0..15 = arm
+  std::atomic_int  seq_select_step_cmd{-2};  // -2 = no pending; -1 = deselect; 0..31 = arm
   std::atomic_int  seq_select_track_cmd{-2}; // -2 = no pending; 0..15 = select track
   std::atomic_bool seq_add_track_cmd{false};
   std::atomic_int  seq_remove_track_cmd{-1}; // -1 = no pending; >=0 = remove that index
@@ -224,6 +241,8 @@ public:
   std::optional<std::string> soundfont_request{};
   std::atomic_int blow_mode_request{-1}; // -1=none, 0=disable, 1=enable
   std::atomic_int blow_sensitivity_request{-1}; // -1=none, 0..100 = sensitivity%
+  std::mutex voice_seq_mutex{};
+  std::optional<WebSocketServer::VoiceSeqConfig> voice_seq_request{};
 };
 
 class Session final : public std::enable_shared_from_this<Session> {
@@ -333,6 +352,27 @@ private:
       } else if (json.value("type", "") == "setBlowSensitivity") {
         const auto v = std::clamp(json.value("sensitivity", 50), 0, 100);
         shared_->blow_sensitivity_request.store(v);
+      } else if (json.value("type", "") == "setVoiceSeq") {
+        const auto lock = std::scoped_lock{shared_->voice_seq_mutex};
+        shared_->voice_seq_request = WebSocketServer::VoiceSeqConfig{
+            .enabled = json.value("enabled", false),
+            .recording = json.value("recording", false),
+            .mode = [&] {
+              auto mode = json.value("mode", std::string{"percussion"});
+              if (mode != "percussion" && mode != "harmonic" &&
+                  mode != "hybrid") {
+                mode = "percussion";
+              }
+              return mode;
+            }(),
+            .snap_to_scale = json.value("snapToScale", true),
+            .sensitivity =
+                std::clamp(json.value("sensitivity", 65.0F), 0.0F, 100.0F) /
+                100.0F,
+            .timing_offset_ms =
+                std::clamp(json.value("timingOffsetMs", 0.0F), -120.0F,
+                           120.0F),
+        };
       } else if (json.value("type", "") == "setWavetable") {
         if (json.contains("data") && json["data"].is_array()) {
           std::vector<float> samples;
@@ -354,7 +394,7 @@ private:
         shared_->seq_stop_cmd.store(true);
       } else if (json.value("type", "") == "selectSeqStep") {
         const auto step = json.value("step", -1);
-        shared_->seq_select_step_cmd.store(std::clamp(step, -1, 15));
+        shared_->seq_select_step_cmd.store(std::clamp(step, -1, 31));
       } else if (json.value("type", "") == "selectSeqTrack") {
         const auto track = json.value("track", 0);
         shared_->seq_select_track_cmd.store(std::clamp(track, 0, 15));
@@ -390,6 +430,7 @@ private:
                 const auto &s = arr[i];
                 cfg.tracks[t].steps[i] = WebSocketServer::SeqStepConfig{
                     .active    = s.value("active", false),
+                    .tie       = s.value("tie", false),
                     .degree    = std::clamp(s.value("degree", 0), 0, 27),
                     .velocity  = std::clamp(s.value("velocity", 100), 1, 127),
                     .midi_note = s.value("midiNote", -1),
@@ -630,6 +671,12 @@ public:
     return static_cast<float>(v) / 100.0F;
   }
 
+  [[nodiscard]] std::optional<WebSocketServer::VoiceSeqConfig>
+  consume_voice_seq_config() {
+    const auto lock = std::scoped_lock{shared_->voice_seq_mutex};
+    return std::exchange(shared_->voice_seq_request, std::nullopt);
+  }
+
 private:
   std::shared_ptr<SharedState> shared_;
   std::thread thread_{};
@@ -716,6 +763,11 @@ std::optional<bool> WebSocketServer::consume_blow_mode_request() {
 
 std::optional<float> WebSocketServer::consume_blow_sensitivity_request() {
   return impl_->consume_blow_sensitivity_request();
+}
+
+std::optional<WebSocketServer::VoiceSeqConfig>
+WebSocketServer::consume_voice_seq_config() {
+  return impl_->consume_voice_seq_config();
 }
 
 } // namespace analogno

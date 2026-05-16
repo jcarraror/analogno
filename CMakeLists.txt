@@ -8,6 +8,7 @@ project(
 )
 
 option(ANALOGNO_WARNINGS_AS_ERRORS "Treat warnings as errors" ON)
+option(ANALOGNO_ENABLE_AUBIO "Enable aubio-backed voice-to-sequencer analysis" ON)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -61,6 +62,14 @@ FetchContent_MakeAvailable(miniaudio)
 
 find_package(Boost REQUIRED)
 
+if (ANALOGNO_ENABLE_AUBIO)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(AUBIO QUIET IMPORTED_TARGET aubio)
+  if (NOT AUBIO_FOUND)
+    message(WARNING "aubio was not found; voice-to-sequencer will be compiled unavailable")
+  endif()
+endif()
+
 add_executable(analogno
   src/main.cpp
   src/controller_state.cpp
@@ -69,6 +78,7 @@ add_executable(analogno
   src/web_server.cpp
   src/audio_capture.cpp
   src/audio_sampler.cpp
+  src/voice_sequencer.cpp
   src/miniaudio_impl.cpp
 )
 
@@ -90,6 +100,13 @@ target_link_libraries(analogno
     Boost::headers
     pthread
 )
+
+if (ANALOGNO_ENABLE_AUBIO AND AUBIO_FOUND)
+  target_link_libraries(analogno PRIVATE PkgConfig::AUBIO)
+  target_compile_definitions(analogno PRIVATE ANALOGNO_HAVE_AUBIO=1)
+else()
+  target_compile_definitions(analogno PRIVATE ANALOGNO_HAVE_AUBIO=0)
+endif()
 
 target_compile_features(analogno
   PRIVATE

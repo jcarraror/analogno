@@ -721,7 +721,7 @@ h1 {
 
 .seq-track-steps {
   display: grid;
-  grid-template-columns: repeat(16, 1fr);
+  grid-template-columns: repeat(32, minmax(18px, 1fr));
   gap: 3px;
 }
 
@@ -734,7 +734,7 @@ h1 {
 
 @media (max-width: 700px) {
   .seq-track-row { grid-template-columns: 1fr; }
-  .seq-track-steps { grid-template-columns: repeat(8, 1fr); }
+  .seq-track-steps { grid-template-columns: repeat(16, minmax(18px, 1fr)); }
 }
 
 .seq-step-btn {
@@ -811,6 +811,128 @@ h1 {
   border-radius: 2px;
   min-width: 2px;
   max-width: 100%;
+}
+
+/* ---- Voice to sequencer ---- */
+
+.voice-seq {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.voice-seq-actions {
+  display: grid;
+  grid-template-columns: minmax(112px, auto) minmax(126px, auto) 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.voice-seq-primary {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgba(110, 168, 254, 0.35);
+  border-radius: 6px;
+  background: rgba(110, 168, 254, 0.12);
+  color: #dbeafe;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.voice-seq-primary:hover:not(:disabled) {
+  background: rgba(110, 168, 254, 0.22);
+}
+
+.voice-seq-primary.voice-seq-enabled {
+  background: rgba(34, 197, 94, 0.18);
+  border-color: rgba(34, 197, 94, 0.42);
+  color: #bbf7d0;
+}
+
+.voice-seq-primary.voice-seq-recording {
+  background: rgba(185, 28, 28, 0.68);
+  border-color: rgba(248, 113, 113, 0.5);
+  color: #fff;
+}
+
+.voice-seq-primary:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.voice-seq-status {
+  color: #9ca3af;
+  font-size: 0.78rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-seq-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.voice-seq-field {
+  display: grid;
+  gap: 6px;
+}
+
+.voice-seq-field span,
+.voice-seq-slider-head span {
+  color: #8e97aa;
+  font-size: 0.78rem;
+}
+
+.voice-seq-field select {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 0 10px;
+  background: #151a25;
+  color: #f2f5f9;
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.voice-seq-field select:disabled {
+  opacity: 0.5;
+}
+
+.voice-seq-slider {
+  display: grid;
+  gap: 5px;
+}
+
+.voice-seq-slider-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.voice-seq-slider-head strong {
+  color: #f2f5f9;
+  font-size: 0.78rem;
+}
+
+.voice-seq-stats {
+  display: flex;
+  gap: 14px;
+  color: #777;
+  font-size: 0.7rem;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 700px) {
+  .voice-seq-actions,
+  .voice-seq-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .seq-picker-label {

@@ -111,6 +111,20 @@ type RuntimeState = {
     blowSensitivity: number;
     blowActive: boolean;
     blowLevel: number;  // 0..2, relative to threshold (1.0 = at gate)
+    voiceSeqAvailable: boolean;
+    voiceSeqCompiled: boolean;
+    voiceSeqEnabled: boolean;
+    voiceSeqRecording: boolean;
+    voiceSeqMode: "percussion" | "harmonic" | "hybrid";
+    voiceSeqSnap: boolean;
+    voiceSeqSensitivity: number;
+    voiceSeqTimingOffsetMs: number;
+    voiceSeqLastNote: number;
+    voiceSeqLastVelocity: number;
+    voiceSeqAcceptedNotes: number;
+    voiceSeqRejectedNotes: number;
+    voiceSeqRecordedSegments: number;
+    voiceSeqRecordProgress: number;
     specSamples: number[]; // 2048 raw audio samples for frontend FFT
   };
   seq: {
@@ -125,7 +139,7 @@ type RuntimeState = {
       midiProgram: number;
       midiBank: number;
       muted: boolean;
-      steps: Array<{ active: boolean; degree: number; velocity: number; midiNote: number }>;
+      steps: Array<{ active: boolean; tie: boolean; degree: number; velocity: number; midiNote: number }>;
     }>;
   };
   presets: Array<{ bank: number; program: number; name: string }>;
@@ -812,7 +826,7 @@ function WaveformEditor({
 
 // --- Sequencer ---
 
-type SeqStepEdit = { active: boolean; degree: number; velocity: number; midiNote: number };
+type SeqStepEdit = { active: boolean; tie: boolean; degree: number; velocity: number; midiNote: number };
 type SeqTrackEdit = { midiChannel: number; midiProgram: number; midiBank: number; muted: boolean; steps: SeqStepEdit[] };
 
 function SequencerPanel({
@@ -846,7 +860,7 @@ function SequencerPanel({
   const [tracks, setTracks] = useState<SeqTrackEdit[]>(
     Array.from({ length: 4 }, (_, ti) => ({
       midiChannel: ti, midiProgram: 0, midiBank: 0, muted: false,
-      steps: Array.from({ length: 16 }, () => ({ active: false, degree: 0, velocity: 100, midiNote: -1 })),
+      steps: Array.from({ length: 32 }, () => ({ active: false, tie: false, degree: 0, velocity: 100, midiNote: -1 })),
     }))
   );
 
@@ -889,7 +903,7 @@ function SequencerPanel({
     if (selectedStep < 0) return;
     const next = tracks.map((t, ti) =>
       ti === activeTrack
-        ? { ...t, steps: t.steps.map((s, si) => si === selectedStep ? { active: false, degree: 0, velocity: 100, midiNote: -1 } : s) }
+        ? { ...t, steps: t.steps.map((s, si) => si === selectedStep ? { active: false, tie: false, degree: 0, velocity: 100, midiNote: -1 } : s) }
         : t
     );
     setTracks(next);
@@ -902,7 +916,7 @@ function SequencerPanel({
     if (!tracks[trackIdx]?.steps[stepIdx]?.active) return;
     const next = tracks.map((t, ti) =>
       ti === trackIdx
-        ? { ...t, steps: t.steps.map((s, si) => si === stepIdx ? { active: false, degree: 0, velocity: 100, midiNote: -1 } : s) }
+        ? { ...t, steps: t.steps.map((s, si) => si === stepIdx ? { active: false, tie: false, degree: 0, velocity: 100, midiNote: -1 } : s) }
         : t
     );
     setTracks(next);
@@ -1000,9 +1014,11 @@ function SequencerPanel({
                     disabled={disabled}
                     onClick={() => handleStepClick(ti, si)}
                     onContextMenu={(e) => { if (!disabled) handleStepRightClick(ti, si, e); }}
-                    title={`T${ti + 1} step ${si + 1}${step.active ? ` \u2014 ${label || 'scale'} vel ${step.velocity}` : ''}`}>
+                    title={`T${ti + 1} step ${si + 1}${step.active ? ` \u2014 ${step.tie ? 'tie' : (label || 'scale')} vel ${step.velocity}` : ''}`}>
                     <span className="seq-step-num">{si + 1}</span>
-                    {step.active && label && <span className="seq-step-note">{label}</span>}
+                    {step.active && (
+                      <span className="seq-step-note">{step.tie ? '–' : label}</span>
+                    )}
                     {step.active && (
                       <span className="seq-step-vel-dot"
                         style={{ width: `${Math.round(step.velocity / 127 * 100)}%` }} />
@@ -1471,11 +1487,31 @@ export function App() {
     socket?.send(JSON.stringify({ type: "setBlowSensitivity", sensitivity: Math.round(sensitivity * 100) }));
   }
 
+  function setVoiceSeq(next: {
+    enabled?: boolean;
+    recording?: boolean;
+    mode?: "percussion" | "harmonic" | "hybrid";
+    snapToScale?: boolean;
+    sensitivity?: number;
+    timingOffsetMs?: number;
+  }) {
+    socket?.send(JSON.stringify({
+      type: "setVoiceSeq",
+      enabled: next.enabled ?? audio?.voiceSeqEnabled ?? false,
+      recording: next.recording ?? audio?.voiceSeqRecording ?? false,
+      mode: next.mode ?? audio?.voiceSeqMode ?? "percussion",
+      snapToScale: next.snapToScale ?? audio?.voiceSeqSnap ?? true,
+      sensitivity: Math.round((next.sensitivity ?? audio?.voiceSeqSensitivity ?? 0.65) * 100),
+      timingOffsetMs: next.timingOffsetMs ?? audio?.voiceSeqTimingOffsetMs ?? 0,
+    }));
+  }
+
   const [configOpen, setConfigOpen] = useState(false);
 
   const controller = runtime?.controller;
   const music = runtime?.music;
   const audio = runtime?.audio;
+  const backendOnline = connection === "online" && runtime != null;
   const sampleMode = audio?.sampleReady ?? false;
   const activePatch = music?.midiProgram ?? 0;
   const activeBank = music?.midiBank ?? 0;
@@ -1775,21 +1811,111 @@ export function App() {
           />
         </Panel>
 
-        {(runtime?.spectrogramVisible ?? true) && (
-        <Panel
-          title="Spectrogram"
-          wide
-        >
-          <Spectrogram
-            specSamples={audio?.specSamples ?? []}
-            activeNotes={music?.activeNotes ?? []}
-            blowActive={audio?.blowActive ?? false}
-            blowLevel={audio?.blowLevel ?? 0}
-            expression={music?.expression ?? 0}
-            filterCutoff={music?.filterCutoff ?? 0}
-          />
+        <Panel title="Voice to sequencer">
+          <div className="voice-seq">
+            <div className="voice-seq-actions">
+              <button
+                type="button"
+                className={`voice-seq-primary${(audio?.voiceSeqEnabled ?? false) ? " voice-seq-enabled" : ""}`}
+                disabled={!backendOnline || !(audio?.voiceSeqAvailable ?? false)}
+                onClick={() => {
+                  const enabled = !(audio?.voiceSeqEnabled ?? false);
+                  setVoiceSeq({ enabled, recording: enabled ? audio?.voiceSeqRecording : false });
+                }}
+              >
+                {(audio?.voiceSeqEnabled ?? false) ? "Voice ON" : "Voice OFF"}
+              </button>
+              <button
+                type="button"
+                className={`voice-seq-primary${(audio?.voiceSeqRecording ?? false) ? " voice-seq-recording" : ""}`}
+                disabled={!backendOnline || !(audio?.voiceSeqAvailable ?? false)}
+                onClick={() => setVoiceSeq({
+                  enabled: true,
+                  recording: !(audio?.voiceSeqRecording ?? false),
+                })}
+              >
+                {(audio?.voiceSeqRecording ?? false) ? "Stop record" : "Record 1 bar"}
+              </button>
+              <span className="voice-seq-status">
+                {(audio?.voiceSeqAvailable ?? false)
+                  ? (audio?.voiceSeqLastNote ?? -1) >= 0
+                    ? `${midiNoteName(audio!.voiceSeqLastNote)} vel ${audio?.voiceSeqLastVelocity ?? 0}`
+                    : "ready"
+                  : backendOnline
+                    ? (audio?.voiceSeqCompiled ?? false)
+                      ? "aubio init failed"
+                      : "backend built without aubio"
+                    : "backend offline"}
+              </span>
+            </div>
+
+            <div className="voice-seq-grid">
+              <label className="voice-seq-field">
+                <span>Input type</span>
+                <select
+                  value={audio?.voiceSeqMode ?? "percussion"}
+                  disabled={!backendOnline || !(audio?.voiceSeqAvailable ?? false)}
+                  onChange={e => setVoiceSeq({ mode: e.target.value as "percussion" | "harmonic" | "hybrid" })}
+                >
+                  <option value="percussion">Percussion hits</option>
+                  <option value="harmonic">Harmonic notes</option>
+                  <option value="hybrid">Hybrid</option>
+                </select>
+              </label>
+
+              <label className="voice-seq-field">
+                <span>Pitch snap</span>
+                <select
+                  value={(audio?.voiceSeqSnap ?? true) ? "scale" : "chromatic"}
+                  disabled={!backendOnline || !(audio?.voiceSeqAvailable ?? false)}
+                  onChange={e => setVoiceSeq({ snapToScale: e.target.value === "scale" })}
+                >
+                  <option value="scale">Current scale</option>
+                  <option value="chromatic">Chromatic</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="voice-seq-slider">
+              <div className="voice-seq-slider-head">
+                <span>Sensitivity</span>
+                <strong>{Math.round((audio?.voiceSeqSensitivity ?? 0.65) * 100)}%</strong>
+              </div>
+              <input
+                type="range" min={0} max={100}
+                value={Math.round((audio?.voiceSeqSensitivity ?? 0.65) * 100)}
+                disabled={!backendOnline || !(audio?.voiceSeqAvailable ?? false)}
+                onChange={e => setVoiceSeq({ sensitivity: Number(e.target.value) / 100 })}
+                style={{ width: "100%" }}
+              />
+            </div>
+
+            <div className="voice-seq-slider">
+              <div className="voice-seq-slider-head">
+                <span>Timing offset</span>
+                <strong>{Math.round(audio?.voiceSeqTimingOffsetMs ?? 0)} ms</strong>
+              </div>
+              <input
+                type="range" min={-120} max={120}
+                value={Math.round(audio?.voiceSeqTimingOffsetMs ?? 0)}
+                disabled={!backendOnline || !(audio?.voiceSeqAvailable ?? false)}
+                onChange={e => setVoiceSeq({ timingOffsetMs: Number(e.target.value) })}
+                style={{ width: "100%" }}
+              />
+            </div>
+
+            <div className="voice-seq-stats">
+              <span>accepted {audio?.voiceSeqAcceptedNotes ?? 0}</span>
+              <span>rejected {audio?.voiceSeqRejectedNotes ?? 0}</span>
+              <span>segments {audio?.voiceSeqRecordedSegments ?? 0}</span>
+              {(audio?.voiceSeqRecording ?? false) && (
+                <span>{Math.round((audio?.voiceSeqRecordProgress ?? 0) * 100)}%</span>
+              )}
+              <span>{(audio?.voiceSeqCompiled ?? false) ? "compiled aubio" : "no aubio in binary"}</span>
+              <span>armed step {((runtime?.seq.selectedStep ?? -1) >= 0) ? (runtime!.seq.selectedStep + 1) : "none"}</span>
+            </div>
+          </div>
         </Panel>
-        )}
 
         <Panel title="Breath / wind controller">
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
@@ -1841,6 +1967,22 @@ export function App() {
             </div>
           </div>
         </Panel>
+
+        {(runtime?.spectrogramVisible ?? true) && (
+        <Panel
+          title="Spectrogram"
+          wide
+        >
+          <Spectrogram
+            specSamples={audio?.specSamples ?? []}
+            activeNotes={music?.activeNotes ?? []}
+            blowActive={audio?.blowActive ?? false}
+            blowLevel={audio?.blowLevel ?? 0}
+            expression={music?.expression ?? 0}
+            filterCutoff={music?.filterCutoff ?? 0}
+          />
+        </Panel>
+        )}
       </div>
     </main>
   );

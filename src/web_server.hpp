@@ -22,6 +22,7 @@ public:
 
   struct SeqStepConfig final {
     bool active{};
+    bool tie{};
     int degree{};
     int velocity{100};
     int midi_note{-1};
@@ -32,15 +33,24 @@ public:
     int midi_program{0};
     int midi_bank{0};
     bool muted{false};
-    std::array<SeqStepConfig, 16> steps{};
+    std::array<SeqStepConfig, 32> steps{};
   };
 
   struct SeqConfig final {
-    static constexpr int step_count = 16;
+    static constexpr int step_count = 32;
     static constexpr int max_tracks = 16; // MIDI channel limit
     float bpm{120.0F};
     int gate_pct{50};
     std::vector<SeqTrackConfig> tracks{};
+  };
+
+  struct VoiceSeqConfig final {
+    bool enabled{};
+    bool recording{};
+    std::string mode{"percussion"};
+    bool snap_to_scale{true};
+    float sensitivity{0.65F};
+    float timing_offset_ms{};
   };
 
   explicit WebSocketServer(std::uint16_t port = 8765);
@@ -73,6 +83,7 @@ public:
   [[nodiscard]] std::optional<std::string> consume_soundfont_request();
   [[nodiscard]] std::optional<bool> consume_blow_mode_request();
   [[nodiscard]] std::optional<float> consume_blow_sensitivity_request();
+  [[nodiscard]] std::optional<VoiceSeqConfig> consume_voice_seq_config();
 
 private:
   class Impl;
