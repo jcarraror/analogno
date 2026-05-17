@@ -51,7 +51,7 @@ private:
   static std::uint8_t control_value(float normalized);
   static int pitch_bend_value(float normalized);
   static bool valid_midi_note(int note);
-  static void send(RtMidiOut &midi, std::vector<unsigned char> message);
+  static bool send(RtMidiOut &midi, std::vector<unsigned char> message);
 };
 
 } // namespace analogno

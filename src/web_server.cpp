@@ -133,6 +133,9 @@ std::string to_json_string(const WebRuntimeState &state) {
               {"touchpadSketch", state.audio.touchpad_sketch},
               {"touchpadRawPoints", state.audio.touchpad_raw_points},
               {"blowMode", state.audio.blow_mode},
+              {"wavetableMorph", state.audio.wavetable_morph},
+              {"wavetableNoise", state.audio.wavetable_noise},
+              {"wavetableUnison", state.audio.wavetable_unison},
               {"blowSensitivity", state.audio.blow_sensitivity},
               {"blowActive", state.audio.blow_active},
               {"blowLevel", state.audio.blow_level},
@@ -232,7 +235,9 @@ public:
   std::mutex patch_mutex{};
   std::optional<WebSocketServer::PatchRequest> patch_request{};
   std::mutex wavetable_mutex{};
-  std::optional<std::vector<float>> wavetable_request{};
+  std::optional<WebSocketServer::WavetableRequest> wavetable_request{};
+  std::mutex wavetable_controls_mutex{};
+  std::optional<WebSocketServer::WavetableControls> wavetable_controls_request{};
   std::atomic_bool seq_play_cmd{false};
   std::atomic_bool seq_stop_cmd{false};
   std::atomic_int  seq_select_step_cmd{-2};
@@ -387,11 +392,31 @@ private:
                   std::clamp(v.get<float>(), -1.0F, 1.0F));
             }
           }
+          std::vector<float> morph_samples;
+          if (json.contains("morphData") && json["morphData"].is_array()) {
+            morph_samples.reserve(json["morphData"].size());
+            for (const auto &v : json["morphData"]) {
+              if (v.is_number()) {
+                morph_samples.push_back(
+                    std::clamp(v.get<float>(), -1.0F, 1.0F));
+              }
+            }
+          }
           if (!samples.empty()) {
             const auto lock = std::scoped_lock{shared_->wavetable_mutex};
-            shared_->wavetable_request = std::move(samples);
+            shared_->wavetable_request = WebSocketServer::WavetableRequest{
+                .samples = std::move(samples),
+                .morph_samples = std::move(morph_samples),
+            };
           }
         }
+      } else if (json.value("type", "") == "setWavetableControls") {
+        const auto lock = std::scoped_lock{shared_->wavetable_controls_mutex};
+        shared_->wavetable_controls_request = WebSocketServer::WavetableControls{
+            .morph = std::clamp(json.value("morph", 0.0F), 0.0F, 1.0F),
+            .noise = std::clamp(json.value("noise", 0.0F), 0.0F, 1.0F),
+            .unison = std::clamp(json.value("unison", 0.0F), 0.0F, 1.0F),
+        };
       } else if (json.value("type", "") == "seqPlay") {
         shared_->seq_play_cmd.store(true);
       } else if (json.value("type", "") == "seqStop") {
@@ -634,9 +659,15 @@ public:
     return std::exchange(shared_->patch_request, std::nullopt);
   }
 
-  [[nodiscard]] std::optional<std::vector<float>> consume_wavetable_request() {
+  [[nodiscard]] std::optional<WebSocketServer::WavetableRequest> consume_wavetable_request() {
     const auto lock = std::scoped_lock{shared_->wavetable_mutex};
     return std::exchange(shared_->wavetable_request, std::nullopt);
+  }
+
+  [[nodiscard]] std::optional<WebSocketServer::WavetableControls>
+  consume_wavetable_controls() {
+    const auto lock = std::scoped_lock{shared_->wavetable_controls_mutex};
+    return std::exchange(shared_->wavetable_controls_request, std::nullopt);
   }
 
   [[nodiscard]] bool consume_seq_play() {
@@ -741,8 +772,14 @@ std::optional<WebSocketServer::PatchRequest> WebSocketServer::consume_patch_requ
   return impl_->consume_patch_request();
 }
 
-std::optional<std::vector<float>> WebSocketServer::consume_wavetable_request() {
+std::optional<WebSocketServer::WavetableRequest>
+WebSocketServer::consume_wavetable_request() {
   return impl_->consume_wavetable_request();
+}
+
+std::optional<WebSocketServer::WavetableControls>
+WebSocketServer::consume_wavetable_controls() {
+  return impl_->consume_wavetable_controls();
 }
 
 bool WebSocketServer::consume_seq_play() {

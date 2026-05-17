@@ -70,6 +70,9 @@ struct WebAudioState final {
   bool touchpad_drawing{false};
   std::vector<std::array<float, 2>> touchpad_raw_points{}; // raw finger path [[x,y],...]
   bool blow_mode{};              // breath/wind controller mode active
+  float wavetable_morph{};
+  float wavetable_noise{};
+  float wavetable_unison{};
   float blow_sensitivity{0.5F};  // 0..1 user-adjustable threshold
   bool blow_active{};            // note currently held by breath
   float blow_level{};            // 0..2: envelope relative to on_threshold (1.0 = at gate)

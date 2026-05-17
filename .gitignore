@@ -1,4 +1,5 @@
 /build*
+soundfonts/*.sf2
 # web
 apps/analogno-web/node_modules/
 apps/analogno-web/dist/

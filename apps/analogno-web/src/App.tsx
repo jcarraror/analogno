@@ -1,4 +1,4 @@
-import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 // General MIDI program names (0-indexed)
 const GM_PROGRAMS: string[] = [
@@ -44,6 +44,12 @@ type Vec3 = {
   x: number;
   y: number;
   z: number;
+};
+
+type SoundfontPreset = {
+  bank: number;
+  program: number;
+  name: string;
 };
 
 type RuntimeState = {
@@ -108,6 +114,9 @@ type RuntimeState = {
     touchpadDrawing: boolean;
     touchpadRawPoints: [number, number][];
     blowMode: boolean;
+    wavetableMorph: number;
+    wavetableNoise: number;
+    wavetableUnison: number;
     blowSensitivity: number;
     blowActive: boolean;
     blowLevel: number;  // 0..2, relative to threshold (1.0 = at gate)
@@ -146,7 +155,7 @@ type RuntimeState = {
       steps: Array<{ active: boolean; tie: boolean; degree: number; velocity: number; midiNote: number }>;
     }>;
   };
-  presets: Array<{ bank: number; program: number; name: string }>;
+  presets: SoundfontPreset[];
   soundfonts: string[];
   activeSoundfont: string;
   pianoRollVisible: boolean;
@@ -165,6 +174,39 @@ function midiNoteName(note: number): string {
   const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
   const octave = Math.floor(note / 12) - 1;
   return `${names[note % 12]}${octave}`;
+}
+
+function soundfontName(path: string): string {
+  const file = path.split(/[\\/]/).pop() ?? path;
+  return file.replace(/\.[^.]+$/i, '') || path;
+}
+
+function soundfontFormat(path: string): string {
+  const file = path.split(/[\\/]/).pop() ?? path;
+  const match = file.match(/\.([^.]+)$/);
+  return match?.[1]?.toUpperCase() ?? 'Soundfont';
+}
+
+function pluralize(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? '' : 's'}`;
+}
+
+function bankLabel(bank: number): string {
+  return `Bank ${bank}`;
+}
+
+function bankRole(bank: number): string {
+  return bank === 128 ? 'percussion' : 'melodic';
+}
+
+function patchName(
+  bank: number,
+  program: number,
+  presets: SoundfontPreset[],
+): string {
+  return presets.find(p => p.bank === bank && p.program === program)?.name
+    ?? GM_PROGRAMS[program]
+    ?? `Program ${program + 1}`;
 }
 
 const SCALE_SEMITONES: Record<string, number[]> = {
@@ -671,64 +713,123 @@ const PRESET_POINTS: Record<string, CP[]> = {
   saw:      [{ x: 0, amp: 1 }, { x: 0.998, amp: -1 }, { x: 0.999, amp: 1 }],
   triangle: [{ x: 0, amp: 0 }, { x: 0.25, amp: 1 }, { x: 0.75, amp: -1 }, { x: 1, amp: 0 }],
   square:   [{ x: 0, amp: 1 }, { x: 0.499, amp: 1 }, { x: 0.5, amp: -1 }, { x: 0.999, amp: -1 }, { x: 1, amp: 1 }],
+  pulse:    [{ x: 0, amp: 1 }, { x: 0.245, amp: 1 }, { x: 0.25, amp: -1 }, { x: 0.999, amp: -1 }, { x: 1, amp: 1 }],
+  organ:    Array.from({ length: 33 }, (_, i) => {
+    const phase = 2 * Math.PI * i / 32;
+    return { x: i / 32, amp: Math.max(-1, Math.min(1, Math.sin(phase) * 0.72 + Math.sin(phase * 2) * 0.22 + Math.sin(phase * 3) * 0.12)) };
+  }),
 };
 
 const CW = 512, CH = 130, HIT_R = 7;
+const GRAPH_TOP = 0;
+const GRAPH_H = CH;
 
 function cpXY(cp: CP): [number, number] {
-  return [cp.x * CW, (0.5 - cp.amp * 0.45) * CH];
+  return [cp.x * CW, GRAPH_TOP + (0.5 - cp.amp * 0.45) * GRAPH_H];
 }
 function xyCP(cx: number, cy: number): CP {
-  return { x: Math.max(0, Math.min(1, cx / CW)), amp: Math.max(-1, Math.min(1, (0.5 - cy / CH) / 0.45)) };
+  return {
+    x: Math.max(0, Math.min(1, cx / CW)),
+    amp: Math.max(-1, Math.min(1, (0.5 - (cy - GRAPH_TOP) / GRAPH_H) / 0.45)),
+  };
 }
 
 function WaveformEditor({
   touchpadSketch,
   touchpadDrawing,
+  morphAmount,
+  noiseAmount,
+  unisonAmount,
   onApply,
   disabled,
 }: {
   touchpadSketch: number[];
   touchpadDrawing: boolean;
-  onApply: (samples: number[]) => void;
+  morphAmount: number;
+  noiseAmount: number;
+  unisonAmount: number;
+  onApply: (samples: number[], morphSamples: number[]) => void;
   disabled?: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ptsRef = useRef<CP[]>([...PRESET_POINTS.sine]);
+  const morphPtsRef = useRef<CP[]>([...PRESET_POINTS.triangle]);
+  const [mainName, setMainName] = useState<keyof typeof PRESET_POINTS | null>('sine');
+  const [morphName, setMorphName] = useState<keyof typeof PRESET_POINTS>('triangle');
   const dragIdx = useRef<number | null>(null);
   const [ver, setVer] = useState(0);
   const sketchRef = useRef<number[]>(touchpadSketch);
   const drawingRef = useRef(touchpadDrawing);
+  const macroRef = useRef({ morphAmount, noiseAmount, unisonAmount });
+
+  function sampleLoop(samples: number[], index: number): number {
+    if (samples.length === 0) return 0;
+    const wrapped = ((index % samples.length) + samples.length) % samples.length;
+    const lo = Math.floor(wrapped);
+    const hi = (lo + 1) % samples.length;
+    const t = wrapped - lo;
+    return samples[lo] + (samples[hi] - samples[lo]) * t;
+  }
+
+  function drawWave(ctx: CanvasRenderingContext2D, samples: number[], color: string, width: number, yOffset = 0) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    for (let i = 0; i < CW; i++) {
+      const src = i * (samples.length - 1) / (CW - 1);
+      const y = GRAPH_TOP + (0.5 - sampleLoop(samples, src) * 0.45) * GRAPH_H + yOffset;
+      if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i, y);
+    }
+    ctx.stroke();
+  }
 
   function redraw() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d')!;
     ctx.clearRect(0, 0, CW, CH);
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+
+    ctx.fillStyle = '#141923';
+    ctx.fillRect(0, 0, CW, CH);
+    ctx.strokeStyle = 'rgba(216, 208, 189, 0.12)';
     ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(0, CH / 2); ctx.lineTo(CW, CH / 2); ctx.stroke();
+    for (let x = 0; x <= CW; x += CW / 8) {
+      ctx.beginPath(); ctx.moveTo(x, GRAPH_TOP); ctx.lineTo(x, GRAPH_TOP + GRAPH_H); ctx.stroke();
+    }
+    for (let y = GRAPH_TOP + GRAPH_H / 4; y < GRAPH_TOP + GRAPH_H; y += GRAPH_H / 4) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(CW, y); ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(216, 208, 189, 0.28)';
+    ctx.beginPath(); ctx.moveTo(0, GRAPH_TOP + GRAPH_H / 2); ctx.lineTo(CW, GRAPH_TOP + GRAPH_H / 2); ctx.stroke();
 
     const sk = sketchRef.current;
     if (sk.length >= 2) {
-      ctx.strokeStyle = drawingRef.current ? 'rgba(255,190,50,0.75)' : 'rgba(255,190,50,0.28)';
+      ctx.strokeStyle = drawingRef.current ? 'rgba(214, 176, 92, 0.82)' : 'rgba(214, 176, 92, 0.36)';
       ctx.lineWidth = 1;
       ctx.beginPath();
       for (let i = 0; i < sk.length; i++) {
         const x = (i / (sk.length - 1)) * CW;
-        const y = (0.5 - sk[i] * 0.45) * CH;
+        const y = GRAPH_TOP + (0.5 - sk[i] * 0.45) * GRAPH_H;
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
       }
       ctx.stroke();
     }
+    const main = cpToSamples([...ptsRef.current].sort((a, b) => a.x - b.x), CW);
+    const morph = cpToSamples(morphPtsRef.current, CW);
+    const { morphAmount: morphMix } = macroRef.current;
+    const result = main.map((sample, i) => sample + (morph[i] - sample) * morphMix);
+
+    drawWave(ctx, morph, 'rgba(143, 173, 151, 0.5)', 1);
+    drawWave(ctx, result, 'rgba(245, 241, 229, 0.96)', 1.8);
+
     // CP curve on top
     const sorted = [...ptsRef.current].sort((a, b) => a.x - b.x);
     if (sorted.length >= 2) {
       const samps = cpToSamples(sorted, CW);
-      ctx.strokeStyle = '#6ea8fe'; ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(110, 168, 254, 0.88)'; ctx.lineWidth = 1.5;
       ctx.beginPath();
       for (let i = 0; i < CW; i++) {
-        const y = (0.5 - samps[i] * 0.45) * CH;
+        const y = GRAPH_TOP + (0.5 - samps[i] * 0.45) * GRAPH_H;
         if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i, y);
       }
       ctx.stroke();
@@ -736,13 +837,18 @@ function WaveformEditor({
     for (const cp of ptsRef.current) {
       const [cx, cy] = cpXY(cp);
       ctx.beginPath(); ctx.arc(cx, cy, HIT_R - 1, 0, Math.PI * 2);
-      ctx.fillStyle = '#93bbff'; ctx.fill();
-      ctx.strokeStyle = '#1e3a6e'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = '#e8e2d3'; ctx.fill();
+      ctx.strokeStyle = '#141923'; ctx.lineWidth = 1.5; ctx.stroke();
     }
   }
 
   // Redraws when ver bumps (structural CP changes like add/delete/preset).
   useEffect(() => { redraw(); }, [ver]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    macroRef.current = { morphAmount, noiseAmount, unisonAmount };
+    redraw();
+  }, [morphAmount, noiseAmount, unisonAmount]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // On finger lift: auto-load sketch as control points, then redraw.
   // While drawing: just update refs and redraw the amber overlay.
@@ -752,15 +858,23 @@ function WaveformEditor({
     drawingRef.current = touchpadDrawing;
     if (wasDrawing && !touchpadDrawing && touchpadSketch.length >= 2) {
       const n = 32;
-      ptsRef.current = Array.from({ length: n }, (_, i) => {
+      const next = Array.from({ length: n }, (_, i) => {
         const src = Math.round(i * (touchpadSketch.length - 1) / (n - 1));
         return { x: i / (n - 1), amp: touchpadSketch[src] };
       });
+      ptsRef.current = next;
+      setMainName(null);
+      if (!disabled) {
+        onApply(
+          cpToSamples([...next].sort((a, b) => a.x - b.x), EDITOR_N),
+          cpToSamples([...morphPtsRef.current].sort((a, b) => a.x - b.x), EDITOR_N),
+        );
+      }
       setVer(v => v + 1); // bump triggers redraw via the other useEffect
     } else {
       redraw();
     }
-  }, [touchpadSketch, touchpadDrawing]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [touchpadSketch, touchpadDrawing, disabled, onApply]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function evXY(e: React.PointerEvent<HTMLCanvasElement> | React.MouseEvent<HTMLCanvasElement>): [number, number] {
     const r = canvasRef.current!.getBoundingClientRect();
@@ -784,6 +898,7 @@ function WaveformEditor({
     } else {
       ptsRef.current = [...ptsRef.current, xyCP(cx, cy)];
       dragIdx.current = ptsRef.current.length - 1;
+      setMainName(null);
       setVer(v => v + 1);
     }
   };
@@ -793,38 +908,130 @@ function WaveformEditor({
     const pts = [...ptsRef.current];
     pts[dragIdx.current] = xyCP(cx, cy);
     ptsRef.current = pts;
+    if (mainName !== null) setMainName(null);
     redraw(); // immediate feedback during drag, no re-render needed
   };
-  const onPointerUp = () => { dragIdx.current = null; };
+  function mainSamples(): number[] {
+    return cpToSamples([...ptsRef.current].sort((a, b) => a.x - b.x), EDITOR_N);
+  }
+
+  function morphSamples(): number[] {
+    return cpToSamples([...morphPtsRef.current].sort((a, b) => a.x - b.x), EDITOR_N);
+  }
+
+  function applyCurrent() {
+    if (!disabled) onApply(mainSamples(), morphSamples());
+  }
+
+  const onPointerUp = () => {
+    if (dragIdx.current !== null) applyCurrent();
+    dragIdx.current = null;
+  };
   const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (disabled || ptsRef.current.length <= 2) return;
     const [cx, cy] = evXY(e);
     const h = hitTest(cx, cy);
-    if (h >= 0) { ptsRef.current = ptsRef.current.filter((_, i) => i !== h); setVer(v => v + 1); }
+    if (h >= 0) {
+      ptsRef.current = ptsRef.current.filter((_, i) => i !== h);
+      setMainName(null);
+      setVer(v => v + 1);
+      applyCurrent();
+    }
   };
 
-  function bump(pts: CP[]) { ptsRef.current = pts; setVer(v => v + 1); }
+  function setMainPreset(name: keyof typeof PRESET_POINTS) {
+    ptsRef.current = [...PRESET_POINTS[name]];
+    setMainName(name);
+    setVer(v => v + 1);
+    applyCurrent();
+  }
+
+  function setMorphPreset(name: keyof typeof PRESET_POINTS) {
+    morphPtsRef.current = [...PRESET_POINTS[name]];
+    setMorphName(name);
+    setVer(v => v + 1);
+    applyCurrent();
+  }
 
   return (
     <div className="waveform-editor">
-      <div className="waveform-editor-presets">
-        {(Object.keys(PRESET_POINTS) as (keyof typeof PRESET_POINTS)[]).map(name => (
-          <button key={name} type="button" className="preset-btn" disabled={disabled}
-            onClick={() => bump([...PRESET_POINTS[name]])}>{name}</button>
-        ))}
-
+      <div className="waveform-editor-head">
+        <span className="waveform-editor-title">OSC TABLE</span>
+        <span className="waveform-editor-readout">draw / bank / morph</span>
       </div>
-      <canvas ref={canvasRef} width={CW} height={CH} className="waveform-editor-canvas"
-        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp} onDoubleClick={onDoubleClick}
-        style={{ cursor: disabled ? 'default' : 'crosshair', touchAction: 'none' }}
-      />
+      <div className="waveform-preset-row">
+        <span className="waveform-preset-label">A</span>
+        <div className="waveform-editor-presets">
+          {(Object.keys(PRESET_POINTS) as (keyof typeof PRESET_POINTS)[]).map(name => (
+            <button key={name} type="button"
+              className={`preset-btn${mainName === name ? ' preset-btn-active' : ''}`}
+              disabled={disabled}
+              onClick={() => setMainPreset(name)}>{name}</button>
+          ))}
+        </div>
+      </div>
+      <div className="waveform-preset-row">
+        <span className="waveform-preset-label">B</span>
+        <div className="waveform-editor-presets">
+          {(Object.keys(PRESET_POINTS) as (keyof typeof PRESET_POINTS)[]).map(name => (
+            <button key={name} type="button"
+              className={`preset-btn${morphName === name ? ' preset-btn-active' : ''}`}
+              disabled={disabled}
+              onClick={() => setMorphPreset(name)}>{name}</button>
+          ))}
+        </div>
+      </div>
+      <div className="waveform-display">
+        <canvas ref={canvasRef} width={CW} height={CH} className="waveform-editor-canvas"
+          onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp} onDoubleClick={onDoubleClick}
+          style={{ cursor: disabled ? 'default' : 'crosshair', touchAction: 'none' }}
+        />
+      </div>
       <p className="waveform-editor-hint">Click → add point · drag → move · double-click → delete</p>
       <button type="button" className="waveform-apply-btn" disabled={disabled}
-        onClick={() => onApply(cpToSamples([...ptsRef.current].sort((a, b) => a.x - b.x), EDITOR_N))}>
+        onClick={() => onApply(
+          cpToSamples([...ptsRef.current].sort((a, b) => a.x - b.x), EDITOR_N),
+          cpToSamples([...morphPtsRef.current].sort((a, b) => a.x - b.x), EDITOR_N),
+        )}>
         Apply to bank
       </button>
     </div>
+  );
+}
+
+function WavetableMacroSlider({
+  label,
+  value,
+  disabled,
+  tone,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  disabled?: boolean;
+  tone: 'morph' | 'noise' | 'unison';
+  onChange: (value: number) => void;
+}) {
+  const pct = Math.round(value * 100);
+  const tag = tone === 'morph' ? 'M' : tone === 'noise' ? 'N' : 'U';
+  const angle = -135 + value * 270;
+  return (
+    <label className={`wavetable-macro wavetable-macro-${tone}`}>
+      <span className="wavetable-macro-head">
+        <span className="wavetable-macro-tag">{tag}</span>
+        <span>{label}</span>
+        <strong>{String(pct).padStart(3, '0')}</strong>
+      </span>
+      <span className="wavetable-macro-dial">
+        <span className="wavetable-macro-ring" />
+        <span className="wavetable-macro-needle" style={{ transform: `rotate(${angle}deg)` }} />
+        <input type="range" min={0} max={100}
+          value={pct}
+          disabled={disabled}
+          onChange={(e) => onChange(Number(e.target.value) / 100)} />
+      </span>
+    </label>
   );
 }
 
@@ -852,6 +1059,7 @@ const seqTracksSignature = (tracks: RuntimeState['seq']['tracks']): string =>
 
 function SequencerPanel({
   seq,
+  presets,
   connection,
   sampleMode,
   sampleIsWavetable,
@@ -864,6 +1072,7 @@ function SequencerPanel({
   onChange,
 }: {
   seq: RuntimeState['seq'] | undefined;
+  presets: SoundfontPreset[];
   connection: ConnectionState;
   sampleMode: boolean;
   sampleIsWavetable: boolean;
@@ -1063,6 +1272,7 @@ function SequencerPanel({
   }
 
   const armedStep = selectedStep >= 0 ? tracks[activeTrack]?.steps[selectedStep] : null;
+  const trackPatchName = (track: SeqTrackEdit) => patchName(track.midiBank, track.midiProgram, presets);
 
   return (
     <div className="sequencer">
@@ -1200,7 +1410,7 @@ function SequencerPanel({
               tabIndex={0}
               onClick={() => { if (!disabled) onSelectTrack(ti); }}
               onKeyDown={e => { if (e.key === 'Enter' && !disabled) onSelectTrack(ti); }}
-              title={`Track ${ti + 1} — MIDI ch ${(track.midiChannel ?? ti) + 1} — ${sampleMode ? (sampleIsWavetable ? 'Wavetable' : 'Mic sample') : (GM_PROGRAMS[track.midiProgram] ?? 'Prog ' + track.midiProgram)}`}>
+              title={`Track ${ti + 1} — MIDI ch ${(track.midiChannel ?? ti) + 1} — ${sampleMode ? (sampleIsWavetable ? 'Wavetable' : 'Mic sample') : trackPatchName(track)}`}>
               <div className="seq-track-header-top">
                 <span className="seq-track-id">T{ti + 1} <small>ch{(track.midiChannel ?? ti) + 1}</small></span>
                 <span className="seq-track-loop">L{track.loopLength}</span>
@@ -1222,7 +1432,7 @@ function SequencerPanel({
                   &#x2715;
                 </button>
               </div>
-              <span className="seq-track-name">{sampleMode ? (sampleIsWavetable ? 'Wavetable' : 'Mic sample') : (GM_PROGRAMS[track.midiProgram] ?? `Prog ${track.midiProgram}`)}</span>
+              <span className="seq-track-name">{sampleMode ? (sampleIsWavetable ? 'Wavetable' : 'Mic sample') : trackPatchName(track)}</span>
             </div>
             <div className="seq-track-steps" style={{
               '--seq-step-cols': visibleStepCount,
@@ -1605,6 +1815,7 @@ export function App() {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [socket, setSocket] = useState<WebSocket | null>(null);
   const [runtime, setRuntime] = useState<RuntimeState | null>(null);
+  const runtimeRef = useRef<RuntimeState | null>(null);
 
   useEffect(() => {
     let ws: WebSocket;
@@ -1639,7 +1850,10 @@ export function App() {
 
       ws.addEventListener("message", (event: MessageEvent<string>) => {
         const parsed = JSON.parse(event.data) as RuntimeState;
-        if (parsed.type === "state") setRuntime(parsed);
+        if (parsed.type === "state") {
+          runtimeRef.current = parsed;
+          setRuntime(parsed);
+        }
       });
     }
 
@@ -1700,9 +1914,19 @@ export function App() {
     socket?.send(JSON.stringify({ type: "setSoundfont", path }));
   }
 
-  function sendWavetable(samples: number[]) {
-    socket?.send(JSON.stringify({ type: "setWavetable", data: samples }));
-  }
+  const sendWavetable = useCallback((samples: number[], morphSamples: number[]) => {
+    socket?.send(JSON.stringify({ type: "setWavetable", data: samples, morphData: morphSamples }));
+  }, [socket]);
+
+  const setWavetableControls = useCallback((next: { morph?: number; noise?: number; unison?: number }) => {
+    const current = runtimeRef.current?.audio;
+    socket?.send(JSON.stringify({
+      type: "setWavetableControls",
+      morph: next.morph ?? current?.wavetableMorph ?? 0,
+      noise: next.noise ?? current?.wavetableNoise ?? 0,
+      unison: next.unison ?? current?.wavetableUnison ?? 0,
+    }));
+  }, [socket]);
 
   function seqPlay() { socket?.send(JSON.stringify({ type: "seqPlay" })); }
   function seqStop() { socket?.send(JSON.stringify({ type: "seqStop" })); }
@@ -1778,7 +2002,7 @@ export function App() {
           <BipolarMeter label="Left Y" value={controller?.leftY ?? 0} />
           <BipolarMeter label="Right X / resonance" value={controller?.rightX ?? 0} />
           <BipolarMeter label="Right Y / cutoff" value={controller?.rightY ?? 0} />
-          <Meter label={sampleMode ? "L2 / sample gain" : "L2 / expression"} value={controller?.l2 ?? 0} />
+          <Meter label={activeBankHasMicSample ? "L2 / sample gain" : "L2 / expression"} value={controller?.l2 ?? 0} />
           <Meter label="R2 / vibrato depth" value={controller?.r2 ?? 0} />
         </section>
         <section className="config-section">
@@ -1850,6 +2074,8 @@ export function App() {
           {(() => {
             const presets = runtime?.presets ?? [];
             const hasSf2 = presets.length > 0;
+            const soundfonts = runtime?.soundfonts ?? [];
+            const activeSoundfont = runtime?.activeSoundfont ?? '';
 
             // Group presets by bank, sorted by bank number.
             const bankMap = new Map<number, Array<{ program: number; name: string }>>();
@@ -1871,31 +2097,41 @@ export function App() {
 
             return (
               <>
-                {(runtime?.soundfonts ?? []).length > 0 && (
+                {soundfonts.length > 0 && (
                   <div className="sf2-selector">
                     <label htmlFor="sf2-select">Soundfont</label>
                     <select
                       id="sf2-select"
-                      value={runtime?.activeSoundfont ?? ''}
+                      value={activeSoundfont}
                       disabled={connection !== 'online'}
                       onChange={(e) => setSoundfont(e.target.value)}>
-                      {(runtime?.soundfonts ?? []).map(path => (
+                      {soundfonts.map(path => (
                         <option key={path} value={path}>
-                          {path.split('/').pop()}
+                          {soundfontName(path)} · {soundfontFormat(path)}
                         </option>
                       ))}
                     </select>
+                    {activeSoundfont && (
+                      <span className="sf2-summary">
+                        <span className="sf2-summary-format">{soundfontFormat(activeSoundfont)}</span>
+                        {hasSf2 && <span className="sf2-summary-count">{pluralize(presets.length, 'preset')}</span>}
+                      </span>
+                    )}
                   </div>
                 )}
                 <div className="patch-header">
                   {hasSf2 ? (
                     <div className="patch-bank-tabs">
-                      {banks.map(([bank]) => (
+                      {banks.map(([bank, bankPresets]) => (
                         <button key={bank} type="button"
                           className={`patch-bank-tab${bank === visibleBank ? ' patch-bank-tab-active' : ''}`}
                           disabled={connection !== 'online' || sampleMode}
                           onClick={() => setPatch(bank, activePatch)}>
-                          {bank === 128 ? 'Drums' : `Bank ${bank}`}
+                          <span className="patch-bank-tab-top">
+                            <span className="patch-bank-id">{bankLabel(bank)}</span>
+                            <span className="patch-bank-count">{bankPresets.length}</span>
+                          </span>
+                          <span className="patch-bank-meta">{bankRole(bank)} presets</span>
                         </button>
                       ))}
                     </div>
@@ -1917,8 +2153,8 @@ export function App() {
                       : (() => {
                           const hit = presets.find(p => p.bank === activeBank && p.program === activePatch);
                           return hit
-                            ? `${hit.program + 1}. ${hit.name}`
-                            : `${activePatch + 1}. ${GM_PROGRAMS[activePatch] ?? 'Program ' + (activePatch + 1)}`;
+                            ? `${bankLabel(hit.bank)} · ${hit.program + 1}. ${hit.name}`
+                            : `${activePatch + 1}. ${patchName(activeBank, activePatch, presets)}`;
                         })()}
                   </p>
                 </div>
@@ -1989,34 +2225,49 @@ export function App() {
                   ? `${((audio.sampleTrimEnd - audio.sampleTrimStart) * audio.sampleFrames / 48000).toFixed(2)}s`
                   : "empty"}
               />
+              <div className="wavetable-macros">
+                {!activeBankHasMicSample && (
+                  <WavetableMacroSlider label="Morph" tone="morph"
+                    value={audio?.wavetableMorph ?? 0}
+                    disabled={connection !== "online"}
+                    onChange={(value) => setWavetableControls({ morph: value })} />
+                )}
+                <WavetableMacroSlider label="Noise" tone="noise"
+                  value={audio?.wavetableNoise ?? 0}
+                  disabled={connection !== "online"}
+                  onChange={(value) => setWavetableControls({ noise: value })} />
+                <WavetableMacroSlider label="Unison" tone="unison"
+                  value={audio?.wavetableUnison ?? 0}
+                  disabled={connection !== "online"}
+                  onChange={(value) => setWavetableControls({ unison: value })} />
+              </div>
               {audio?.touchpadDrawing && (
                 <div className="touchpad-sketch">
                   <span className="touchpad-sketch-label">Drawing…</span>
-                  <Waveform samples={audio.touchpadSketch} />
-                </div>
-              )}
-              {(audio?.touchpadRawPoints?.length ?? 0) > 0 && (
-                <div className="touchpad-sketch">
-                  <span className="touchpad-sketch-label">
-                    {audio!.touchpadDrawing ? 'Drawing… (raw path)' : 'Last draw — raw path'}
-                  </span>
                   <TouchpadWhiteboard
-                    points={audio!.touchpadRawPoints}
-                    drawing={audio!.touchpadDrawing}
+                    points={audio.touchpadRawPoints ?? []}
+                    drawing={audio.touchpadDrawing}
                   />
                 </div>
               )}
-              <div className="touchpad-sketch">
-                <span className="touchpad-sketch-label">
-                  Waveform editor · touchpad draws · presets below
-                </span>
-                <WaveformEditor
-                    touchpadSketch={audio?.touchpadSketch ?? []}                    touchpadDrawing={audio?.touchpadDrawing ?? false}                  onApply={sendWavetable}
-                  disabled={connection !== "online" || activeBankHasMicSample}
-                />
-              </div>
+              {!activeBankHasMicSample && (
+                <div className="touchpad-sketch">
+                  <span className="touchpad-sketch-label">
+                    Waveform editor · touchpad draws · presets below
+                  </span>
+                  <WaveformEditor
+                    touchpadSketch={audio?.touchpadSketch ?? []}
+                    touchpadDrawing={audio?.touchpadDrawing ?? false}
+                    morphAmount={audio?.wavetableMorph ?? 0}
+                    noiseAmount={audio?.wavetableNoise ?? 0}
+                    unisonAmount={audio?.wavetableUnison ?? 0}
+                    onApply={sendWavetable}
+                    disabled={connection !== "online"}
+                  />
+                </div>
+              )}
               <div className="trim">
-                {audio?.sampleReady && (
+                {audio?.sampleReady && activeBankHasMicSample && (
                   <TrimWaveform
                     waveform={audio.sampleWaveform ?? []}
                     trimStart={audio.sampleTrimStart ?? 0}
@@ -2033,6 +2284,7 @@ export function App() {
         <Panel title="Sequencer" wide>
           <SequencerPanel
             seq={runtime?.seq}
+            presets={runtime?.presets ?? []}
             connection={connection}
             sampleMode={sampleMode}
             sampleIsWavetable={sampleMode && !activeBankHasMicSample}

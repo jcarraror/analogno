@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <memory>
 #include <string>
@@ -27,13 +28,16 @@ public:
 
   // Operates on the active bank
   void set_sample(std::vector<float> sample);
-  void set_wavetable(std::vector<float> samples); // looping single-cycle wavetable
+  void set_wavetable(std::vector<float> samples,
+                     std::vector<float> morph_samples = {}); // looping single-cycle wavetable
   void clear_sample();
   void set_trim(float start, float end);
   void set_gain(float gain);
+  void set_wavetable_controls(float morph, float noise, float unison);
   void set_pitch_controls(float pitch_bend, float vibrato_depth);
   void trigger(float rate = 1.0F);
   void release(float rate = 1.0F); // begin release for matching active voice
+  void stop_all();
 
   void set_active_bank(std::size_t bank);
   bool save_bank(std::size_t bank, const std::string &path);
@@ -65,6 +69,7 @@ private:
     float rate{1.0F};
     float envelope{};
     std::size_t bank_index{};
+    std::uint32_t noise_state{1};
   };
 
   static constexpr auto voice_count = std::size_t{8};
@@ -75,6 +80,7 @@ private:
 
   ma_device device_{};
   std::array<std::shared_ptr<const std::vector<float>>, bank_count> banks_{};
+  std::array<std::shared_ptr<const std::vector<float>>, bank_count> bank_morph_banks_{};
   std::array<Voice, voice_count> voices_{};
   mutable std::mutex mutex_{};
   std::array<std::atomic<float>, bank_count> bank_trim_start_{};
@@ -82,8 +88,12 @@ private:
   std::array<std::atomic<bool>, bank_count> bank_is_wavetable_{};
   std::atomic<std::size_t> active_bank_{};
   std::atomic<float> gain_{};
+  std::atomic<float> wavetable_morph_{};
+  std::atomic<float> wavetable_noise_{};
+  std::atomic<float> wavetable_unison_{};
   std::atomic<float> pitch_bend_{};
   std::atomic<float> vibrato_depth_{};
+  std::atomic<std::uint64_t> voice_generation_{};
   float vibrato_phase_{};
   bool device_ready_{};
   bool running_{};
@@ -93,6 +103,9 @@ private:
                                 const void *input, ma_uint32 frame_count);
   [[nodiscard]] static float sample_at(const std::vector<float> &sample,
                                        float position);
+  [[nodiscard]] static float sample_at_loop(const std::vector<float> &sample,
+                                            float position);
+  [[nodiscard]] static float noise_sample(std::uint32_t &state);
 };
 
 } // namespace analogno

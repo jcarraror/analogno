@@ -442,10 +442,12 @@ void trigger_sampler_notes(const MusicalIntent &intent, AudioSampler &sampler) {
 
 void update_sampler_controls(const ContinuousControls &controls,
                              AudioSampler &sampler,
-                             bool seq_playing) {
-  // During sequencer playback, play at full gain so notes are heard without
-  // holding any trigger. The trigger only controls gain for live play.
-  const auto gain = seq_playing ? 1.0F : controls.expression;
+                             bool seq_playing,
+                             bool l2_controls_gain) {
+  constexpr auto sampler_gain_boost = 1.25F;
+  const auto live_gain = l2_controls_gain ? controls.expression : 1.0F;
+  const auto gain = (seq_playing ? 1.0F : live_gain) *
+                    sampler_gain_boost;
   sampler.set_gain(gain);
   sampler.set_pitch_controls(controls.pitch_bend, controls.vibrato);
 }
@@ -476,6 +478,10 @@ struct SeqTrack {
   std::vector<SeqStep> steps = std::vector<SeqStep>(32);
   std::optional<analogno::Note> pending_note_off{};
 };
+
+int effective_midi_channel(const SeqTrack &track) {
+  return track.midi_bank == 128 ? 9 : track.midi_channel;
+}
 
 struct Sequencer {
   static constexpr int min_step_count = 8;
@@ -571,7 +577,7 @@ std::optional<analogno::Note> note_for_step(const SeqStep &step,
       .degree = step.degree,
       .octave = ctx.octave_offset + xoct,
       .velocity = step.velocity,
-      .channel = track.midi_channel,
+      .channel = effective_midi_channel(track),
   };
 }
 
@@ -715,6 +721,9 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                bool piano_roll_visible,
                bool spectrogram_visible,
                bool blow_mode,
+               float wavetable_morph,
+               float wavetable_noise,
+               float wavetable_unison,
                float blow_sensitivity,
                bool blow_active,
                float blow_level,
@@ -828,6 +837,9 @@ make_web_state(const ControllerState &controller, const MusicalIntent &intent,
                 return out;
               }(),
               .blow_mode        = blow_mode,
+              .wavetable_morph  = wavetable_morph,
+              .wavetable_noise  = wavetable_noise,
+              .wavetable_unison = wavetable_unison,
               .blow_sensitivity  = blow_sensitivity,
               .blow_active       = blow_active,
               .blow_level        = blow_level,
@@ -904,6 +916,7 @@ std::vector<std::string> scan_soundfonts() {
   namespace fs = std::filesystem;
   std::vector<std::string> result;
   std::vector<std::string> dirs = {
+      (fs::current_path() / "soundfonts").string(),
       "/usr/share/sounds/sf2",
       "/usr/share/soundfonts",
   };
@@ -973,6 +986,9 @@ void run_event_loop(Gamepad &gamepad,
   bool running = true;
   bool piano_roll_visible = true;
   bool spectrogram_visible = true;
+  float wavetable_morph = 0.0F;
+  float wavetable_noise = 0.0F;
+  float wavetable_unison = 0.0F;
   auto last_print = std::chrono::steady_clock::now();
   auto last_web_publish = std::chrono::steady_clock::now();
 
@@ -981,6 +997,8 @@ void run_event_loop(Gamepad &gamepad,
   auto was_sample_record_button_active = false;
   auto current_midi_bank = int{0};
   auto current_midi_program = int{0};
+  bool sampler_mode = false;
+
   WaveformSketch sketch{};
   Sequencer seq{};
   BlowController blow{};
@@ -995,6 +1013,7 @@ void run_event_loop(Gamepad &gamepad,
     bool active{false};
     int midi_channel{};
     int midi_note{-1};
+    int active_channel{-1};
   };
   constexpr auto ribbon_base_ch = 12;
   constexpr auto ribbon_max = std::size_t{2};
@@ -1012,6 +1031,20 @@ void run_event_loop(Gamepad &gamepad,
     const int step = idx % sc.size;
     return std::clamp(root + oct_off * 12 + oct * 12 +
                       sc.semitones[static_cast<std::size_t>(step)], 0, 127);
+  };
+
+  const auto ribbon_channel_for_bank = [](const RibbonFinger &rf, int bank) {
+    return bank == 128 ? 9 : rf.midi_channel;
+  };
+
+  const auto release_ribbon_finger = [&](RibbonFinger &rf) {
+    if (rf.active && rf.midi_note >= 0 && rf.active_channel >= 0) {
+      midi.apply_notes_only({{Note{.midi_note = rf.midi_note, .channel = rf.active_channel}}}, {});
+      active_notes.apply(MusicalIntent{.note_offs = {{Note{.midi_note = rf.midi_note}}}});
+    }
+    rf.active = false;
+    rf.midi_note = -1;
+    rf.active_channel = -1;
   };
 
   using tp = std::chrono::steady_clock::time_point;
@@ -1058,14 +1091,12 @@ void run_event_loop(Gamepad &gamepad,
             const int vel = std::clamp(
                 static_cast<int>((1.0f - event.gtouchpad.y) * 100.0f + 27.0f), 1, 127);
             auto &rf = ribbon[fi];
-            if (rf.active && rf.midi_note >= 0) {
-              midi.apply_notes_only({{Note{.midi_note = rf.midi_note, .channel = rf.midi_channel}}}, {});
-              active_notes.apply(MusicalIntent{.note_offs = {{Note{.midi_note = rf.midi_note}}}});
-            }
+            release_ribbon_finger(rf);
             rf.active   = true;
             rf.midi_note = note;
-            midi.program_change(current_midi_program, current_midi_bank, rf.midi_channel);
-            midi.apply_notes_only({}, {{Note{.midi_note = note, .velocity = vel, .channel = rf.midi_channel}}});
+            rf.active_channel = ribbon_channel_for_bank(rf, current_midi_bank);
+            midi.program_change(current_midi_program, current_midi_bank, rf.active_channel);
+            midi.apply_notes_only({}, {{Note{.midi_note = note, .velocity = vel, .channel = rf.active_channel}}});
             active_notes.apply(MusicalIntent{.note_ons = {{Note{.midi_note = note, .velocity = vel}}}});
           }
         } else if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION) {
@@ -1105,8 +1136,8 @@ void run_event_loop(Gamepad &gamepad,
               const int vel = std::clamp(
                   static_cast<int>((1.0f - event.gtouchpad.y) * 100.0f + 27.0f), 1, 127);
               midi.apply_notes_only(
-                  {{Note{.midi_note = rf.midi_note, .channel = rf.midi_channel}}},
-                  {{Note{.midi_note = new_note, .velocity = vel, .channel = rf.midi_channel}}});
+                  {{Note{.midi_note = rf.midi_note, .channel = rf.active_channel}}},
+                  {{Note{.midi_note = new_note, .velocity = vel, .channel = rf.active_channel}}});
               active_notes.apply(MusicalIntent{
                   .note_ons  = {{Note{.midi_note = new_note, .velocity = vel}}},
                   .note_offs = {{Note{.midi_note = rf.midi_note}}}});
@@ -1124,15 +1155,12 @@ void run_event_loop(Gamepad &gamepad,
               sketch.committed_points = sketch.points;
               std::cout << "wavetable drawn: " << sketch.points.size() << " points\n";
               audio_sampler.set_wavetable(std::move(wavetable));
+              sampler_mode = true;
             }
             sketch.points.clear();
           } else if (fi < ribbon_max && ribbon[fi].active) {
             auto &rf = ribbon[fi];
-            if (rf.midi_note >= 0)
-              midi.apply_notes_only({{Note{.midi_note = rf.midi_note, .channel = rf.midi_channel}}}, {});
-            active_notes.apply(MusicalIntent{.note_offs = {{Note{.midi_note = rf.midi_note}}}});
-            rf.active    = false;
-            rf.midi_note = -1;
+            release_ribbon_finger(rf);
           }
         }
       }
@@ -1142,9 +1170,14 @@ void run_event_loop(Gamepad &gamepad,
       MusicalIntent panic{};
       panic.note_off_all = true;
       midi.apply(panic);
+      audio_sampler.stop_all();
       active_notes.apply(panic);
       last_intent = panic;
-      for (auto &rf : ribbon) { rf.active = false; rf.midi_note = -1; }
+      for (auto &rf : ribbon) {
+        rf.active = false;
+        rf.midi_note = -1;
+        rf.active_channel = -1;
+      }
       std::cout << "panic from web UI\n";
     }
 
@@ -1163,11 +1196,18 @@ void run_event_loop(Gamepad &gamepad,
     }
 
     if (const auto bank_request = web.consume_active_bank_request()) {
+      audio_sampler.stop_all();
       audio_sampler.set_active_bank(*bank_request);
-      std::cout << "active bank: " << *bank_request << '\n';
+      sampler_mode = audio_sampler.has_sample();
+      std::cout << "active sample bank: " << *bank_request
+                << " sampler_mode=" << (sampler_mode ? "on" : "off") << '\n';
     }
 
     if (const auto patch = web.consume_patch_request()) {
+      sampler_mode = false;
+      audio_sampler.stop_all();
+      for (auto &rf : ribbon)
+        release_ribbon_finger(rf);
       current_midi_bank = patch->bank;
       current_midi_program = patch->program;
       const auto at = seq.active_track;
@@ -1183,12 +1223,33 @@ void run_event_loop(Gamepad &gamepad,
       }
       // Keep ribbon channels in sync with the active instrument.
       for (auto &rf : ribbon)
-        midi.program_change(current_midi_program, current_midi_bank, rf.midi_channel);
+        midi.program_change(current_midi_program, current_midi_bank,
+                            ribbon_channel_for_bank(rf, current_midi_bank));
     }
 
     if (auto sf_req = web.consume_soundfont_request()) {
+      sampler_mode = false;
+      audio_sampler.stop_all();
+      for (auto &rf : ribbon)
+        release_ribbon_finger(rf);
       active_soundfont = std::move(*sf_req);
       sf2_presets = analogno::read_sf2_presets(active_soundfont);
+      if (!sf2_presets.empty()) {
+        current_midi_bank = sf2_presets.front().bank;
+        current_midi_program = sf2_presets.front().program;
+        const auto at = seq.active_track;
+        if (at >= 0 && static_cast<std::size_t>(at) < seq.tracks.size()) {
+          auto &active = seq.tracks[static_cast<std::size_t>(at)];
+          active.midi_bank = current_midi_bank;
+          active.midi_program = current_midi_program;
+          midi.program_change(current_midi_program, current_midi_bank,
+                              active.midi_channel);
+        }
+        for (auto &rf : ribbon) {
+          midi.program_change(current_midi_program, current_midi_bank,
+                              ribbon_channel_for_bank(rf, current_midi_bank));
+        }
+      }
       std::cout << "soundfont presets updated from: " << active_soundfont
                 << " (" << sf2_presets.size() << " presets)\n";
     }
@@ -1252,9 +1313,9 @@ void run_event_loop(Gamepad &gamepad,
     }
 
     if (auto wt = web.consume_wavetable_request()) {
-      sketch.committed = *wt;
+      sketch.committed = wt->samples;
       // Resample from the UI's resolution to wavetable_length via linear interp.
-      const auto src_n = wt->size();
+      const auto src_n = wt->samples.size();
       std::vector<float> full(wavetable_length);
       for (std::size_t i = 0; i < wavetable_length; ++i) {
         const float src = static_cast<float>(i) *
@@ -1263,10 +1324,36 @@ void run_event_loop(Gamepad &gamepad,
         const auto lo = static_cast<std::size_t>(src);
         const auto hi = std::min(lo + 1, src_n - 1);
         const float t = src - static_cast<float>(lo);
-        full[i] = (*wt)[lo] + t * ((*wt)[hi] - (*wt)[lo]);
+        full[i] = wt->samples[lo] + t * (wt->samples[hi] - wt->samples[lo]);
       }
-      audio_sampler.set_wavetable(std::move(full));
-      std::cout << "wavetable set from UI\n";
+
+      std::vector<float> morph_full{};
+      if (wt->morph_samples.size() >= 2) {
+        const auto morph_src_n = wt->morph_samples.size();
+        morph_full.resize(wavetable_length);
+        for (std::size_t i = 0; i < wavetable_length; ++i) {
+          const float src = static_cast<float>(i) *
+                            static_cast<float>(morph_src_n - 1) /
+                            static_cast<float>(wavetable_length - 1);
+          const auto lo = static_cast<std::size_t>(src);
+          const auto hi = std::min(lo + 1, morph_src_n - 1);
+          const float t = src - static_cast<float>(lo);
+          morph_full[i] = wt->morph_samples[lo] +
+                          t * (wt->morph_samples[hi] - wt->morph_samples[lo]);
+        }
+      }
+
+      audio_sampler.set_wavetable(std::move(full), std::move(morph_full));
+      sampler_mode = true;
+      std::cout << "wavetable set from UI; sampler mode on\n";
+    }
+
+    if (auto controls = web.consume_wavetable_controls()) {
+      wavetable_morph = controls->morph;
+      wavetable_noise = controls->noise;
+      wavetable_unison = controls->unison;
+      audio_sampler.set_wavetable_controls(wavetable_morph, wavetable_noise,
+                                           wavetable_unison);
     }
 
     // Sequencer commands
@@ -1391,7 +1478,9 @@ void run_event_loop(Gamepad &gamepad,
     if (state.button_pressed(SDL_GAMEPAD_BUTTON_TOUCHPAD) &&
         !state.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) {
       const auto next = (audio_sampler.active_bank() + 1) % AudioSampler::bank_count;
+      audio_sampler.stop_all();
       audio_sampler.set_active_bank(next);
+      sampler_mode = audio_sampler.has_sample();
       std::cout << "bank: " << next << '\n';
     }
 
@@ -1399,7 +1488,9 @@ void run_event_loop(Gamepad &gamepad,
     if (state.button_pressed(SDL_GAMEPAD_BUTTON_BACK)) {
       const auto cur = audio_sampler.active_bank();
       const auto prev = (cur == 0 ? AudioSampler::bank_count : cur) - 1;
+      audio_sampler.stop_all();
       audio_sampler.set_active_bank(prev);
+      sampler_mode = audio_sampler.has_sample();
       std::cout << "bank: " << prev << '\n';
     }
 
@@ -1436,9 +1527,11 @@ void run_event_loop(Gamepad &gamepad,
     if (audio_sampler.has_sample() &&
         state.button_pressed(SDL_GAMEPAD_BUTTON_GUIDE)) {
       audio_sampler.clear_sample();
+      sampler_mode = false;
       MusicalIntent panic{};
       panic.note_off_all = true;
       midi.apply(panic);
+      audio_sampler.stop_all();
       active_notes.apply(panic);
       last_intent = panic;
       std::cout << "sample cleared; MIDI mode restored\n";
@@ -1461,23 +1554,30 @@ void run_event_loop(Gamepad &gamepad,
     if (auto sample = audio_capture.consume_captured_sample()) {
       const auto frame_count = sample->size();
       audio_sampler.set_sample(std::move(*sample));
+      sampler_mode = true;
       MusicalIntent panic{};
       panic.note_off_all = true;
       midi.apply(panic);
+      audio_sampler.stop_all();
       active_notes.apply(panic);
       last_intent = panic;
       std::cout << "captured sampler sound: " << frame_count << " frames\n";
     }
 
     const auto audio_features = audio_capture.consume_features();
-    update_sampler_controls(mapper.map_controls(state), audio_sampler, seq.playing);
+    const auto active_sampler_bank = audio_sampler.active_bank();
+    const auto l2_controls_sampler_gain =
+        sampler_mode && audio_sampler.has_sample() &&
+        !audio_sampler.bank_is_wavetable(active_sampler_bank);
+    update_sampler_controls(mapper.map_controls(state), audio_sampler,
+                            seq.playing, l2_controls_sampler_gain);
     const auto should_map = state.changed_this_frame();
 
     // Live MIDI channel: follows the active sequencer track.
     const auto live_ch = [&] {
       const auto at = seq.active_track;
       if (at >= 0 && static_cast<std::size_t>(at) < seq.tracks.size())
-        return seq.tracks[static_cast<std::size_t>(at)].midi_channel;
+        return effective_midi_channel(seq.tracks[static_cast<std::size_t>(at)]);
       return 0;
     }();
 
@@ -1500,7 +1600,7 @@ void run_event_loop(Gamepad &gamepad,
       }
     }
 
-    if (blow.enabled && !audio_sampler.has_sample()) {
+    if (blow.enabled && !(sampler_mode && audio_sampler.has_sample())) {
       const float raw = audio_features.envelope; // raw RMS, typically 0.001..0.150
       const auto blow_now = std::chrono::steady_clock::now();
 
@@ -1587,7 +1687,10 @@ void run_event_loop(Gamepad &gamepad,
       for (auto &n : intent.note_ons)  n.channel = live_ch;
       for (auto &n : intent.note_offs) n.channel = live_ch;
 
-      if (audio_sampler.has_sample()) {
+      if (sampler_mode && audio_sampler.has_sample()) {
+        if (intent.note_off_all) {
+          audio_sampler.stop_all();
+        }
         // Release sampler voices on note-off (important for looping wavetables).
         constexpr auto sampler_root_for_release = 48;
         for (const auto &note : intent.note_offs) {
@@ -1643,7 +1746,7 @@ void run_event_loop(Gamepad &gamepad,
     {
       const auto tick = tick_sequencer(seq, last_intent);
       if (!tick.note_ons.empty() || !tick.note_offs.empty()) {
-        if (audio_sampler.has_sample()) {
+        if (sampler_mode && audio_sampler.has_sample()) {
           constexpr auto sampler_root = 48;
           for (const auto &note : tick.note_offs) {
             audio_sampler.release(std::pow(2.0F,
@@ -1663,7 +1766,7 @@ void run_event_loop(Gamepad &gamepad,
         // Build channel->program map for colour lookup.
         std::array<int, 16> ch_prog{};
         for (const auto &track : seq.tracks) {
-          const auto ch = std::clamp(track.midi_channel, 0, 15);
+          const auto ch = std::clamp(effective_midi_channel(track), 0, 15);
           ch_prog[static_cast<std::size_t>(ch)] = track.midi_program;
         }
         for (const auto &note : tick.note_ons) {
@@ -1719,6 +1822,9 @@ void run_event_loop(Gamepad &gamepad,
                                  piano_roll_visible,
                                  spectrogram_visible,
                                  blow.enabled,
+                                 wavetable_morph,
+                                 wavetable_noise,
+                                 wavetable_unison,
                                  blow.sensitivity,
                                  blow.is_blowing,
                                  // blow_level: breath signal above ambient relative to trigger threshold.

@@ -21,6 +21,17 @@ public:
     std::uint8_t program{};
   };
 
+  struct WavetableRequest final {
+    std::vector<float> samples{};
+    std::vector<float> morph_samples{};
+  };
+
+  struct WavetableControls final {
+    float morph{};
+    float noise{};
+    float unison{};
+  };
+
   struct SeqStepConfig final {
     bool active{};
     bool tie{};
@@ -76,7 +87,8 @@ public:
   [[nodiscard]] std::optional<std::size_t> consume_active_bank_request();
   [[nodiscard]] std::optional<std::size_t> consume_save_sample_request();
   [[nodiscard]] std::optional<PatchRequest> consume_patch_request();
-  [[nodiscard]] std::optional<std::vector<float>> consume_wavetable_request();
+  [[nodiscard]] std::optional<WavetableRequest> consume_wavetable_request();
+  [[nodiscard]] std::optional<WavetableControls> consume_wavetable_controls();
   [[nodiscard]] bool consume_seq_play();
   [[nodiscard]] bool consume_seq_stop();
   [[nodiscard]] bool consume_seq_add_track();
