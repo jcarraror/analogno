@@ -235,7 +235,14 @@ void AudioSampler::set_active_bank(std::size_t bank) {
 }
 
 void AudioSampler::trigger(float rate) {
-  const auto bank = active_bank_.load();
+  trigger_bank(active_bank_.load(), rate);
+}
+
+void AudioSampler::trigger_bank(std::size_t bank, float rate) {
+  if (bank >= bank_count) {
+    return;
+  }
+
   const auto lock = std::scoped_lock{mutex_};
 
   if (!banks_[bank] || banks_[bank]->empty()) {
@@ -280,11 +287,19 @@ void AudioSampler::trigger(float rate) {
 }
 
 void AudioSampler::release(float rate) {
+  release_bank(active_bank_.load(), rate);
+}
+
+void AudioSampler::release_bank(std::size_t bank, float rate) {
+  if (bank >= bank_count) {
+    return;
+  }
+
   const auto clamped_rate = std::clamp(rate, 0.25F, 4.0F);
   const auto lock = std::scoped_lock{mutex_};
 
   for (auto &voice : voices_) {
-    if (voice.active && !voice.releasing &&
+    if (voice.active && !voice.releasing && voice.bank_index == bank &&
         std::abs(voice.rate - clamped_rate) < 0.005F) {
       // One-shot samples (mic recordings) play to their natural trim_end and
       // release themselves — ignore note_off so the full sample is heard.

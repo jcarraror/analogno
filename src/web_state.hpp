@@ -121,6 +121,7 @@ struct WebSeqTrack final {
   int midi_channel{0};
   int midi_program{0};
   int midi_bank{0};
+  int sample_bank{-1};
   int loop_length{32};
   bool muted{false};
   std::vector<WebSeqStep> steps{};
@@ -144,11 +145,14 @@ struct WebRuntimeState final {
   WebMusicState music{};
   WebAudioState audio{};
   WebSeqState seq{};
-  std::vector<WebPreset> presets{};
-  std::vector<std::string> soundfonts{};   // available SF2 files on disk
-  std::string active_soundfont{};          // currently browsed soundfont path
   bool piano_roll_visible{true};
   bool spectrogram_visible{true};
+};
+
+struct WebLibraryState final {
+  std::vector<WebPreset> presets{};
+  std::vector<std::string> soundfonts{}; // available SF2 files on disk
+  std::string active_soundfont{};        // currently browsed soundfont path
 };
 
 } // namespace analogno

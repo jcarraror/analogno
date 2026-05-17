@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace analogno {
@@ -58,9 +59,9 @@ Json sample_banks_json(const std::vector<WebSampleBank> &banks) {
   return result;
 }
 
-std::string to_json_string(const WebRuntimeState &state) {
+std::string runtime_json_string(const WebRuntimeState &state) {
   const Json json{
-      {"type", "state"},
+      {"type", "runtime"},
       {
           "controller",
           {
@@ -177,6 +178,7 @@ std::string to_json_string(const WebRuntimeState &state) {
                   {"midiChannel", track.midi_channel},
                   {"midiProgram", track.midi_program},
                   {"midiBank", track.midi_bank},
+                  {"sampleBank", track.sample_bank},
                   {"loopLength", track.loop_length},
                   {"muted", track.muted},
                   {"steps", std::move(steps)},
@@ -196,21 +198,34 @@ std::string to_json_string(const WebRuntimeState &state) {
             };
           }(),
       },
-      {"presets", [&] {
-          Json arr = Json::array();
-          for (const auto &p : state.presets) {
-              arr.push_back({{"bank", p.bank}, {"program", p.program}, {"name", p.name}});
-          }
-          return arr;
-      }()},
-      {"soundfonts", [&] {
-          Json arr = Json::array();
-          for (const auto &s : state.soundfonts) arr.push_back(s);
-          return arr;
-      }()},
-      {"activeSoundfont", state.active_soundfont},
       {"pianoRollVisible", state.piano_roll_visible},
       {"spectrogramVisible", state.spectrogram_visible},
+  };
+
+  return json.dump();
+}
+
+std::string library_json_string(const WebLibraryState &state) {
+  const Json json{
+      {"type", "library"},
+      {"presets",
+       [&] {
+         Json arr = Json::array();
+         for (const auto &p : state.presets) {
+           arr.push_back(
+               {{"bank", p.bank}, {"program", p.program}, {"name", p.name}});
+         }
+         return arr;
+       }()},
+      {"soundfonts",
+       [&] {
+         Json arr = Json::array();
+         for (const auto &s : state.soundfonts) {
+           arr.push_back(s);
+         }
+         return arr;
+       }()},
+      {"activeSoundfont", state.active_soundfont},
   };
 
   return json.dump();
@@ -225,33 +240,10 @@ public:
   net::io_context ioc{};
   tcp::acceptor acceptor;
   std::vector<std::weak_ptr<class Session>> sessions{};
-  std::atomic_bool panic_requested{false};
-  std::atomic_int capture_device_request{-2};
-  std::atomic_int active_bank_request{-1};
-  std::mutex sample_trim_mutex{};
-  std::optional<WebSocketServer::SampleTrimRequest> sample_trim_request{};
-  std::mutex save_sample_mutex{};
-  std::optional<std::size_t> save_sample_request{};
-  std::mutex patch_mutex{};
-  std::optional<WebSocketServer::PatchRequest> patch_request{};
-  std::mutex wavetable_mutex{};
-  std::optional<WebSocketServer::WavetableRequest> wavetable_request{};
-  std::mutex wavetable_controls_mutex{};
-  std::optional<WebSocketServer::WavetableControls> wavetable_controls_request{};
-  std::atomic_bool seq_play_cmd{false};
-  std::atomic_bool seq_stop_cmd{false};
-  std::atomic_int  seq_select_step_cmd{-2};
-  std::atomic_int  seq_select_track_cmd{-2}; // -2 = no pending; 0..15 = select track
-  std::atomic_bool seq_add_track_cmd{false};
-  std::atomic_int  seq_remove_track_cmd{-1}; // -1 = no pending; >=0 = remove that index
-  std::mutex seq_config_mutex{};
-  std::optional<WebSocketServer::SeqConfig> seq_config{};
-  std::mutex soundfont_mutex{};
-  std::optional<std::string> soundfont_request{};
-  std::atomic_int blow_mode_request{-1}; // -1=none, 0=disable, 1=enable
-  std::atomic_int blow_sensitivity_request{-1}; // -1=none, 0..100 = sensitivity%
-  std::mutex voice_seq_mutex{};
-  std::optional<WebSocketServer::VoiceSeqConfig> voice_seq_request{};
+  std::mutex command_mutex{};
+  std::vector<WebSocketServer::Command> commands{};
+  std::mutex library_message_mutex{};
+  std::optional<std::string> last_library_message{};
 };
 
 class Session final : public std::enable_shared_from_this<Session> {
@@ -283,6 +275,11 @@ private:
   std::shared_ptr<SharedState> shared_;
   std::vector<std::string> write_queue_{};
 
+  void enqueue_command(WebSocketServer::Command command) {
+    const auto lock = std::scoped_lock{shared_->command_mutex};
+    shared_->commands.push_back(std::move(command));
+  }
+
   void on_accept(beast::error_code error) {
     if (error) {
       std::cerr << "websocket accept failed: " << error.message() << '\n';
@@ -290,6 +287,10 @@ private:
     }
 
     do_read();
+    const auto lock = std::scoped_lock{shared_->library_message_mutex};
+    if (shared_->last_library_message.has_value()) {
+      send(*shared_->last_library_message);
+    }
   }
 
   void do_read() {
@@ -298,7 +299,7 @@ private:
   }
 
   void on_read(beast::error_code error, std::size_t) {
-    if (error == websocket::error::closed) {
+    if (is_expected_disconnect(error)) {
       return;
     }
 
@@ -314,74 +315,81 @@ private:
       const auto json = Json::parse(message);
 
       if (json.value("type", "") == "panic") {
-        shared_->panic_requested.store(true);
+        enqueue_command(WebSocketServer::Panic{});
       } else if (json.value("type", "") == "setCaptureDevice") {
         if (json.contains("deviceIndex") && json["deviceIndex"].is_number_integer()) {
-          shared_->capture_device_request.store(json["deviceIndex"].get<int>());
+          enqueue_command(WebSocketServer::SetCaptureDevice{
+              .device_index = json["deviceIndex"].get<int>()});
         } else {
-          shared_->capture_device_request.store(-1);
+          enqueue_command(WebSocketServer::SetCaptureDevice{
+              .device_index = std::nullopt});
         }
       } else if (json.value("type", "") == "setSampleTrim") {
-        const auto lock = std::scoped_lock{shared_->sample_trim_mutex};
-        shared_->sample_trim_request = WebSocketServer::SampleTrimRequest{
-            .start = json.value("start", 0.0F),
-            .end = json.value("end", 1.0F),
-        };
+        enqueue_command(WebSocketServer::SetSampleTrim{
+            .trim = WebSocketServer::SampleTrimRequest{
+                .start = json.value("start", 0.0F),
+                .end = json.value("end", 1.0F),
+            }});
       } else if (json.value("type", "") == "setActiveBank") {
         if (json.contains("bank") && json["bank"].is_number_integer()) {
           const auto bank = json["bank"].get<int>();
           if (bank >= 0) {
-            shared_->active_bank_request.store(bank);
+            enqueue_command(WebSocketServer::SetActiveBank{
+                .bank = static_cast<std::size_t>(bank)});
           }
         }
       } else if (json.value("type", "") == "saveSample") {
         if (json.contains("bank") && json["bank"].is_number_integer()) {
           const auto bank = json["bank"].get<int>();
           if (bank >= 0) {
-            const auto lock = std::scoped_lock{shared_->save_sample_mutex};
-            shared_->save_sample_request = static_cast<std::size_t>(bank);
+            enqueue_command(WebSocketServer::SaveSample{
+                .bank = static_cast<std::size_t>(bank)});
           }
         }
       } else if (json.value("type", "") == "setPatch") {
         const auto bank = json.value("bank", 0);
         const auto program = json.value("program", 0);
         if (bank >= 0 && bank <= 128 && program >= 0 && program < 128) {
-          const auto lock = std::scoped_lock{shared_->patch_mutex};
-          shared_->patch_request = WebSocketServer::PatchRequest{
-              .bank = bank,
-              .program = static_cast<std::uint8_t>(program),
-          };
+          enqueue_command(WebSocketServer::SetPatch{
+              .patch = WebSocketServer::PatchRequest{
+                  .bank = bank,
+                  .program = static_cast<std::uint8_t>(program),
+              }});
         }
       } else if (json.value("type", "") == "setSoundfont") {
         if (json.contains("path") && json["path"].is_string()) {
-          shared_->soundfont_request = json["path"].get<std::string>();
+          enqueue_command(WebSocketServer::SetSoundfont{
+              .path = json["path"].get<std::string>()});
         }
       } else if (json.value("type", "") == "setBlowMode") {
-        shared_->blow_mode_request.store(json.value("enabled", false) ? 1 : 0);
+        enqueue_command(WebSocketServer::SetBlowMode{
+            .enabled = json.value("enabled", false)});
       } else if (json.value("type", "") == "setBlowSensitivity") {
         const auto v = std::clamp(json.value("sensitivity", 50), 0, 100);
-        shared_->blow_sensitivity_request.store(v);
+        enqueue_command(WebSocketServer::SetBlowSensitivity{
+            .sensitivity = static_cast<float>(v) / 100.0F});
       } else if (json.value("type", "") == "setVoiceSeq") {
-        const auto lock = std::scoped_lock{shared_->voice_seq_mutex};
-        shared_->voice_seq_request = WebSocketServer::VoiceSeqConfig{
-            .enabled = json.value("enabled", false),
-            .recording = json.value("recording", false),
-            .mode = [&] {
-              auto mode = json.value("mode", std::string{"percussion"});
-              if (mode != "percussion" && mode != "harmonic" &&
-                  mode != "hybrid") {
-                mode = "percussion";
-              }
-              return mode;
-            }(),
-            .snap_to_scale = json.value("snapToScale", true),
-            .sensitivity =
-                std::clamp(json.value("sensitivity", 65.0F), 0.0F, 100.0F) /
-                100.0F,
-            .timing_offset_ms =
-                std::clamp(json.value("timingOffsetMs", 0.0F), -120.0F,
-                           120.0F),
-        };
+        enqueue_command(WebSocketServer::SetVoiceSeq{
+            .config = WebSocketServer::VoiceSeqConfig{
+                .enabled = json.value("enabled", false),
+                .recording = json.value("recording", false),
+                .mode =
+                    [&] {
+                      auto mode =
+                          json.value("mode", std::string{"percussion"});
+                      if (mode != "percussion" && mode != "harmonic" &&
+                          mode != "hybrid") {
+                        mode = "percussion";
+                      }
+                      return mode;
+                    }(),
+                .snap_to_scale = json.value("snapToScale", true),
+                .sensitivity = std::clamp(json.value("sensitivity", 65.0F),
+                                          0.0F, 100.0F) /
+                               100.0F,
+                .timing_offset_ms = std::clamp(
+                    json.value("timingOffsetMs", 0.0F), -120.0F, 120.0F),
+            }});
       } else if (json.value("type", "") == "setWavetable") {
         if (json.contains("data") && json["data"].is_array()) {
           std::vector<float> samples;
@@ -403,35 +411,43 @@ private:
             }
           }
           if (!samples.empty()) {
-            const auto lock = std::scoped_lock{shared_->wavetable_mutex};
-            shared_->wavetable_request = WebSocketServer::WavetableRequest{
-                .samples = std::move(samples),
-                .morph_samples = std::move(morph_samples),
-            };
+            enqueue_command(WebSocketServer::SetWavetable{
+                .wavetable = WebSocketServer::WavetableRequest{
+                    .samples = std::move(samples),
+                    .morph_samples = std::move(morph_samples),
+                }});
           }
         }
       } else if (json.value("type", "") == "setWavetableControls") {
-        const auto lock = std::scoped_lock{shared_->wavetable_controls_mutex};
-        shared_->wavetable_controls_request = WebSocketServer::WavetableControls{
-            .morph = std::clamp(json.value("morph", 0.0F), 0.0F, 1.0F),
-            .noise = std::clamp(json.value("noise", 0.0F), 0.0F, 1.0F),
-            .unison = std::clamp(json.value("unison", 0.0F), 0.0F, 1.0F),
-        };
+        enqueue_command(WebSocketServer::SetWavetableControls{
+            .controls =
+                WebSocketServer::WavetableControls{
+                    .morph =
+                        std::clamp(json.value("morph", 0.0F), 0.0F, 1.0F),
+                    .noise =
+                        std::clamp(json.value("noise", 0.0F), 0.0F, 1.0F),
+                    .unison =
+                        std::clamp(json.value("unison", 0.0F), 0.0F, 1.0F),
+                }});
       } else if (json.value("type", "") == "seqPlay") {
-        shared_->seq_play_cmd.store(true);
+        enqueue_command(WebSocketServer::SeqPlay{});
       } else if (json.value("type", "") == "seqStop") {
-        shared_->seq_stop_cmd.store(true);
+        enqueue_command(WebSocketServer::SeqStop{});
       } else if (json.value("type", "") == "selectSeqStep") {
         const auto step = json.value("step", -1);
-        shared_->seq_select_step_cmd.store(std::clamp(step, -1, 63));
+        enqueue_command(
+            WebSocketServer::SeqSelectStep{.step = std::clamp(step, -1, 63)});
       } else if (json.value("type", "") == "selectSeqTrack") {
         const auto track = json.value("track", 0);
-        shared_->seq_select_track_cmd.store(std::clamp(track, 0, 15));
+        enqueue_command(WebSocketServer::SeqSelectTrack{
+            .track = std::clamp(track, 0, 15)});
       } else if (json.value("type", "") == "seqAddTrack") {
-        shared_->seq_add_track_cmd.store(true);
+        enqueue_command(WebSocketServer::SeqAddTrack{});
       } else if (json.value("type", "") == "seqRemoveTrack") {
         const auto track = json.value("track", -1);
-        if (track >= 0) shared_->seq_remove_track_cmd.store(track);
+        if (track >= 0) {
+          enqueue_command(WebSocketServer::SeqRemoveTrack{.track = track});
+        }
       } else if (json.value("type", "") == "setSeq") {
         WebSocketServer::SeqConfig cfg{};
         if (json.contains("bpm") && json["bpm"].is_number()) {
@@ -464,6 +480,7 @@ private:
             cfg.tracks[t].midi_channel = std::clamp(tj.value("midiChannel", -1), -1, 15);
             cfg.tracks[t].midi_program = std::clamp(tj.value("midiProgram", 0), 0, 127);
             cfg.tracks[t].midi_bank    = std::clamp(tj.value("midiBank",    0), 0, 127);
+            cfg.tracks[t].sample_bank  = std::clamp(tj.value("sampleBank", -1), -1, 7);
             cfg.tracks[t].loop_length  = std::clamp(tj.value("loopLength", cfg.step_count), 1, cfg.step_count);
             cfg.tracks[t].muted        = tj.value("muted", false);
             if (tj.contains("steps") && tj["steps"].is_array()) {
@@ -484,8 +501,7 @@ private:
             }
           }
         }
-        const auto lock = std::scoped_lock{shared_->seq_config_mutex};
-        shared_->seq_config = cfg;
+        enqueue_command(WebSocketServer::SetSeq{.config = std::move(cfg)});
       }
     } catch (const std::exception &exception) {
       std::cerr << "invalid websocket JSON: " << exception.what() << '\n';
@@ -512,6 +528,10 @@ private:
   }
 
   void on_write(beast::error_code error, std::size_t) {
+    if (is_expected_disconnect(error)) {
+      return;
+    }
+
     if (error) {
       std::cerr << "websocket write failed: " << error.message() << '\n';
       return;
@@ -522,6 +542,14 @@ private:
     if (!write_queue_.empty()) {
       do_write();
     }
+  }
+
+  static bool is_expected_disconnect(const beast::error_code &error) {
+    return error == websocket::error::closed ||
+           error == net::error::eof ||
+           error == net::error::connection_reset ||
+           error == net::error::operation_aborted ||
+           error == beast::error::timeout;
   }
 };
 
@@ -596,10 +624,10 @@ public:
     }
   }
 
-  void publish(const WebRuntimeState &state) {
+  void publish_runtime(const WebRuntimeState &state) {
     std::string message;
     try {
-      message = to_json_string(state);
+      message = runtime_json_string(state);
     } catch (const std::exception &e) {
       std::cerr << "[ws] publish serialization error: " << e.what() << '\n';
       return;
@@ -619,113 +647,37 @@ public:
     });
   }
 
-  [[nodiscard]] bool consume_panic_requested() {
-    return shared_->panic_requested.exchange(false);
-  }
-
-  [[nodiscard]] std::optional<int> consume_capture_device_request() {
-    const auto request = shared_->capture_device_request.exchange(-2);
-
-    if (request == -2) {
-      return std::nullopt;
+  void publish_library(const WebLibraryState &state) {
+    std::string message;
+    try {
+      message = library_json_string(state);
+    } catch (const std::exception &e) {
+      std::cerr << "[ws] publish serialization error: " << e.what() << '\n';
+      return;
     }
 
-    return request;
-  }
-
-  [[nodiscard]] std::optional<WebSocketServer::SampleTrimRequest>
-  consume_sample_trim_request() {
-    const auto lock = std::scoped_lock{shared_->sample_trim_mutex};
-    auto request = shared_->sample_trim_request;
-    shared_->sample_trim_request.reset();
-    return request;
-  }
-
-  [[nodiscard]] std::optional<std::size_t> consume_active_bank_request() {
-    const auto val = shared_->active_bank_request.exchange(-1);
-    if (val >= 0) {
-      return static_cast<std::size_t>(val);
+    {
+      const auto lock = std::scoped_lock{shared_->library_message_mutex};
+      shared_->last_library_message = message;
     }
-    return std::nullopt;
+
+    net::post(shared_->ioc, [shared = shared_, message] {
+      shared->sessions.erase(
+          std::remove_if(shared->sessions.begin(), shared->sessions.end(),
+                         [](const auto &session) { return session.expired(); }),
+          shared->sessions.end());
+
+      for (const auto &weak_session : shared->sessions) {
+        if (const auto session = weak_session.lock()) {
+          session->send(message);
+        }
+      }
+    });
   }
 
-  [[nodiscard]] std::optional<std::size_t> consume_save_sample_request() {
-    const auto lock = std::scoped_lock{shared_->save_sample_mutex};
-    return std::exchange(shared_->save_sample_request, std::nullopt);
-  }
-
-  [[nodiscard]] std::optional<WebSocketServer::PatchRequest> consume_patch_request() {
-    const auto lock = std::scoped_lock{shared_->patch_mutex};
-    return std::exchange(shared_->patch_request, std::nullopt);
-  }
-
-  [[nodiscard]] std::optional<WebSocketServer::WavetableRequest> consume_wavetable_request() {
-    const auto lock = std::scoped_lock{shared_->wavetable_mutex};
-    return std::exchange(shared_->wavetable_request, std::nullopt);
-  }
-
-  [[nodiscard]] std::optional<WebSocketServer::WavetableControls>
-  consume_wavetable_controls() {
-    const auto lock = std::scoped_lock{shared_->wavetable_controls_mutex};
-    return std::exchange(shared_->wavetable_controls_request, std::nullopt);
-  }
-
-  [[nodiscard]] bool consume_seq_play() {
-    return shared_->seq_play_cmd.exchange(false);
-  }
-
-  [[nodiscard]] bool consume_seq_stop() {
-    return shared_->seq_stop_cmd.exchange(false);
-  }
-
-  [[nodiscard]] bool consume_seq_add_track() {
-    return shared_->seq_add_track_cmd.exchange(false);
-  }
-
-  [[nodiscard]] std::optional<int> consume_seq_remove_track() {
-    const auto v = shared_->seq_remove_track_cmd.exchange(-1);
-    if (v < 0) return std::nullopt;
-    return v;
-  }
-
-  [[nodiscard]] std::optional<int> consume_seq_select_step() {
-    const auto v = shared_->seq_select_step_cmd.exchange(-2);
-    if (v == -2) return std::nullopt;
-    return v;
-  }
-
-  [[nodiscard]] std::optional<int> consume_seq_select_track() {
-    const auto v = shared_->seq_select_track_cmd.exchange(-2);
-    if (v == -2) return std::nullopt;
-    return v;
-  }
-
-  [[nodiscard]] std::optional<WebSocketServer::SeqConfig> consume_seq_config() {
-    const auto lock = std::scoped_lock{shared_->seq_config_mutex};
-    return std::exchange(shared_->seq_config, std::nullopt);
-  }
-
-  [[nodiscard]] std::optional<std::string> consume_soundfont_request() {
-    const auto lock = std::scoped_lock{shared_->soundfont_mutex};
-    return std::exchange(shared_->soundfont_request, std::nullopt);
-  }
-
-  [[nodiscard]] std::optional<bool> consume_blow_mode_request() {
-    const auto v = shared_->blow_mode_request.exchange(-1);
-    if (v < 0) return std::nullopt;
-    return v != 0;
-  }
-
-  [[nodiscard]] std::optional<float> consume_blow_sensitivity_request() {
-    const auto v = shared_->blow_sensitivity_request.exchange(-1);
-    if (v < 0) return std::nullopt;
-    return static_cast<float>(v) / 100.0F;
-  }
-
-  [[nodiscard]] std::optional<WebSocketServer::VoiceSeqConfig>
-  consume_voice_seq_config() {
-    const auto lock = std::scoped_lock{shared_->voice_seq_mutex};
-    return std::exchange(shared_->voice_seq_request, std::nullopt);
+  [[nodiscard]] std::vector<WebSocketServer::Command> consume_commands() {
+    const auto lock = std::scoped_lock{shared_->command_mutex};
+    return std::exchange(shared_->commands, {});
   }
 
 private:
@@ -743,88 +695,16 @@ void WebSocketServer::start() { impl_->start(); }
 
 void WebSocketServer::stop() { impl_->stop(); }
 
-void WebSocketServer::publish(const WebRuntimeState &state) {
-  impl_->publish(state);
+void WebSocketServer::publish_runtime(const WebRuntimeState &state) {
+  impl_->publish_runtime(state);
 }
 
-bool WebSocketServer::consume_panic_requested() {
-  return impl_->consume_panic_requested();
+void WebSocketServer::publish_library(const WebLibraryState &state) {
+  impl_->publish_library(state);
 }
 
-std::optional<int> WebSocketServer::consume_capture_device_request() {
-  return impl_->consume_capture_device_request();
-}
-
-std::optional<WebSocketServer::SampleTrimRequest>
-WebSocketServer::consume_sample_trim_request() {
-  return impl_->consume_sample_trim_request();
-}
-
-std::optional<std::size_t> WebSocketServer::consume_active_bank_request() {
-  return impl_->consume_active_bank_request();
-}
-
-std::optional<std::size_t> WebSocketServer::consume_save_sample_request() {
-  return impl_->consume_save_sample_request();
-}
-
-std::optional<WebSocketServer::PatchRequest> WebSocketServer::consume_patch_request() {
-  return impl_->consume_patch_request();
-}
-
-std::optional<WebSocketServer::WavetableRequest>
-WebSocketServer::consume_wavetable_request() {
-  return impl_->consume_wavetable_request();
-}
-
-std::optional<WebSocketServer::WavetableControls>
-WebSocketServer::consume_wavetable_controls() {
-  return impl_->consume_wavetable_controls();
-}
-
-bool WebSocketServer::consume_seq_play() {
-  return impl_->consume_seq_play();
-}
-
-bool WebSocketServer::consume_seq_stop() {
-  return impl_->consume_seq_stop();
-}
-
-bool WebSocketServer::consume_seq_add_track() {
-  return impl_->consume_seq_add_track();
-}
-
-std::optional<int> WebSocketServer::consume_seq_remove_track() {
-  return impl_->consume_seq_remove_track();
-}
-
-std::optional<int> WebSocketServer::consume_seq_select_step() {
-  return impl_->consume_seq_select_step();
-}
-
-std::optional<int> WebSocketServer::consume_seq_select_track() {
-  return impl_->consume_seq_select_track();
-}
-
-std::optional<WebSocketServer::SeqConfig> WebSocketServer::consume_seq_config() {
-  return impl_->consume_seq_config();
-}
-
-std::optional<std::string> WebSocketServer::consume_soundfont_request() {
-  return impl_->consume_soundfont_request();
-}
-
-std::optional<bool> WebSocketServer::consume_blow_mode_request() {
-  return impl_->consume_blow_mode_request();
-}
-
-std::optional<float> WebSocketServer::consume_blow_sensitivity_request() {
-  return impl_->consume_blow_sensitivity_request();
-}
-
-std::optional<WebSocketServer::VoiceSeqConfig>
-WebSocketServer::consume_voice_seq_config() {
-  return impl_->consume_voice_seq_config();
+std::vector<WebSocketServer::Command> WebSocketServer::consume_commands() {
+  return impl_->consume_commands();
 }
 
 } // namespace analogno

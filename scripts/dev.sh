@@ -155,6 +155,46 @@ wait_for_listen_port() {
   return 1
 }
 
+check_websocket_handshake() {
+  local host="$1"
+  local port="$2"
+  local fd=""
+  local line=""
+
+  exec {fd}<>"/dev/tcp/${host}/${port}" || return 1
+
+  printf 'GET / HTTP/1.1\r\n' >&"${fd}"
+  printf 'Host: %s:%s\r\n' "${host}" "${port}" >&"${fd}"
+  printf 'Upgrade: websocket\r\n' >&"${fd}"
+  printf 'Connection: Upgrade\r\n' >&"${fd}"
+  printf 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' >&"${fd}"
+  printf 'Sec-WebSocket-Version: 13\r\n' >&"${fd}"
+  printf '\r\n' >&"${fd}"
+
+  if ! IFS= read -r -t 1 line <&"${fd}"; then
+    eval "exec ${fd}>&-" 2>/dev/null || true
+    return 1
+  fi
+
+  eval "exec ${fd}>&-" 2>/dev/null || true
+  [[ "${line}" == *" 101 "* ]]
+}
+
+wait_for_websocket() {
+  local host="$1"
+  local port="$2"
+
+  for _ in {1..100}; do
+    if check_websocket_handshake "${host}" "${port}"; then
+      return 0
+    fi
+
+    sleep 0.1
+  done
+
+  return 1
+}
+
 is_midi_connected() {
   local from_client="$1"
   local to_client="$2"
@@ -276,7 +316,7 @@ for _ in {1..100}; do
   sleep 0.1
 done
 
-if ! wait_for_listen_port "${RUNTIME_PORT}"; then
+if ! wait_for_websocket "${RUNTIME_HOST}" "${RUNTIME_PORT}"; then
   echo "error: Analogno WebSocket did not listen on ws://${RUNTIME_HOST}:${RUNTIME_PORT}"
   echo
   echo "Listening ports:"

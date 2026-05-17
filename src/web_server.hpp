@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
+#include <variant>
 #include <vector>
 
 namespace analogno {
@@ -44,6 +46,7 @@ public:
     int midi_channel{-1}; // -1 = keep existing
     int midi_program{0};
     int midi_bank{0};
+    int sample_bank{-1}; // -1 = MIDI; 0..7 = sampler bank
     int loop_length{32};
     bool muted{false};
     std::vector<SeqStepConfig> steps{};
@@ -68,6 +71,64 @@ public:
     float timing_offset_ms{};
   };
 
+  struct Panic final {};
+  struct SetCaptureDevice final {
+    std::optional<int> device_index{};
+  };
+  struct SetSampleTrim final {
+    SampleTrimRequest trim{};
+  };
+  struct SetActiveBank final {
+    std::size_t bank{};
+  };
+  struct SaveSample final {
+    std::size_t bank{};
+  };
+  struct SetPatch final {
+    PatchRequest patch{};
+  };
+  struct SetWavetable final {
+    WavetableRequest wavetable{};
+  };
+  struct SetWavetableControls final {
+    WavetableControls controls{};
+  };
+  struct SeqPlay final {};
+  struct SeqStop final {};
+  struct SeqAddTrack final {};
+  struct SeqRemoveTrack final {
+    int track{};
+  };
+  struct SeqSelectStep final {
+    int step{};
+  };
+  struct SeqSelectTrack final {
+    int track{};
+  };
+  struct SetSeq final {
+    SeqConfig config{};
+  };
+  struct SetSoundfont final {
+    std::string path{};
+  };
+  struct SetBlowMode final {
+    bool enabled{};
+  };
+  struct SetBlowSensitivity final {
+    float sensitivity{};
+  };
+  struct SetVoiceSeq final {
+    VoiceSeqConfig config{};
+  };
+
+  using Command = std::variant<Panic, SetCaptureDevice, SetSampleTrim,
+                               SetActiveBank, SaveSample, SetPatch,
+                               SetWavetable, SetWavetableControls, SeqPlay,
+                               SeqStop, SeqAddTrack, SeqRemoveTrack,
+                               SeqSelectStep, SeqSelectTrack, SetSeq,
+                               SetSoundfont, SetBlowMode, SetBlowSensitivity,
+                               SetVoiceSeq>;
+
   explicit WebSocketServer(std::uint16_t port = 8765);
   ~WebSocketServer();
 
@@ -79,27 +140,10 @@ public:
 
   void start();
   void stop();
-  void publish(const WebRuntimeState &state);
+  void publish_runtime(const WebRuntimeState &state);
+  void publish_library(const WebLibraryState &state);
 
-  [[nodiscard]] bool consume_panic_requested();
-  [[nodiscard]] std::optional<int> consume_capture_device_request();
-  [[nodiscard]] std::optional<SampleTrimRequest> consume_sample_trim_request();
-  [[nodiscard]] std::optional<std::size_t> consume_active_bank_request();
-  [[nodiscard]] std::optional<std::size_t> consume_save_sample_request();
-  [[nodiscard]] std::optional<PatchRequest> consume_patch_request();
-  [[nodiscard]] std::optional<WavetableRequest> consume_wavetable_request();
-  [[nodiscard]] std::optional<WavetableControls> consume_wavetable_controls();
-  [[nodiscard]] bool consume_seq_play();
-  [[nodiscard]] bool consume_seq_stop();
-  [[nodiscard]] bool consume_seq_add_track();
-  [[nodiscard]] std::optional<int> consume_seq_remove_track();
-  [[nodiscard]] std::optional<int> consume_seq_select_step();
-  [[nodiscard]] std::optional<int> consume_seq_select_track();
-  [[nodiscard]] std::optional<SeqConfig> consume_seq_config();
-  [[nodiscard]] std::optional<std::string> consume_soundfont_request();
-  [[nodiscard]] std::optional<bool> consume_blow_mode_request();
-  [[nodiscard]] std::optional<float> consume_blow_sensitivity_request();
-  [[nodiscard]] std::optional<VoiceSeqConfig> consume_voice_seq_config();
+  [[nodiscard]] std::vector<Command> consume_commands();
 
 private:
   class Impl;

@@ -36,7 +36,9 @@ public:
   void set_wavetable_controls(float morph, float noise, float unison);
   void set_pitch_controls(float pitch_bend, float vibrato_depth);
   void trigger(float rate = 1.0F);
+  void trigger_bank(std::size_t bank, float rate = 1.0F);
   void release(float rate = 1.0F); // begin release for matching active voice
+  void release_bank(std::size_t bank, float rate = 1.0F);
   void stop_all();
 
   void set_active_bank(std::size_t bank);

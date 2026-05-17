@@ -75,6 +75,8 @@ add_executable(analogno
   src/controller_state.cpp
   src/music_mapper.cpp
   src/midi_output.cpp
+  src/runtime_state_builder.cpp
+  src/sequencer.cpp
   src/web_server.cpp
   src/audio_capture.cpp
   src/audio_sampler.cpp
