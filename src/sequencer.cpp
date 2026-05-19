@@ -80,11 +80,12 @@ std::optional<Note> note_for_step(const SeqStep &step, const SeqTrack &track,
       127);
   const auto midi_note = step.midi_note >= 0 ? step.midi_note : computed;
 
+  const auto scaled_vel = std::clamp(step.velocity * track.velocity_scale / 100, 1, 127);
   return Note{
       .midi_note = midi_note,
       .degree = step.degree,
       .octave = ctx.octave_offset + xoct,
-      .velocity = step.velocity,
+      .velocity = scaled_vel,
       .channel = effective_midi_channel(track),
   };
 }
@@ -103,6 +104,9 @@ SeqTick tick_sequencer(Sequencer &seq, const MusicalIntent &ctx) {
   const auto elapsed = std::chrono::duration_cast<ms>(now - seq.step_start);
 
   SeqTick result{};
+
+  const bool any_solo = std::any_of(seq.tracks.begin(), seq.tracks.end(),
+      [](const SeqTrack &t) { return t.solo; });
 
   for (auto &track : seq.tracks) {
     if (track.pending_note_off.has_value() && elapsed >= gate_dur) {
@@ -139,8 +143,9 @@ SeqTick tick_sequencer(Sequencer &seq, const MusicalIntent &ctx) {
       const auto track_step = seq.playhead_step % loop_length;
       const auto &step = track.steps[static_cast<std::size_t>(track_step)];
       const auto step_note = note_for_step(step, track, ctx);
+      const bool effective_muted = track.muted || (any_solo && !track.solo);
       const auto tie_continues =
-          !track.muted && step.active && step.tie && step_note.has_value() &&
+          !effective_muted && step.active && step.tie && step_note.has_value() &&
           track.pending_note_off.has_value() &&
           step_note->midi_note == track.pending_note_off->midi_note;
 
@@ -154,7 +159,7 @@ SeqTick tick_sequencer(Sequencer &seq, const MusicalIntent &ctx) {
         track.pending_note_off.reset();
       }
 
-      if (!tie_continues && step.active && !step.tie && !track.muted &&
+      if (!tie_continues && step.active && !step.tie && !effective_muted &&
           step_note.has_value()) {
         if (track.sample_bank >= 0) {
           result.sample_note_ons.push_back(
@@ -188,7 +193,11 @@ WebSeqState seq_web_state(const Sequencer &seq) {
     wt.midi_bank = track.midi_bank;
     wt.sample_bank = track.sample_bank;
     wt.loop_length = track_loop_length(track, seq.step_count);
+    wt.volume = track.volume;
+    wt.pan = track.pan;
+    wt.velocity_scale = track.velocity_scale;
     wt.muted = track.muted;
+    wt.solo = track.solo;
     wt.steps.reserve(static_cast<std::size_t>(seq.step_count));
     for (const auto &step : track.steps) {
       wt.steps.push_back({step.active, step.tie, step.degree, step.velocity,

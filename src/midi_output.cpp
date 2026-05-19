@@ -23,6 +23,7 @@ constexpr auto status_pitch_bend = std::uint8_t{0xE0};
 
 constexpr auto cc_breath_controller = std::uint8_t{2};
 constexpr auto cc_channel_volume = std::uint8_t{7};
+constexpr auto cc_pan = std::uint8_t{10};
 constexpr auto cc_expression = std::uint8_t{11};
 constexpr auto cc_filter_cutoff = std::uint8_t{74};
 constexpr auto cc_filter_resonance = std::uint8_t{71};
@@ -91,6 +92,8 @@ void rtmidi_error_callback(RtMidiError::Type type,
 
 MidiOutput::MidiOutput(std::string port_name)
     : midi_{RtMidi::UNSPECIFIED, "Analogno"} {
+  channel_volumes_.fill(100);
+  channel_pans_.fill(64);
   midi_.setErrorCallback(&rtmidi_error_callback, nullptr);
   midi_.openVirtualPort(port_name);
   std::cout << "opened virtual MIDI output: " << port_name << '\n';
@@ -144,10 +147,20 @@ void MidiOutput::apply_notes_only(const std::vector<Note> &note_offs,
     if ((channels_reset & ch_bit) == 0) {
       channels_reset = static_cast<std::uint16_t>(channels_reset | ch_bit);
 
+      const auto vol = static_cast<std::uint8_t>(
+          std::clamp(channel_volumes_[static_cast<std::size_t>(ch)], 0, 127));
       send(midi_, {
                       status(status_control_change, ch),
                       byte(cc_channel_volume),
-                      byte(std::uint8_t{127}),
+                      byte(vol),
+                  });
+
+      const auto pan_val = static_cast<std::uint8_t>(
+          std::clamp(channel_pans_[static_cast<std::size_t>(ch)], 0, 127));
+      send(midi_, {
+                      status(status_control_change, ch),
+                      byte(cc_pan),
+                      byte(pan_val),
                   });
 
       send(midi_, {
@@ -286,6 +299,28 @@ void MidiOutput::set_live_channel(int ch) {
   last_pitch_bend_.reset();
 }
 
+void MidiOutput::set_channel_volume(int ch, int volume) {
+  ch = std::clamp(ch, 0, 15);
+  volume = std::clamp(volume, 0, 127);
+  channel_volumes_[static_cast<std::size_t>(ch)] = volume;
+  send(midi_, {
+                  status(status_control_change, ch),
+                  byte(cc_channel_volume),
+                  byte(static_cast<std::uint8_t>(volume)),
+              });
+}
+
+void MidiOutput::set_channel_pan(int ch, int pan) {
+  ch = std::clamp(ch, 0, 15);
+  pan = std::clamp(pan, 0, 127);
+  channel_pans_[static_cast<std::size_t>(ch)] = pan;
+  send(midi_, {
+                  status(status_control_change, ch),
+                  byte(cc_pan),
+                  byte(static_cast<std::uint8_t>(pan)),
+              });
+}
+
 void MidiOutput::program_change(int program, int bank, int ch) {
   const bool is_percussion = bank == 128;
 
@@ -328,7 +363,15 @@ void MidiOutput::program_change(int program, int bank, int ch) {
   send(midi_, {
                   status(status_control_change, ch),
                   byte(cc_channel_volume),
-                  byte(std::uint8_t{127}),
+                  byte(static_cast<std::uint8_t>(
+                      std::clamp(channel_volumes_[static_cast<std::size_t>(ch)], 0, 127))),
+              });
+
+  send(midi_, {
+                  status(status_control_change, ch),
+                  byte(cc_pan),
+                  byte(static_cast<std::uint8_t>(
+                      std::clamp(channel_pans_[static_cast<std::size_t>(ch)], 0, 127))),
               });
 
   send(midi_, {

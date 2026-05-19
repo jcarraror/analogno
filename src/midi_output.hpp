@@ -29,13 +29,17 @@ public:
                         const std::vector<Note> &note_ons);
   void all_notes_off();
   void program_change(int program, int bank = 0, int ch = 0);
-  void set_live_channel(int ch); // reroutes CCs and pitch-bend to the given channel
+  void set_live_channel(int ch);
+  void set_channel_volume(int ch, int volume);
+  void set_channel_pan(int ch, int pan);
 
 private:
   static constexpr auto midi_channel_count = std::size_t{16};
   static constexpr auto midi_cc_count = std::size_t{128};
   static constexpr auto midi_note_count = std::size_t{128};
   int live_channel_{0};
+  std::array<int, 16> channel_volumes_{};
+  std::array<int, 16> channel_pans_{};
 
   RtMidiOut midi_;
   std::array<bool, midi_channel_count * midi_note_count> active_notes_{};

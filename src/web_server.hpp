@@ -43,12 +43,16 @@ public:
   };
 
   struct SeqTrackConfig final {
-    int midi_channel{-1}; // -1 = keep existing
+    int midi_channel{-1};
     int midi_program{0};
     int midi_bank{0};
-    int sample_bank{-1}; // -1 = MIDI; 0..7 = sampler bank
+    int sample_bank{-1};
     int loop_length{32};
+    int volume{100};
+    int pan{64};
+    int velocity_scale{100};
     bool muted{false};
+    bool solo{false};
     std::vector<SeqStepConfig> steps{};
   };
 
@@ -111,6 +115,25 @@ public:
   struct SetSoundfont final {
     std::string path{};
   };
+  struct SetTrackVolume final {
+    int track{};
+    int volume{100};
+  };
+  struct SetTrackPan final {
+    int track{};
+    int pan{64};
+  };
+  struct SetTrackVelocityScale final {
+    int track{};
+    int scale{100};
+  };
+  struct SetTrackSolo final {
+    int track{};
+    bool solo{};
+  };
+  struct SetSignalsVolume final {
+    float volume{1.0F};
+  };
   struct SetBlowMode final {
     bool enabled{};
   };
@@ -127,7 +150,9 @@ public:
                                SeqStop, SeqAddTrack, SeqRemoveTrack,
                                SeqSelectStep, SeqSelectTrack, SetSeq,
                                SetSoundfont, SetBlowMode, SetBlowSensitivity,
-                               SetVoiceSeq>;
+                               SetVoiceSeq, SetTrackVolume, SetTrackPan,
+                               SetTrackVelocityScale, SetTrackSolo,
+                               SetSignalsVolume>;
 
   explicit WebSocketServer(std::uint16_t port = 8765);
   ~WebSocketServer();

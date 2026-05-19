@@ -576,11 +576,11 @@ function WavetableMacroSlider({
   label: string;
   value: number;
   disabled?: boolean;
-  tone: 'morph' | 'noise' | 'unison';
+  tone: 'morph' | 'noise' | 'unison' | 'volume';
   onChange: (value: number) => void;
 }) {
   const pct = Math.round(value * 100);
-  const tag = tone === 'morph' ? 'M' : tone === 'noise' ? 'N' : 'U';
+  const tag = tone === 'morph' ? 'M' : tone === 'noise' ? 'N' : tone === 'unison' ? 'U' : 'V';
   const angle = -135 + value * 270;
   return (
     <label className={`wavetable-macro wavetable-macro-${tone}`}>
@@ -736,6 +736,26 @@ export function App() {
   function seqRemoveTrack(track: number) { socket?.send(JSON.stringify({ type: "seqRemoveTrack", track })); }
   function seqChange(cfg: { bpm: number; gatePct: number; stepCount: number; stepDivision: number; tracks: SeqTrackEdit[] }) {
     socket?.send(JSON.stringify({ type: "setSeq", ...cfg }));
+  }
+
+  function seqTrackVolume(track: number, volume: number) {
+    socket?.send(JSON.stringify({ type: "setTrackVolume", track, volume }));
+  }
+
+  function seqTrackPan(track: number, pan: number) {
+    socket?.send(JSON.stringify({ type: "setTrackPan", track, pan }));
+  }
+
+  function seqTrackVelocityScale(track: number, scale: number) {
+    socket?.send(JSON.stringify({ type: "setTrackVelocityScale", track, scale }));
+  }
+
+  function seqTrackSolo(track: number, solo: boolean) {
+    socket?.send(JSON.stringify({ type: "setTrackSolo", track, solo }));
+  }
+
+  function setSignalsVolume(volume: number) {
+    socket?.send(JSON.stringify({ type: "setSignalsVolume", volume: Math.round(volume * 100) }));
   }
 
   function setBlowMode(enabled: boolean) {
@@ -1041,6 +1061,10 @@ export function App() {
                   value={audio?.wavetableUnison ?? 0}
                   disabled={connection !== "online"}
                   onChange={(value) => setWavetableControls({ unison: value })} />
+                <WavetableMacroSlider label="Volume" tone="volume"
+                  value={audio?.signalsVolume ?? 1}
+                  disabled={connection !== "online"}
+                  onChange={(value) => setSignalsVolume(value)} />
               </div>
               {audio?.touchpadDrawing && (
                 <div className="touchpad-sketch">
@@ -1097,6 +1121,10 @@ export function App() {
             onAddTrack={seqAddTrack}
             onRemoveTrack={seqRemoveTrack}
             onChange={seqChange}
+            onTrackVolume={seqTrackVolume}
+            onTrackPan={seqTrackPan}
+            onTrackVelocityScale={seqTrackVelocityScale}
+            onTrackSolo={seqTrackSolo}
           />
         </Panel>
 

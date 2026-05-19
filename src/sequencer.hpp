@@ -19,12 +19,16 @@ struct SeqStep final {
 };
 
 struct SeqTrack final {
-  int midi_channel{0}; // persists across track reordering
+  int midi_channel{0};
   int midi_program{0};
   int midi_bank{0};
-  int sample_bank{-1}; // -1 = MIDI track; >=0 = sampler bank
+  int sample_bank{-1};
   int loop_length{32};
+  int volume{100};
+  int pan{64};
+  int velocity_scale{100};
   bool muted{false};
+  bool solo{false};
   std::vector<SeqStep> steps = std::vector<SeqStep>(32);
   std::optional<Note> pending_note_off{};
 };

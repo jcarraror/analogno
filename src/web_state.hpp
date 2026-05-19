@@ -69,6 +69,7 @@ struct WebAudioState final {
   std::vector<float> touchpad_sketch{};                   // live waveform preview while drawing
   bool touchpad_drawing{false};
   std::vector<std::array<float, 2>> touchpad_raw_points{}; // raw finger path [[x,y],...]
+  float signals_volume{1.0F};
   bool blow_mode{};              // breath/wind controller mode active
   float wavetable_morph{};
   float wavetable_noise{};
@@ -123,7 +124,11 @@ struct WebSeqTrack final {
   int midi_bank{0};
   int sample_bank{-1};
   int loop_length{32};
+  int volume{100};
+  int pan{64};
+  int velocity_scale{100};
   bool muted{false};
+  bool solo{false};
   std::vector<WebSeqStep> steps{};
 };
 

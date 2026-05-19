@@ -5,7 +5,7 @@ import { midiNoteName, patchName } from "../lib/music";
 // --- Sequencer ---
 
 export type SeqStepEdit = { active: boolean; tie: boolean; degree: number; velocity: number; midiNote: number };
-export type SeqTrackEdit = { midiChannel: number; midiProgram: number; midiBank: number; sampleBank: number; loopLength: number; muted: boolean; steps: SeqStepEdit[] };
+export type SeqTrackEdit = { midiChannel: number; midiProgram: number; midiBank: number; sampleBank: number; loopLength: number; volume: number; pan: number; velocityScale: number; muted: boolean; solo: boolean; steps: SeqStepEdit[] };
 const SEQ_STEP_COUNTS = [8, 16, 32, 64] as const;
 const SEQ_STEP_DIVISIONS = [8, 16, 32] as const;
 const SEQ_TRACK_COLORS = ['#6ea8fe', '#86efac', '#f59e0b', '#f472b6', '#22d3ee', '#a78bfa', '#fb7185', '#c084fc'];
@@ -15,12 +15,9 @@ const resizeSeqSteps = (steps: SeqStepEdit[], count: number): SeqStepEdit[] =>
   Array.from({ length: count }, (_, i) => steps[i] ? { ...steps[i] } : emptySeqStep());
 const seqTracksSignature = (tracks: RuntimeState['seq']['tracks']): string =>
   tracks.map(t => [
-    t.midiChannel,
-    t.midiProgram,
-    t.midiBank,
-    t.sampleBank,
-    t.loopLength,
-    t.muted ? 1 : 0,
+    t.midiChannel, t.midiProgram, t.midiBank, t.sampleBank, t.loopLength,
+    t.volume ?? 100, t.pan ?? 64, t.velocityScale ?? 100,
+    t.muted ? 1 : 0, t.solo ? 1 : 0,
     t.steps.length,
     t.steps.map(s => `${s.active ? 1 : 0}${s.tie ? 1 : 0}:${s.degree}:${s.velocity}:${s.midiNote}`).join(',')
   ].join('|')).join(';');
@@ -39,6 +36,10 @@ export function SequencerPanel({
   onAddTrack,
   onRemoveTrack,
   onChange,
+  onTrackVolume,
+  onTrackPan,
+  onTrackVelocityScale,
+  onTrackSolo,
 }: {
   seq: RuntimeState['seq'] | undefined;
   presets: SoundfontPreset[];
@@ -53,6 +54,10 @@ export function SequencerPanel({
   onAddTrack: () => void;
   onRemoveTrack: (track: number) => void;
   onChange: (cfg: { bpm: number; gatePct: number; stepCount: number; stepDivision: number; tracks: SeqTrackEdit[] }) => void;
+  onTrackVolume: (track: number, volume: number) => void;
+  onTrackPan: (track: number, pan: number) => void;
+  onTrackVelocityScale: (track: number, scale: number) => void;
+  onTrackSolo: (track: number, solo: boolean) => void;
 }) {
   const initialized = useRef(false);
   const tracksSignature = useRef('');
@@ -61,9 +66,11 @@ export function SequencerPanel({
   const [stepCount, setStepCount] = useState(32);
   const [stepDivision, setStepDivision] = useState(16);
   const [stepPage, setStepPage] = useState(0);
+  const [showMixer, setShowMixer] = useState(false);
   const [tracks, setTracks] = useState<SeqTrackEdit[]>(
     Array.from({ length: 4 }, (_, ti) => ({
-      midiChannel: ti, midiProgram: 0, midiBank: 0, sampleBank: -1, loopLength: 32, muted: false,
+      midiChannel: ti, midiProgram: 0, midiBank: 0, sampleBank: -1, loopLength: 32,
+      volume: 100, pan: 64, velocityScale: 100, muted: false, solo: false,
       steps: Array.from({ length: 32 }, emptySeqStep),
     }))
   );
@@ -94,7 +101,11 @@ export function SequencerPanel({
         midiBank: t.midiBank,
         sampleBank: t.sampleBank ?? -1,
         loopLength: Math.max(1, Math.min(nextStepCount, t.loopLength ?? nextStepCount)),
+        volume: t.volume ?? 100,
+        pan: t.pan ?? 64,
+        velocityScale: t.velocityScale ?? 100,
         muted: t.muted,
+        solo: t.solo ?? false,
         steps: resizeSeqSteps(t.steps.map(s => ({ ...s })), nextStepCount),
       })));
     }
@@ -273,6 +284,12 @@ export function SequencerPanel({
                 value={bpm} disabled={disabled}
                 onChange={e => handleBpm(Number(e.target.value))} />
             </label>
+            <button type="button"
+              className={`seq-mixer-toggle${showMixer ? ' seq-mixer-toggle-active' : ''}`}
+              disabled={disabled}
+              onClick={() => setShowMixer(v => !v)}>
+              Mix
+            </button>
           </div>
         </div>
 
@@ -408,6 +425,17 @@ export function SequencerPanel({
                   }}>
                   M
                 </button>
+                <button type="button" className={`seq-track-solo-btn${track.solo ? ' seq-track-solo-active' : ''}`}
+                  disabled={disabled}
+                  title={track.solo ? 'Unsolo track' : 'Solo track'}
+                  onClick={e => {
+                    e.stopPropagation();
+                    const next = tracks.map((t, i) => i === ti ? { ...t, solo: !t.solo } : t);
+                    setTracks(next);
+                    onTrackSolo(ti, !track.solo);
+                  }}>
+                  S
+                </button>
                 <button type="button" className="seq-track-remove-btn"
                   disabled={disabled || tracks.length <= 1}
                   title="Remove track"
@@ -471,6 +499,66 @@ export function SequencerPanel({
           </div>
         ))}
       </div>
+
+      {showMixer && (
+        <div className="seq-mixer">
+          <div className="seq-mixer-header">
+            <span className="seq-mixer-col-label">Vol</span>
+            <span className="seq-mixer-col-label">Pan</span>
+            <span className="seq-mixer-col-label">Accent</span>
+          </div>
+          {tracks.map((t, ti) => (
+            <div key={ti} className="seq-mixer-row"
+              style={{ '--seq-track-color': SEQ_TRACK_COLORS[ti % SEQ_TRACK_COLORS.length] } as CSSProperties}>
+              <span className="seq-mixer-track-id">T{ti + 1}</span>
+
+              <div className="seq-mixer-cell">
+                <input type="range" min={0} max={127} step={1}
+                  className="seq-mixer-slider seq-mixer-vol"
+                  value={t.volume ?? 100} disabled={disabled}
+                  title={`T${ti + 1} volume: ${t.volume ?? 100}`}
+                  onChange={e => {
+                    const vol = Number(e.target.value);
+                    const next = tracks.map((tk, i) => i === ti ? { ...tk, volume: vol } : tk);
+                    setTracks(next);
+                    onTrackVolume(ti, vol);
+                  }} />
+                <span className="seq-mixer-val">{t.volume ?? 100}</span>
+              </div>
+
+              <div className="seq-mixer-cell">
+                <input type="range" min={0} max={127} step={1}
+                  className="seq-mixer-slider seq-mixer-pan"
+                  value={t.pan ?? 64} disabled={disabled}
+                  title={`T${ti + 1} pan: ${(t.pan ?? 64) - 64}`}
+                  onChange={e => {
+                    const pan = Number(e.target.value);
+                    const next = tracks.map((tk, i) => i === ti ? { ...tk, pan } : tk);
+                    setTracks(next);
+                    onTrackPan(ti, pan);
+                  }} />
+                <span className="seq-mixer-val">
+                  {(t.pan ?? 64) === 64 ? 'C' : (t.pan ?? 64) < 64 ? `L${64 - (t.pan ?? 64)}` : `R${(t.pan ?? 64) - 64}`}
+                </span>
+              </div>
+
+              <div className="seq-mixer-cell">
+                <input type="range" min={50} max={200} step={1}
+                  className="seq-mixer-slider seq-mixer-accent"
+                  value={t.velocityScale ?? 100} disabled={disabled}
+                  title={`T${ti + 1} accent: ${t.velocityScale ?? 100}%`}
+                  onChange={e => {
+                    const scale = Number(e.target.value);
+                    const next = tracks.map((tk, i) => i === ti ? { ...tk, velocityScale: scale } : tk);
+                    setTracks(next);
+                    onTrackVelocityScale(ti, scale);
+                  }} />
+                <span className="seq-mixer-val">{t.velocityScale ?? 100}%</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <button type="button" className="seq-add-track-btn"
         disabled={disabled || tracks.length >= 16}

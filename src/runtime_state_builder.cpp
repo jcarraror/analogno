@@ -172,7 +172,7 @@ WebRuntimeState make_web_state(
     bool blow_mode, float wavetable_morph, float wavetable_noise,
     float wavetable_unison, float blow_sensitivity, bool blow_active,
     float blow_level, const VoiceSequencerStatus &voice_seq_status,
-    const std::vector<float> &spec_samples) {
+    const std::vector<float> &spec_samples, float signals_volume) {
   std::vector<WebCaptureDevice> capture_devices{};
 
   for (const auto &device : audio_capture.devices()) {
@@ -279,6 +279,7 @@ WebRuntimeState make_web_state(
                     }
                     return out;
                   }(),
+              .signals_volume = signals_volume,
               .blow_mode = blow_mode,
               .wavetable_morph = wavetable_morph,
               .wavetable_noise = wavetable_noise,

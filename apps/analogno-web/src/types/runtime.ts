@@ -93,6 +93,7 @@ export type RuntimeState = {
     voiceSeqRecordedSegments: number;
     voiceSeqRecordProgress: number;
     specSamples: number[];
+    signalsVolume: number;
   };
   seq: {
     playing: boolean;
@@ -110,7 +111,11 @@ export type RuntimeState = {
       midiBank: number;
       sampleBank: number;
       loopLength: number;
+      volume: number;
+      pan: number;
+      velocityScale: number;
       muted: boolean;
+      solo: boolean;
       steps: Array<{
         active: boolean;
         tie: boolean;

@@ -133,6 +133,7 @@ std::string runtime_json_string(const WebRuntimeState &state) {
               {"touchpadDrawing", state.audio.touchpad_drawing},
               {"touchpadSketch", state.audio.touchpad_sketch},
               {"touchpadRawPoints", state.audio.touchpad_raw_points},
+              {"signalsVolume", state.audio.signals_volume},
               {"blowMode", state.audio.blow_mode},
               {"wavetableMorph", state.audio.wavetable_morph},
               {"wavetableNoise", state.audio.wavetable_noise},
@@ -180,7 +181,11 @@ std::string runtime_json_string(const WebRuntimeState &state) {
                   {"midiBank", track.midi_bank},
                   {"sampleBank", track.sample_bank},
                   {"loopLength", track.loop_length},
+                  {"volume", track.volume},
+                  {"pan", track.pan},
+                  {"velocityScale", track.velocity_scale},
                   {"muted", track.muted},
+                  {"solo", track.solo},
                   {"steps", std::move(steps)},
               });
             }
@@ -482,7 +487,11 @@ private:
             cfg.tracks[t].midi_bank    = std::clamp(tj.value("midiBank",    0), 0, 127);
             cfg.tracks[t].sample_bank  = std::clamp(tj.value("sampleBank", -1), -1, 7);
             cfg.tracks[t].loop_length  = std::clamp(tj.value("loopLength", cfg.step_count), 1, cfg.step_count);
-            cfg.tracks[t].muted        = tj.value("muted", false);
+            cfg.tracks[t].volume         = std::clamp(tj.value("volume", 100), 0, 127);
+            cfg.tracks[t].pan            = std::clamp(tj.value("pan", 64), 0, 127);
+            cfg.tracks[t].velocity_scale = std::clamp(tj.value("velocityScale", 100), 50, 200);
+            cfg.tracks[t].muted          = tj.value("muted", false);
+            cfg.tracks[t].solo           = tj.value("solo", false);
             if (tj.contains("steps") && tj["steps"].is_array()) {
               const auto &arr = tj["steps"];
               const auto n = std::min(arr.size(),
@@ -502,6 +511,34 @@ private:
           }
         }
         enqueue_command(WebSocketServer::SetSeq{.config = std::move(cfg)});
+      } else if (json.value("type", "") == "setTrackVolume") {
+        const auto track = json.value("track", -1);
+        const auto volume = std::clamp(json.value("volume", 100), 0, 127);
+        if (track >= 0 && track < 16) {
+          enqueue_command(WebSocketServer::SetTrackVolume{.track = track, .volume = volume});
+        }
+      } else if (json.value("type", "") == "setTrackPan") {
+        const auto track = json.value("track", -1);
+        const auto pan = std::clamp(json.value("pan", 64), 0, 127);
+        if (track >= 0 && track < 16) {
+          enqueue_command(WebSocketServer::SetTrackPan{.track = track, .pan = pan});
+        }
+      } else if (json.value("type", "") == "setTrackVelocityScale") {
+        const auto track = json.value("track", -1);
+        const auto scale = std::clamp(json.value("scale", 100), 50, 200);
+        if (track >= 0 && track < 16) {
+          enqueue_command(WebSocketServer::SetTrackVelocityScale{.track = track, .scale = scale});
+        }
+      } else if (json.value("type", "") == "setTrackSolo") {
+        const auto track = json.value("track", -1);
+        if (track >= 0 && track < 16) {
+          enqueue_command(WebSocketServer::SetTrackSolo{
+              .track = track, .solo = json.value("solo", false)});
+        }
+      } else if (json.value("type", "") == "setSignalsVolume") {
+        const auto v = std::clamp(json.value("volume", 100), 0, 100);
+        enqueue_command(WebSocketServer::SetSignalsVolume{
+            .volume = static_cast<float>(v) / 100.0F});
       }
     } catch (const std::exception &exception) {
       std::cerr << "invalid websocket JSON: " << exception.what() << '\n';

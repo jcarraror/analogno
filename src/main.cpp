@@ -257,11 +257,12 @@ void trigger_sampler_notes(const MusicalIntent &intent, AudioSampler &sampler) {
 void update_sampler_controls(const ContinuousControls &controls,
                              AudioSampler &sampler,
                              bool seq_playing,
-                             bool l2_controls_gain) {
+                             bool l2_controls_gain,
+                             float signals_volume) {
   constexpr auto sampler_gain_boost = 1.25F;
   const auto live_gain = l2_controls_gain ? controls.expression : 1.0F;
   const auto gain = (seq_playing ? 1.0F : live_gain) *
-                    sampler_gain_boost;
+                    sampler_gain_boost * signals_volume;
   sampler.set_gain(gain);
   sampler.set_pitch_controls(controls.pitch_bend, controls.vibrato);
 }
@@ -360,6 +361,7 @@ void run_event_loop(Gamepad &gamepad,
   bool running = true;
   bool piano_roll_visible = true;
   bool spectrogram_visible = true;
+  float signals_volume = 1.0F;
   float wavetable_morph = 0.0F;
   float wavetable_noise = 0.0F;
   float wavetable_unison = 0.0F;
@@ -803,6 +805,17 @@ void run_event_loop(Gamepad &gamepad,
               if (seq.selected_step >= analogno::active_track_loop_length(seq)) {
                 seq.selected_step = -1;
               }
+              for (std::size_t t = 0; t < seq.tracks.size(); ++t) {
+                if (t < cfg.tracks.size()) {
+                  seq.tracks[t].volume         = std::clamp(cfg.tracks[t].volume, 0, 127);
+                  seq.tracks[t].pan            = std::clamp(cfg.tracks[t].pan, 0, 127);
+                  seq.tracks[t].velocity_scale = std::clamp(cfg.tracks[t].velocity_scale, 50, 200);
+                  seq.tracks[t].solo           = cfg.tracks[t].solo;
+                }
+                const auto ch = analogno::effective_midi_channel(seq.tracks[t]);
+                midi.set_channel_volume(ch, seq.tracks[t].volume);
+                midi.set_channel_pan(ch, seq.tracks[t].pan);
+              }
             }
           },
           [&](const WebSocketServer::SetSoundfont &cmd) {
@@ -888,6 +901,37 @@ void run_event_loop(Gamepad &gamepad,
                       << " snap=" << (cfg.snap_to_scale ? "scale" : "chromatic")
                       << " recording=" << (cfg.recording ? "on" : "off")
                       << " sensitivity=" << cfg.sensitivity << '\n';
+          },
+          [&](const WebSocketServer::SetTrackVolume &cmd) {
+            const auto idx = static_cast<std::size_t>(cmd.track);
+            if (idx < seq.tracks.size()) {
+              seq.tracks[idx].volume = std::clamp(cmd.volume, 0, 127);
+              const auto ch = analogno::effective_midi_channel(seq.tracks[idx]);
+              midi.set_channel_volume(ch, seq.tracks[idx].volume);
+            }
+          },
+          [&](const WebSocketServer::SetTrackPan &cmd) {
+            const auto idx = static_cast<std::size_t>(cmd.track);
+            if (idx < seq.tracks.size()) {
+              seq.tracks[idx].pan = std::clamp(cmd.pan, 0, 127);
+              const auto ch = analogno::effective_midi_channel(seq.tracks[idx]);
+              midi.set_channel_pan(ch, seq.tracks[idx].pan);
+            }
+          },
+          [&](const WebSocketServer::SetTrackVelocityScale &cmd) {
+            const auto idx = static_cast<std::size_t>(cmd.track);
+            if (idx < seq.tracks.size()) {
+              seq.tracks[idx].velocity_scale = std::clamp(cmd.scale, 50, 200);
+            }
+          },
+          [&](const WebSocketServer::SetTrackSolo &cmd) {
+            const auto idx = static_cast<std::size_t>(cmd.track);
+            if (idx < seq.tracks.size()) {
+              seq.tracks[idx].solo = cmd.solo;
+            }
+          },
+          [&](const WebSocketServer::SetSignalsVolume &cmd) {
+            signals_volume = std::clamp(cmd.volume, 0.0F, 1.0F);
           }},
           command);
     }
@@ -997,7 +1041,7 @@ void run_event_loop(Gamepad &gamepad,
          (sampler_mode && audio_sampler.has_sample() &&
           !audio_sampler.bank_is_wavetable(active_sampler_bank)));
     update_sampler_controls(mapper.map_controls(state), audio_sampler,
-                            seq.playing, l2_controls_sampler_gain);
+                            seq.playing, l2_controls_sampler_gain, signals_volume);
     const auto should_map = state.changed_this_frame();
 
     // Live MIDI channel: follows the active sequencer track.
@@ -1290,7 +1334,8 @@ void run_event_loop(Gamepad &gamepad,
                                                 blow.signal_threshold(),
                                             0.0F, 2.0F),
                                  voice_seq.status(),
-                                 spec_data));
+                                 spec_data,
+                                 signals_volume));
       last_web_publish = now;
     }
 
