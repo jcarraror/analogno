@@ -89,6 +89,11 @@ public:
     SDL_SetGamepadLED(handle_, r, g, b);
   }
 
+  void rumble(std::uint16_t low_freq, std::uint16_t high_freq,
+              std::uint32_t duration_ms) const {
+    SDL_RumbleGamepad(handle_, low_freq, high_freq, duration_ms);
+  }
+
 private:
   SDL_Gamepad *handle_{nullptr};
 };

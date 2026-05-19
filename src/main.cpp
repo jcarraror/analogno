@@ -1,6 +1,9 @@
+#include "active_note_tracker.hpp"
 #include "audio_capture.hpp"
 #include "audio_sampler.hpp"
+#include "blow_controller.hpp"
 #include "controller_state.hpp"
+#include "drum_pad.hpp"
 #include "midi_output.hpp"
 #include "music_mapper.hpp"
 #include "music_types.hpp"
@@ -41,10 +44,13 @@
 
 namespace {
 
+using analogno::ActiveNoteTracker;
 using analogno::AudioCapture;
 using analogno::AudioSampler;
+using analogno::BlowController;
 using analogno::ContinuousControls;
 using analogno::ControllerState;
+using analogno::DrumPad;
 using analogno::Gamepad;
 using analogno::MidiOutput;
 using analogno::MusicalIntent;
@@ -89,43 +95,6 @@ struct Sdl final {
   Sdl &operator=(Sdl &&) = delete;
 };
 
-class ActiveNoteTracker final {
-public:
-  void apply(const MusicalIntent &intent) {
-    if (intent.note_off_all) {
-      active_.fill(false);
-    }
-
-    for (const auto &note : intent.note_offs) {
-      if (valid(note.midi_note)) {
-        active_[static_cast<std::size_t>(note.midi_note)] = false;
-      }
-    }
-
-    for (const auto &note : intent.note_ons) {
-      if (valid(note.midi_note)) {
-        active_[static_cast<std::size_t>(note.midi_note)] = true;
-      }
-    }
-  }
-
-  [[nodiscard]] std::vector<int> notes() const {
-    std::vector<int> result{};
-
-    for (std::size_t i = 0; i < active_.size(); ++i) {
-      if (active_[i]) {
-        result.push_back(static_cast<int>(i));
-      }
-    }
-
-    return result;
-  }
-
-private:
-  std::array<bool, 128> active_{};
-
-  static bool valid(int note) { return note >= 0 && note < 128; }
-};
 
 std::optional<Gamepad> open_first_gamepad() {
   int count = 0;
@@ -367,37 +336,6 @@ std::vector<std::string> scan_soundfonts() {
   return result;
 }
 
-// Breath / wind controller state -------------------------------------------
-struct BlowController {
-  bool enabled{false};
-  bool is_blowing{false};       // note currently held
-  std::optional<Note> held_note{};
-  float sensitivity{0.5F};      // 0..1  higher = MORE sensitive = lower threshold
-
-  std::optional<std::chrono::steady_clock::time_point> attack_since{};
-  std::optional<std::chrono::steady_clock::time_point> release_since{};
-  std::chrono::steady_clock::time_point arm_until{};
-  float ambient_floor{0.0F};
-  bool ambient_ready{false};
-
-  static constexpr auto attack_time = std::chrono::milliseconds{45};
-  static constexpr auto release_time = std::chrono::milliseconds{90};
-  static constexpr auto arm_cooldown_time = std::chrono::milliseconds{700};
-
-  [[nodiscard]] float signal_threshold() const {
-    const auto inverse = 1.0F - sensitivity;
-    return 0.00035F + inverse * inverse * 0.00565F;
-  }
-  [[nodiscard]] float signal_level(float raw) const {
-    return std::max(0.0F, raw - ambient_floor);
-  }
-  [[nodiscard]] float on_threshold() const {
-    return ambient_floor + signal_threshold();
-  }
-  [[nodiscard]] float off_threshold() const {
-    return ambient_floor + signal_threshold() * 0.35F;
-  }
-};
 
 void run_event_loop(Gamepad &gamepad,
                     std::vector<analogno::WebPreset> sf2_presets,
@@ -483,10 +421,13 @@ void run_event_loop(Gamepad &gamepad,
     rf.active_channel = -1;
   };
 
+  DrumPad drum_pad{};
+
   using tp = std::chrono::steady_clock::time_point;
   struct LedFlash { std::array<std::uint8_t, 3> color{}; tp show_until{}; };
   std::deque<LedFlash> led_sequence{};
   constexpr auto led_slot_ms = std::chrono::milliseconds{80};
+
 
   while (running) {
     SDL_Event event{};
@@ -510,17 +451,51 @@ void run_event_loop(Gamepad &gamepad,
       if (event.gtouchpad.touchpad == 0) {
         const auto fi = static_cast<std::size_t>(event.gtouchpad.finger);
         const bool l1_held = state.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+        const bool r1_held = state.button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
         const bool tp_click = state.button(SDL_GAMEPAD_BUTTON_TOUCHPAD);
 
         if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN) {
-          if (fi == 0 && seq.selected_step >= 0 && !l1_held && !tp_click) {
+          if (fi == 0 && seq.selected_step >= 0 && !l1_held && !tp_click && !r1_held) {
             // Seq armed, finger 0 → swipe-to-navigate.
             tp_swipe = { event.gtouchpad.x, event.gtouchpad.y, true };
           } else if (fi == 0 && l1_held && !tp_click) {
             // L1 + touch → waveform draw.
             if (!sketch.active) { sketch.active = true; sketch.points.clear(); }
             sketch.points.emplace_back(event.gtouchpad.x, event.gtouchpad.y);
-          } else if (!l1_held && !tp_click && fi < ribbon_max) {
+          } else if (fi < ribbon_max && r1_held && !l1_held && current_midi_bank == 128) {
+            if (drum_pad.in_nav_strip(event.gtouchpad.y)) {
+              drum_pad.navigate(event.gtouchpad.x >= 0.5F);
+              std::cout << "drum page: " << drum_pad.page << '\n';
+            } else {
+              const int note = drum_pad.note_for_xy(event.gtouchpad.x, event.gtouchpad.y);
+              const int vel  = std::clamp(
+                  static_cast<int>(event.gtouchpad.pressure * 127.0F), 1, 127);
+              if (drum_pad.finger_note[fi] >= 0)
+                midi.apply_notes_only({{Note{.midi_note=drum_pad.finger_note[fi], .channel=9}}}, {});
+              drum_pad.finger_note[fi] = note;
+              midi.apply_notes_only({}, {{Note{.midi_note=note, .velocity=vel, .channel=9}}});
+              active_notes.apply(MusicalIntent{.note_ons={{Note{.midi_note=note,.velocity=vel}}}});
+
+              if (seq.selected_step >= 0) {
+                const auto tidx = static_cast<std::size_t>(seq.active_track);
+                const auto sidx = static_cast<std::size_t>(seq.selected_step);
+                seq.tracks[tidx].steps[sidx] = {true, false, 0, vel, note};
+                auto &track = seq.tracks[tidx];
+
+                if (track.midi_bank != current_midi_bank ||
+                    track.midi_program != current_midi_program ||
+                    track.sample_bank >= 0) {
+                  track.midi_bank    = current_midi_bank;
+                  track.midi_program = current_midi_program;
+                  track.sample_bank  = -1;
+                  midi.program_change(current_midi_program, current_midi_bank,
+                                      analogno::effective_midi_channel(track));
+                }
+                seq.selected_step =
+                    (seq.selected_step + 1) % analogno::active_track_loop_length(seq);
+              }
+            }
+          } else if (!l1_held && !tp_click && !r1_held && fi < ribbon_max) {
             // Bare touch → ribbon controller (any finger).
             const int note = ribbon_note_for_x(event.gtouchpad.x,
                 last_intent.root_midi_note, last_intent.octave_offset, last_intent.scale);
@@ -594,6 +569,11 @@ void run_event_loop(Gamepad &gamepad,
               sampler_mode = true;
             }
             sketch.points.clear();
+          } else if (fi < ribbon_max && drum_pad.finger_note[fi] >= 0) {
+
+            midi.apply_notes_only({{Note{.midi_note=drum_pad.finger_note[fi], .channel=9}}}, {});
+            active_notes.apply(MusicalIntent{.note_offs={{Note{.midi_note=drum_pad.finger_note[fi]}}}});
+            drum_pad.finger_note[fi] = -1;
           } else if (fi < ribbon_max && ribbon[fi].active) {
             auto &rf = ribbon[fi];
             release_ribbon_finger(rf);
@@ -1134,6 +1114,8 @@ void run_event_loop(Gamepad &gamepad,
       for (auto &n : intent.note_ons)  n.channel = live_ch;
       for (auto &n : intent.note_offs) n.channel = live_ch;
 
+      const bool l2_gate = state.left_trigger() > 0.05F;
+
       if (active_track_sample_bank >= 0 &&
           audio_sampler.bank_has_sample(static_cast<std::size_t>(active_track_sample_bank))) {
         if (intent.note_off_all) {
@@ -1146,11 +1128,13 @@ void run_event_loop(Gamepad &gamepad,
               static_cast<std::size_t>(active_track_sample_bank),
               std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
         }
-        for (const auto &note : intent.note_ons) {
-          const auto semitones = note.midi_note - sampler_root_for_release;
-          audio_sampler.trigger_bank(
-              static_cast<std::size_t>(active_track_sample_bank),
-              std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+        if (l2_gate) {
+          for (const auto &note : intent.note_ons) {
+            const auto semitones = note.midi_note - sampler_root_for_release;
+            audio_sampler.trigger_bank(
+                static_cast<std::size_t>(active_track_sample_bank),
+                std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+          }
         }
         active_notes.apply(intent);
       } else if (sampler_mode && audio_sampler.has_sample()) {
@@ -1164,7 +1148,9 @@ void run_event_loop(Gamepad &gamepad,
           audio_sampler.release(
               std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
         }
-        trigger_sampler_notes(intent, audio_sampler);
+        if (l2_gate) {
+          trigger_sampler_notes(intent, audio_sampler);
+        }
         active_notes.apply(intent);
       } else if (blow.enabled) {
         // Blow mode: buttons change note legato while gate is open; the
@@ -1178,6 +1164,9 @@ void run_event_loop(Gamepad &gamepad,
           blow.held_note = new_note;
         }
       } else {
+        if (!l2_gate) {
+          intent.note_ons.clear();
+        }
         midi.set_live_channel(live_ch);
         midi.apply(intent);
         active_notes.apply(intent);
@@ -1250,21 +1239,23 @@ void run_event_loop(Gamepad &gamepad,
       }
     }
 
-    // Sequential microflash: show front entry until its time expires, then advance.
-    if (seq.playing) {
+    {
       const auto led_now = std::chrono::steady_clock::now();
-      // Pop any expired entries.
-      while (!led_sequence.empty() && led_now >= led_sequence.front().show_until) {
-        led_sequence.pop_front();
-      }
-      if (!led_sequence.empty()) {
-        const auto &front = led_sequence.front();
-        gamepad.set_led(front.color[0], front.color[1], front.color[2]);
+      if (led_now < drum_pad.flash_until) {
+        const auto c = drum_pad.page_color();
+        gamepad.set_led(c[0], c[1], c[2]);
+      } else if (seq.playing) {
+        // Pop any expired entries.
+        while (!led_sequence.empty() && led_now >= led_sequence.front().show_until) {
+          led_sequence.pop_front();
+        }
+        if (!led_sequence.empty()) {
+          const auto &front = led_sequence.front();
+          gamepad.set_led(front.color[0], front.color[1], front.color[2]);
+        } else {
+          gamepad.set_led(10, 10, 14);
+        }
       } else {
-        gamepad.set_led(10, 10, 14);
-      }
-    } else {
-      if (!led_sequence.empty()) {
         led_sequence.clear();
         gamepad.set_led(0, 0, 0);
       }
@@ -1301,6 +1292,16 @@ void run_event_loop(Gamepad &gamepad,
                                  voice_seq.status(),
                                  spec_data));
       last_web_publish = now;
+    }
+
+    {
+      const auto rumble_now = std::chrono::steady_clock::now();
+      while (!drum_pad.pending_rumble.empty() &&
+             rumble_now >= drum_pad.pending_rumble.front().fire_at) {
+        const auto &ev = drum_pad.pending_rumble.front();
+        gamepad.rumble(ev.low, ev.high, ev.ms);
+        drum_pad.pending_rumble.pop_front();
+      }
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds{1});
