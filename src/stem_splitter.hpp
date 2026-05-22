@@ -1,11 +1,13 @@
 #pragma once
 
 #include <atomic>
+#include <deque>
 #include <filesystem>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace analogno {
 
@@ -36,11 +38,15 @@ public:
     [[nodiscard]] StemSplitState state() const;
     [[nodiscard]] float progress() const;
     [[nodiscard]] std::string detail() const;
+    [[nodiscard]] std::vector<std::string> log() const;
     [[nodiscard]] std::optional<StemPaths> take_result();
     [[nodiscard]] std::optional<std::string> take_error();
 
 private:
     void set_progress(float progress, std::string detail);
+    void append_log(std::string line);
+
+    static constexpr std::size_t k_max_log_lines = 30;
 
     std::atomic<StemSplitState> state_{StemSplitState::idle};
     std::atomic<float> progress_{0.0F};
@@ -48,6 +54,7 @@ private:
     std::mutex result_mutex_{};
     mutable std::mutex progress_mutex_{};
     std::string detail_{};
+    std::deque<std::string> log_lines_{};
     std::optional<StemPaths> result_{};
     std::optional<std::string> error_{};
 };

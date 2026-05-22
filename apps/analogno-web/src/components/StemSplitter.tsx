@@ -7,6 +7,7 @@ interface Props {
   stemSplitError: string;
   stemSplitProgress: number;
   stemSplitDetail: string;
+  stemSplitLog: string[];
   sampleWaveform: number[];
   sampleTrimStart: number;
   sampleTrimEnd: number;
@@ -18,11 +19,12 @@ interface Props {
 const STEM_LABELS = ["drums", "bass", "vocals", "guitar", "piano", "other"] as const;
 const BANK_COLORS = ["#6ea8fe", "#86efac", "#f59e0b", "#f472b6", "#a78bfa", "#fb923c"] as const;
 
-function TrimWave({ waveform, trimStart, trimEnd, color, onChange }: {
+function TrimWave({ waveform, trimStart, trimEnd, color, playPosition, onChange }: {
   waveform: number[];
   trimStart: number;
   trimEnd: number;
   color: string;
+  playPosition?: number;
   onChange: (next: { start?: number; end?: number }) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -83,6 +85,9 @@ function TrimWave({ waveform, trimStart, trimEnd, color, onChange }: {
       })}
       <line x1={trimStart * W} y1={0} x2={trimStart * W} y2={H} stroke={color} strokeWidth={2.5} />
       <line x1={trimEnd * W} y1={0} x2={trimEnd * W} y2={H} stroke={color} strokeWidth={2.5} />
+      {playPosition !== undefined && (
+        <line x1={playPosition * W} y1={0} x2={playPosition * W} y2={H} stroke="rgba(255,255,255,0.85)" strokeWidth={1.5} />
+      )}
     </svg>
   );
 }
@@ -92,6 +97,7 @@ export function StemSplitter({
   stemSplitError,
   stemSplitProgress,
   stemSplitDetail,
+  stemSplitLog,
   sampleWaveform,
   sampleTrimStart,
   sampleTrimEnd,
@@ -103,18 +109,52 @@ export function StemSplitter({
   const [uploadProgress, setUploadProgress] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [playing, setPlaying] = useState<boolean[]>(Array(6).fill(false));
+  const [playPositions, setPlayPositions] = useState<number[]>(Array(6).fill(0));
   const [editingBank, setEditingBank] = useState<number | null>(null);
+  const [showLog, setShowLog] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const audioRefs = useRef<Array<HTMLAudioElement | null>>(Array(6).fill(null));
+  const logRef = useRef<HTMLDivElement>(null);
+  const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (stemSplitState !== "done") {
       audioRefs.current.forEach(a => { if (a) { a.pause(); a.src = ""; } });
       audioRefs.current = Array(6).fill(null);
       setPlaying(Array(6).fill(false));
+      setPlayPositions(Array(6).fill(0));
       setEditingBank(null);
     }
   }, [stemSplitState]);
+
+  useEffect(() => {
+    const anyPlaying = playing.some(Boolean);
+    if (!anyPlaying) {
+      if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+      setPlayPositions(Array(6).fill(0));
+      return;
+    }
+    const tick = () => {
+      setPlayPositions(() => {
+        const next = Array(6).fill(0) as number[];
+        for (let i = 0; i < 6; i++) {
+          const a = audioRefs.current[i];
+          if (a && Number.isFinite(a.duration) && a.duration > 0)
+            next[i] = a.currentTime / a.duration;
+        }
+        return next;
+      });
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; } };
+  }, [playing]);
+
+  useEffect(() => {
+    if (showLog && logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [stemSplitLog, showLog]);
 
   const stopStem = useCallback((index: number) => {
     const a = audioRefs.current[index];
@@ -213,6 +253,13 @@ export function StemSplitter({
     return null;
   })();
 
+  const hasLog = stemSplitLog.length > 0;
+  const showLogBtn = (state === "running" || state === "done" || state === "error") && hasLog;
+  const borderColor = dragging ? "#9ca7ff"
+    : state === "done" ? "rgba(134,239,172,0.4)"
+    : state === "error" ? "rgba(251,113,133,0.4)"
+    : "rgba(255,255,255,0.18)";
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div
@@ -221,32 +268,81 @@ export function StemSplitter({
         onDrop={e => { e.preventDefault(); setDragging(false); onFiles(e.dataTransfer.files); }}
         onClick={() => !busy && fileRef.current?.click()}
         style={{
-          border: `1.5px dashed ${dragging ? "#9ca7ff" : "rgba(255,255,255,0.18)"}`,
-          borderRadius: 12, padding: "18px 16px", textAlign: "center",
+          border: `1.5px dashed ${borderColor}`,
+          borderRadius: 12, padding: "14px 16px",
           cursor: busy ? "default" : "pointer",
           background: dragging ? "rgba(156,167,255,0.07)" : "rgba(255,255,255,0.03)",
           transition: "border-color 0.15s, background 0.15s",
           fontSize: "0.82rem",
-          color: busy ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.65)",
         }}
       >
-        {busy ? (
+        {state === "idle" || state === "uploading" ? (
+          state === "uploading" ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", color: "rgba(255,255,255,0.6)" }}>
+                <span>Uploading…</span>
+                <span style={{ fontVariantNumeric: "tabular-nums" }}>{progressPct}%</span>
+              </div>
+              <div style={{ height: 5, borderRadius: 999, overflow: "hidden", background: "rgba(255,255,255,0.1)" }}>
+                <div style={{ width: `${progressPct}%`, height: "100%", borderRadius: 999, background: "#9ca7ff", transition: "width 0.2s ease" }} />
+              </div>
+            </div>
+          ) : (
+            <span style={{ color: "rgba(255,255,255,0.5)" }}>Drop audio file or click to browse</span>
+          )
+        ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, color: "rgba(255,255,255,0.72)" }}>
-              <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{statusLabel}</span>
-              <span style={{ minWidth: 38, textAlign: "right", fontVariantNumeric: "tabular-nums", color: "rgba(255,255,255,0.5)" }}>{progressPct}%</span>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <span style={{
+                fontSize: "0.78rem", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                color: state === "done" ? "#86efac" : state === "error" ? "#fb7185" : "rgba(255,255,255,0.7)",
+              }}>
+                {statusLabel}
+              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                {showLogBtn && (
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); setShowLog(v => !v); }}
+                    style={{
+                      padding: "2px 8px", borderRadius: 4, fontSize: "0.65rem",
+                      background: showLog ? "rgba(156,167,255,0.18)" : "rgba(255,255,255,0.07)",
+                      border: `1px solid ${showLog ? "rgba(156,167,255,0.5)" : "rgba(255,255,255,0.15)"}`,
+                      color: showLog ? "#9ca7ff" : "rgba(255,255,255,0.4)",
+                      cursor: "pointer",
+                    }}
+                  >log</button>
+                )}
+                {state === "running" && (
+                  <span style={{ fontVariantNumeric: "tabular-nums", fontSize: "0.75rem", color: "rgba(255,255,255,0.45)" }}>{progressPct}%</span>
+                )}
+              </div>
             </div>
-            <div style={{ height: 6, borderRadius: 999, overflow: "hidden", background: "rgba(255,255,255,0.12)" }}>
-              <div style={{ width: `${progressPct}%`, height: "100%", borderRadius: 999, background: "#9ca7ff", transition: "width 0.25s ease" }} />
-            </div>
+            {state === "running" && (
+              <div style={{ height: 5, borderRadius: 999, overflow: "hidden", background: "rgba(255,255,255,0.1)" }}>
+                <div style={{ width: `${progressPct}%`, height: "100%", borderRadius: 999, background: "#9ca7ff", transition: "width 0.25s ease" }} />
+              </div>
+            )}
+            {(state === "done" || state === "error") && (
+              <span style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.3)" }}>drop a new file to replace</span>
+            )}
           </div>
-        ) : "Drop audio file or click to browse"}
+        )}
         <input ref={fileRef} type="file" accept="audio/*" style={{ display: "none" }} onChange={e => onFiles(e.target.files)} />
       </div>
 
-      {statusLabel && !busy && (
-        <div style={{ fontSize: "0.78rem", paddingLeft: 2, color: state === "error" ? "#fb7185" : state === "done" ? "#86efac" : "rgba(255,255,255,0.5)" }}>
-          {statusLabel}
+      {showLog && hasLog && (
+        <div
+          ref={logRef}
+          style={{
+            maxHeight: 140, overflowY: "auto", borderRadius: 6,
+            background: "rgba(0,0,0,0.45)", border: "1px solid rgba(255,255,255,0.1)",
+            padding: "6px 8px", fontFamily: "monospace", fontSize: "0.65rem",
+            color: "rgba(255,255,255,0.55)", lineHeight: 1.5,
+            whiteSpace: "pre-wrap", wordBreak: "break-all",
+          }}
+        >
+          {stemSplitLog.map((line, i) => <div key={i}>{line}</div>)}
         </div>
       )}
 
@@ -271,10 +367,18 @@ export function StemSplitter({
                       textAlign: "center", fontSize: "0.68rem",
                       color: BANK_COLORS[i], cursor: "pointer",
                       display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+                      position: "relative", overflow: "hidden",
                     }}
                   >
-                    <span>{isPlaying ? "■" : "▶"}</span>
+                    {isPlaying && (
+                      <div style={{
+                        position: "absolute", bottom: 0, left: 0, height: 2,
+                        width: `${(playPositions[i] * 100).toFixed(1)}%`,
+                        background: BANK_COLORS[i], borderRadius: "0 0 6px 6px",
+                      }} />
+                    )}
                     <span>{label}</span>
+                    <span style={{ fontSize: "0.58rem", opacity: 0.7 }}>{isPlaying ? "stop" : "play"}</span>
                   </button>
                   <button
                     type="button"
@@ -301,13 +405,14 @@ export function StemSplitter({
                 <span style={{ fontSize: "0.72rem", color: BANK_COLORS[editingBank], fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>
                   {STEM_LABELS[editingBank]} · trim to sample
                 </span>
-                <span style={{ fontSize: "0.68rem", color: "rgba(255,255,255,0.35)" }}>drag handles · ▶ plays trimmed region</span>
+                <span style={{ fontSize: "0.68rem", color: "rgba(255,255,255,0.35)" }}>drag handles · play previews trimmed region</span>
               </div>
               <TrimWave
                 waveform={stems[editingBank]?.waveform ?? sampleWaveform}
                 trimStart={sampleTrimStart}
                 trimEnd={sampleTrimEnd}
                 color={BANK_COLORS[editingBank]}
+                playPosition={playing[editingBank] ? playPositions[editingBank] : undefined}
                 onChange={next => send({
                   type: "setSampleTrim",
                   start: next.start ?? sampleTrimStart,

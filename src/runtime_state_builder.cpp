@@ -175,6 +175,7 @@ WebRuntimeState make_web_state(
     const std::vector<float> &spec_samples, float signals_volume,
     const std::string &stem_split_state, const std::string &stem_split_error,
     float stem_split_progress, const std::string &stem_split_detail,
+    const std::vector<std::string> &stem_split_log,
     const std::string &stems_folder) {
   std::vector<WebCaptureDevice> capture_devices{};
 
@@ -313,6 +314,7 @@ WebRuntimeState make_web_state(
               .stem_split_error = stem_split_error,
               .stem_split_progress = stem_split_progress,
               .stem_split_detail = stem_split_detail,
+              .stem_split_log = stem_split_log,
               .stems = [&] {
                 std::vector<WebStemSlot> slots{};
                 const auto n = audio_sampler.loaded_stem_count();

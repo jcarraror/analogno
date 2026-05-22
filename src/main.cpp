@@ -391,6 +391,7 @@ void run_event_loop(Gamepad &gamepad,
   std::string stem_split_error{};
   float stem_split_progress{};
   std::string stem_split_detail{};
+  std::vector<std::string> stem_split_log{};
   std::string stems_folder = [] {
     const auto *home = std::getenv("HOME");
     return std::string{home ? home : "/tmp"} + "/.local/share/analogno/stems";
@@ -982,6 +983,7 @@ void run_event_loop(Gamepad &gamepad,
             stem_split_error.clear();
             stem_split_progress = 0.0F;
             stem_split_detail = "Queued";
+            stem_split_log.clear();
             std::cout << "[stem] splitting: " << cmd.path << '\n';
           },
           [&](const WebSocketServer::StreamPlayBank &cmd) {
@@ -1070,6 +1072,7 @@ void run_event_loop(Gamepad &gamepad,
         }
         load_stems_from_folder(stems_folder);
         stem_split_detail = "Stems ready";
+        stem_split_log = stem_splitter.log();
         stem_splitter.reset();
       }
     }
@@ -1079,6 +1082,7 @@ void run_event_loop(Gamepad &gamepad,
       stem_split_state = "error";
       stem_split_progress = stem_splitter.progress();
       stem_split_detail = stem_splitter.detail();
+      stem_split_log = stem_splitter.log();
       auto err = stem_splitter.take_error();
       stem_split_error = err.value_or("unknown error");
       std::cerr << "[stem] error: " << stem_split_error << '\n';
@@ -1089,6 +1093,7 @@ void run_event_loop(Gamepad &gamepad,
         stem_splitter.state() == analogno::StemSplitState::running) {
       stem_split_progress = stem_splitter.progress();
       stem_split_detail = stem_splitter.detail();
+      stem_split_log = stem_splitter.log();
     }
 
     if (state.button_pressed(SDL_GAMEPAD_BUTTON_TOUCHPAD) &&
@@ -1345,6 +1350,12 @@ void run_event_loop(Gamepad &gamepad,
             audio_sampler.stop_all();
           }
           constexpr auto sampler_root_for_release = 48;
+          for (const auto &note : intent.note_offs) {
+            const auto semitones = note.midi_note - sampler_root_for_release;
+            audio_sampler.release_bank(
+                asb,
+                std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+          }
           if (l2_gate) {
             for (const auto &note : intent.note_ons) {
               const auto semitones = note.midi_note - sampler_root_for_release;
@@ -1371,6 +1382,11 @@ void run_event_loop(Gamepad &gamepad,
             }
           }
         } else {
+          constexpr auto sampler_root = 48;
+          for (const auto &note : intent.note_offs) {
+            const auto semitones = note.midi_note - sampler_root;
+            audio_sampler.release(std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+          }
           if (l2_gate) {
             trigger_sampler_notes(intent, audio_sampler);
             if (!intent.note_ons.empty()) {
@@ -1523,6 +1539,7 @@ void run_event_loop(Gamepad &gamepad,
                                  stem_split_error,
                                  stem_split_progress,
                                  stem_split_detail,
+                                 stem_split_log,
                                  stems_folder));
       last_web_publish = now;
     }

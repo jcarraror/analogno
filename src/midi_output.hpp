@@ -42,6 +42,8 @@ private:
   std::array<int, 16> channel_pans_{};
 
   RtMidiOut midi_;
+  RtMidiOut midi_direct_{RtMidi::UNSPECIFIED, "Analogno Direct"};
+  bool midi_direct_open_{false};
   std::array<bool, midi_channel_count * midi_note_count> active_notes_{};
   std::array<std::optional<std::uint8_t>, midi_cc_count> last_cc_{};
   std::optional<int> last_pitch_bend_{};
@@ -50,6 +52,7 @@ private:
   void note_off(const Note &note);
   void control_change(std::uint8_t controller, std::uint8_t value);
   void pitch_bend(float normalized);
+  bool emit(const std::vector<unsigned char> &msg);
 
   static std::size_t note_index(const Note &note);
   static std::uint8_t control_value(float normalized);

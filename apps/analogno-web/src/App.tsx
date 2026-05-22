@@ -830,7 +830,7 @@ export function App() {
   const activeBankHasSample = !!(activeBankData?.hasData && !activeBankData?.isWavetable);
   const activeBankHasMicSample = activeBankHasSample && !(activeBankData?.isStream ?? false);
   const activeStem = (audio?.stems ?? [])[audio?.stems?.findIndex(s => s.isActive) ?? -1] ?? (audio?.stems ?? [])[0];
-  const showStemWaveform = !activeBankHasSample && (audio?.stems ?? []).length > 0;
+  const showStemWaveform = !activeBankHasSample && !(activeBankData?.isWavetable ?? false) && (audio?.stems ?? []).length > 0 && audio?.stemSplitState !== "done";
 
   return (
     <main className="app">
@@ -1171,7 +1171,7 @@ export function App() {
                 onClick={() => socket?.send(JSON.stringify({ type: "openStemFolderDialog" }))}
                 title={audio?.stemsFolder ?? ""}
               >
-                📂 Stems folder
+                Stems folder
               </button>
             </div>
             <StemSplitter
@@ -1179,6 +1179,7 @@ export function App() {
               stemSplitError={audio?.stemSplitError ?? ""}
               stemSplitProgress={audio?.stemSplitProgress ?? 0}
               stemSplitDetail={audio?.stemSplitDetail ?? ""}
+              stemSplitLog={audio?.stemSplitLog ?? []}
               sampleWaveform={audio?.sampleWaveform ?? []}
               sampleTrimStart={audio?.sampleTrimStart ?? 0}
               sampleTrimEnd={audio?.sampleTrimEnd ?? 1}

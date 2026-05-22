@@ -100,6 +100,7 @@ export type RuntimeState = {
     stemSplitError: string;
     stemSplitProgress: number;
     stemSplitDetail: string;
+    stemSplitLog: string[];
     stems: Array<{ name: string; frames: number; isActive: boolean; waveform: number[] }>;
     stemsFolder: string;
   };

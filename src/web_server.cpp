@@ -169,6 +169,7 @@ std::string runtime_json_string(const WebRuntimeState &state) {
               {"stemSplitError", state.audio.stem_split_error},
               {"stemSplitProgress", state.audio.stem_split_progress},
               {"stemSplitDetail", state.audio.stem_split_detail},
+              {"stemSplitLog", state.audio.stem_split_log},
               {"stemsFolder", state.audio.stems_folder},
               {"stems", [&] {
                 auto arr = Json::array();

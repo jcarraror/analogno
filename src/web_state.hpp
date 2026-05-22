@@ -105,6 +105,7 @@ struct WebAudioState final {
   std::string stem_split_error{};
   float stem_split_progress{};
   std::string stem_split_detail{};
+  std::vector<std::string> stem_split_log{};
   std::vector<WebStemSlot> stems{};
   std::string stems_folder{};
 };
