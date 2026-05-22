@@ -4,17 +4,22 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -53,6 +58,8 @@ Json sample_banks_json(const std::vector<WebSampleBank> &banks) {
         {"trimStart", bank.trim_start},
         {"trimEnd", bank.trim_end},
         {"isWavetable", bank.is_wavetable},
+        {"isStream", bank.is_stream},
+        {"waveform", bank.waveform},
     });
   }
 
@@ -158,6 +165,23 @@ std::string runtime_json_string(const WebRuntimeState &state) {
                state.audio.voice_seq_recorded_segments},
               {"voiceSeqRecordProgress", state.audio.voice_seq_record_progress},
               {"specSamples", state.audio.spec_samples},
+              {"stemSplitState", state.audio.stem_split_state},
+              {"stemSplitError", state.audio.stem_split_error},
+              {"stemSplitProgress", state.audio.stem_split_progress},
+              {"stemSplitDetail", state.audio.stem_split_detail},
+              {"stemsFolder", state.audio.stems_folder},
+              {"stems", [&] {
+                auto arr = Json::array();
+                for (const auto &s : state.audio.stems) {
+                  arr.push_back({
+                      {"name", s.name},
+                      {"frames", s.frames},
+                      {"isActive", s.is_active},
+                      {"waveform", s.waveform},
+                  });
+                }
+                return arr;
+              }()},
           },
       },
       {
@@ -249,40 +273,78 @@ public:
   std::vector<WebSocketServer::Command> commands{};
   std::mutex library_message_mutex{};
   std::optional<std::string> last_library_message{};
+  std::mutex stems_folder_mutex{};
+  std::string stems_folder{};
 };
 
 class Session final : public std::enable_shared_from_this<Session> {
 public:
   Session(tcp::socket socket, std::shared_ptr<SharedState> shared)
-      : ws_{std::move(socket)}, shared_{std::move(shared)} {}
+      : stream_{std::move(socket)}, shared_{std::move(shared)} {}
 
   void run() {
-    ws_.set_option(
-        websocket::stream_base::timeout::suggested(beast::role_type::server));
-    ws_.set_option(websocket::stream_base::decorator(
-        [](websocket::response_type &response) {
-          response.set(beast::http::field::server, "Analogno");
-        }));
-
-    ws_.async_accept(
-        beast::bind_front_handler(&Session::on_accept, shared_from_this()));
+    // https://www.boost.org/doc/libs/release/libs/beast/example/advanced/server/
+    // Read the HTTP request first — then branch on WebSocket upgrade vs plain HTTP.
+    parser_.emplace();
+    parser_->body_limit(256ULL * 1024 * 1024); // 256 MB for audio uploads
+    beast::http::async_read(
+        stream_, buffer_, *parser_,
+        beast::bind_front_handler(&Session::on_http_read, shared_from_this()));
   }
 
   void send(std::string message) {
-    net::post(ws_.get_executor(), beast::bind_front_handler(
-                                      &Session::queue_send, shared_from_this(),
-                                      std::move(message)));
+    net::post(ws_->get_executor(), beast::bind_front_handler(
+                                       &Session::queue_send, shared_from_this(),
+                                       std::move(message)));
   }
 
 private:
-  websocket::stream<tcp::socket> ws_;
+  beast::tcp_stream stream_;
   beast::flat_buffer buffer_{};
   std::shared_ptr<SharedState> shared_;
+
+  std::optional<beast::http::request_parser<beast::http::string_body>> parser_{};
+  std::optional<websocket::stream<beast::tcp_stream>> ws_{};
   std::vector<std::string> write_queue_{};
 
   void enqueue_command(WebSocketServer::Command command) {
     const auto lock = std::scoped_lock{shared_->command_mutex};
     shared_->commands.push_back(std::move(command));
+  }
+
+  void on_http_read(beast::error_code ec, std::size_t) {
+    if (ec) {
+      return;
+    }
+    auto req = parser_->release();
+    parser_.reset();
+
+    if (websocket::is_upgrade(req)) {
+      upgrade_to_ws(std::move(req));
+    } else if (req.method() == beast::http::verb::options) {
+      send_cors_preflight();
+    } else if (req.method() == beast::http::verb::post &&
+               req.target() == "/api/split-audio") {
+      handle_audio_upload(std::move(req));
+    } else if (req.method() == beast::http::verb::get &&
+               req.target().starts_with("/api/stems/")) {
+      handle_stem_request(std::move(req));
+    } else {
+      send_http_error(beast::http::status::not_found, req.version());
+    }
+  }
+
+  void upgrade_to_ws(beast::http::request<beast::http::string_body> req) {
+    ws_.emplace(std::move(stream_));
+    ws_->set_option(
+        websocket::stream_base::timeout::suggested(beast::role_type::server));
+    ws_->set_option(websocket::stream_base::decorator(
+        [](websocket::response_type &response) {
+          response.set(beast::http::field::server, "Analogno");
+        }));
+    ws_->async_accept(
+        req,
+        beast::bind_front_handler(&Session::on_accept, shared_from_this()));
   }
 
   void on_accept(beast::error_code error) {
@@ -291,16 +353,275 @@ private:
       return;
     }
 
-    do_read();
-    const auto lock = std::scoped_lock{shared_->library_message_mutex};
-    if (shared_->last_library_message.has_value()) {
-      send(*shared_->last_library_message);
+    shared_->sessions.push_back(shared_from_this());
+
+    {
+      const auto lock = std::scoped_lock{shared_->library_message_mutex};
+      if (shared_->last_library_message.has_value()) {
+        queue_send(*shared_->last_library_message);
+      }
     }
+
+    do_read();
   }
 
   void do_read() {
-    ws_.async_read(buffer_, beast::bind_front_handler(&Session::on_read,
-                                                      shared_from_this()));
+    ws_->async_read(buffer_, beast::bind_front_handler(&Session::on_read,
+                                                       shared_from_this()));
+  }
+
+  static std::string_view extension_for_content_type(std::string_view ct) {
+    if (ct.find("flac") != std::string_view::npos) return ".flac";
+    if (ct.find("ogg") != std::string_view::npos) return ".ogg";
+    if (ct.find("mp3") != std::string_view::npos ||
+        ct.find("mpeg") != std::string_view::npos) return ".mp3";
+    return ".wav";
+  }
+
+  void handle_audio_upload(beast::http::request<beast::http::string_body> req) {
+    namespace fs = std::filesystem;
+
+    const auto ct = std::string_view{req[beast::http::field::content_type]};
+    const auto ext = extension_for_content_type(ct);
+
+    const auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+    const auto tmp_path =
+        std::string{"/tmp/analogno-upload-"} + std::to_string(ts) + std::string{ext};
+
+    const auto &body = req.body();
+    std::ofstream out{tmp_path, std::ios::binary};
+    out.write(body.data(), static_cast<std::streamsize>(body.size()));
+    out.close();
+
+    const bool ok = out.good() && fs::exists(tmp_path);
+    if (ok) {
+      enqueue_command(WebSocketServer::SplitAudioFile{.path = tmp_path});
+    } else {
+      std::cerr << "[upload] failed to write " << tmp_path << '\n';
+    }
+
+    const unsigned version = req.version();
+    beast::http::response<beast::http::string_body> res{
+        ok ? beast::http::status::accepted
+           : beast::http::status::internal_server_error,
+        version};
+    res.set(beast::http::field::server, "Analogno");
+    res.set(beast::http::field::content_type, "application/json");
+    res.set(beast::http::field::access_control_allow_origin, "*");
+    res.body() = ok ? R"({"ok":true})" : R"({"ok":false})";
+    res.prepare_payload();
+
+    auto res_ptr = std::make_shared<beast::http::response<beast::http::string_body>>(
+        std::move(res));
+    beast::http::async_write(
+        stream_, *res_ptr,
+        [self = shared_from_this(), res_ptr](beast::error_code, std::size_t) {});
+  }
+
+  void send_cors_preflight() {
+    beast::http::response<beast::http::empty_body> res{
+        beast::http::status::no_content, 11};
+    res.set(beast::http::field::server, "Analogno");
+    res.set(beast::http::field::access_control_allow_origin, "*");
+    res.set(beast::http::field::access_control_allow_methods, "GET, POST, OPTIONS");
+    res.set(beast::http::field::access_control_allow_headers, "Content-Type, Range");
+    res.set(beast::http::field::access_control_max_age, "86400");
+    res.prepare_payload();
+
+    auto res_ptr = std::make_shared<beast::http::response<beast::http::empty_body>>(
+        std::move(res));
+    beast::http::async_write(
+        stream_, *res_ptr,
+        [self = shared_from_this(), res_ptr](beast::error_code, std::size_t) {});
+  }
+
+  static std::optional<std::pair<std::size_t, std::size_t>>
+  parse_byte_range(std::string_view header, std::size_t total) {
+    constexpr auto prefix = std::string_view{"bytes="};
+    if (!header.starts_with(prefix)) return std::nullopt;
+    const auto spec = header.substr(prefix.size());
+    const auto dash = spec.find('-');
+    if (dash == std::string_view::npos) return std::nullopt;
+    const auto start_sv = spec.substr(0, dash);
+    const auto end_sv = spec.substr(dash + 1);
+
+    std::size_t start = 0;
+    std::size_t end = total > 0 ? total - 1 : 0;
+
+    if (start_sv.empty()) {
+      if (end_sv.empty() || total == 0) return std::nullopt;
+      std::size_t suffix = 0;
+      for (char c : end_sv) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) return std::nullopt;
+        suffix = suffix * 10 + static_cast<std::size_t>(c - '0');
+      }
+      start = suffix >= total ? 0 : total - suffix;
+    } else {
+      for (char c : start_sv) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) return std::nullopt;
+        start = start * 10 + static_cast<std::size_t>(c - '0');
+      }
+      if (!end_sv.empty()) {
+        end = 0;
+        for (char c : end_sv) {
+          if (!std::isdigit(static_cast<unsigned char>(c))) return std::nullopt;
+          end = end * 10 + static_cast<std::size_t>(c - '0');
+        }
+      }
+    }
+
+    if (total == 0 || start >= total || start > end) return std::nullopt;
+    end = std::min(end, total - 1);
+    return std::make_pair(start, end);
+  }
+
+  std::optional<std::filesystem::path> stem_path_for_target(
+      std::string_view target) {
+    const auto prefix = std::string_view{"/api/stems/"};
+    if (!target.starts_with(prefix)) {
+      return std::nullopt;
+    }
+
+    auto name = target.substr(prefix.size());
+    if (const auto query = name.find('?'); query != std::string_view::npos) {
+      name = name.substr(0, query);
+    }
+
+    if (name == "drums.wav" || name == "bass.wav" || name == "vocals.wav" ||
+        name == "guitar.wav" || name == "piano.wav" || name == "other.wav") {
+      const auto lock = std::scoped_lock{shared_->stems_folder_mutex};
+      const auto &folder = shared_->stems_folder;
+      if (folder.empty()) return std::nullopt;
+      return std::filesystem::path{folder} / std::string{name};
+    }
+
+    return std::nullopt;
+  }
+
+  void handle_stem_request(beast::http::request<beast::http::string_body> req) {
+    const auto target = req.target();
+    const auto maybe_path =
+        stem_path_for_target(std::string_view{target.data(), target.size()});
+    const unsigned version = req.version();
+    if (!maybe_path.has_value()) {
+      send_http_error(beast::http::status::not_found, version);
+      return;
+    }
+
+    // Open the file first to get its size
+    beast::error_code open_ec;
+    beast::http::file_body::value_type file;
+    file.open(maybe_path->string().c_str(), beast::file_mode::scan, open_ec);
+    if (open_ec) {
+      send_http_error(beast::http::status::not_found, version);
+      return;
+    }
+    const auto total = file.size();
+
+    const auto range_str = std::string{req[beast::http::field::range]};
+    const auto maybe_range = range_str.empty()
+        ? std::optional<std::pair<std::size_t, std::size_t>>{}
+        : parse_byte_range(range_str, total);
+
+    // Unsatisfiable range
+    if (!range_str.empty() && !maybe_range) {
+      file.close();
+      beast::http::response<beast::http::string_body> res{
+          beast::http::status::range_not_satisfiable, version};
+      res.set(beast::http::field::server, "Analogno");
+      res.set(beast::http::field::access_control_allow_origin, "*");
+      res.set(beast::http::field::accept_ranges, "bytes");
+      res.set(beast::http::field::content_range, "bytes */" + std::to_string(total));
+      res.set(beast::http::field::connection, "close");
+      res.prepare_payload();
+      auto res_ptr = std::make_shared<beast::http::response<beast::http::string_body>>(std::move(res));
+      beast::http::async_write(stream_, *res_ptr,
+          [self = shared_from_this(), res_ptr](beast::error_code, std::size_t) {});
+      return;
+    }
+
+    const bool is_full = !maybe_range ||
+        (maybe_range->first == 0 && maybe_range->second == total - 1);
+
+    if (!is_full) {
+      file.close();
+      const auto [start, end] = *maybe_range;
+      const auto len = end - start + 1;
+
+      std::ifstream in{*maybe_path, std::ios::binary};
+      in.seekg(static_cast<std::streamoff>(start));
+      std::string data(len, '\0');
+      in.read(data.data(), static_cast<std::streamsize>(len));
+
+      beast::http::response<beast::http::string_body> res{
+          beast::http::status::partial_content, version};
+      res.set(beast::http::field::server, "Analogno");
+      res.set(beast::http::field::content_type, "audio/wav");
+      res.set(beast::http::field::access_control_allow_origin, "*");
+      res.set(beast::http::field::accept_ranges, "bytes");
+      res.set(beast::http::field::content_range,
+          "bytes " + std::to_string(start) + "-" +
+          std::to_string(end) + "/" + std::to_string(total));
+      res.set(beast::http::field::cache_control, "no-store");
+      res.set(beast::http::field::connection, "close");
+      res.body() = std::move(data);
+      res.prepare_payload();
+      auto res_ptr = std::make_shared<beast::http::response<beast::http::string_body>>(std::move(res));
+      beast::http::async_write(stream_, *res_ptr,
+          [self = shared_from_this(), res_ptr](beast::error_code ec, std::size_t) {
+            if (!ec) {
+              beast::error_code shutdown_ec;
+              self->stream_.socket().shutdown(tcp::socket::shutdown_send, shutdown_ec);
+            }
+          });
+      return;
+    }
+
+    const bool is_partial = maybe_range.has_value();
+    beast::http::response<beast::http::file_body> res{
+        is_partial ? beast::http::status::partial_content : beast::http::status::ok,
+        version};
+    res.set(beast::http::field::server, "Analogno");
+    res.set(beast::http::field::content_type, "audio/wav");
+    res.set(beast::http::field::access_control_allow_origin, "*");
+    res.set(beast::http::field::accept_ranges, "bytes");
+    res.set(beast::http::field::cache_control, "no-store");
+    res.set(beast::http::field::connection, "close");
+    if (is_partial) {
+      res.set(beast::http::field::content_range,
+          "bytes 0-" + std::to_string(total - 1) + "/" + std::to_string(total));
+    }
+    res.body() = std::move(file);
+    res.prepare_payload();
+
+    auto res_ptr =
+        std::make_shared<beast::http::response<beast::http::file_body>>(std::move(res));
+    beast::http::async_write(
+        stream_, *res_ptr,
+        [self = shared_from_this(), res_ptr](beast::error_code ec, std::size_t) {
+          if (!ec) {
+            beast::error_code shutdown_ec;
+            self->stream_.socket().shutdown(tcp::socket::shutdown_send, shutdown_ec);
+          }
+        });
+  }
+
+  void send_http_error(beast::http::status status, unsigned version) {
+    beast::http::response<beast::http::string_body> res{status, version};
+    res.set(beast::http::field::server, "Analogno");
+    res.set(beast::http::field::content_type, "text/plain");
+    res.set(beast::http::field::access_control_allow_origin, "*");
+    const auto reason = beast::http::obsolete_reason(status);
+    res.body() = std::string{reason.data(), reason.size()};
+    res.prepare_payload();
+
+    auto res_ptr = std::make_shared<beast::http::response<beast::http::string_body>>(
+        std::move(res));
+    beast::http::async_write(
+        stream_, *res_ptr,
+        [self = shared_from_this(), res_ptr](beast::error_code, std::size_t) {});
   }
 
   void on_read(beast::error_code error, std::size_t) {
@@ -350,6 +671,26 @@ private:
             enqueue_command(WebSocketServer::SaveSample{
                 .bank = static_cast<std::size_t>(bank)});
           }
+        }
+      } else if (json.value("type", "") == "stemPlay") {
+        const auto idx = json.value("idx", -1);
+        if (idx >= 0) {
+          enqueue_command(WebSocketServer::StemPlay{.idx = static_cast<std::size_t>(idx)});
+        }
+      } else if (json.value("type", "") == "stemStop") {
+        const auto idx = json.value("idx", -1);
+        if (idx >= 0) {
+          enqueue_command(WebSocketServer::StemStop{.idx = static_cast<std::size_t>(idx)});
+        }
+      } else if (json.value("type", "") == "setStemFolder") {
+        const auto path = json.value("path", std::string{});
+        if (!path.empty()) {
+          enqueue_command(WebSocketServer::SetStemFolder{.path = path});
+        }
+      } else if (json.value("type", "") == "setActiveStem") {
+        const auto idx = json.value("idx", -1);
+        if (idx >= 0) {
+          enqueue_command(WebSocketServer::SetActiveStem{.idx = static_cast<std::size_t>(idx)});
         }
       } else if (json.value("type", "") == "setPatch") {
         const auto bank = json.value("bank", 0);
@@ -539,6 +880,36 @@ private:
         const auto v = std::clamp(json.value("volume", 100), 0, 100);
         enqueue_command(WebSocketServer::SetSignalsVolume{
             .volume = static_cast<float>(v) / 100.0F});
+      } else if (json.value("type", "") == "splitAudioFile") {
+        if (json.contains("path") && json["path"].is_string()) {
+          enqueue_command(WebSocketServer::SplitAudioFile{
+              .path = json["path"].get<std::string>()});
+        }
+      } else if (json.value("type", "") == "streamPlayBank") {
+        const auto bank = json.value("bank", -1);
+        if (bank >= 0) {
+          enqueue_command(WebSocketServer::StreamPlayBank{
+              .bank = static_cast<std::size_t>(bank)});
+        }
+      } else if (json.value("type", "") == "streamStopBank") {
+        const auto bank = json.value("bank", -1);
+        if (bank >= 0) {
+          enqueue_command(WebSocketServer::StreamStopBank{
+              .bank = static_cast<std::size_t>(bank)});
+        }
+      } else if (json.value("type", "") == "openStemFolderDialog") {
+        enqueue_command(WebSocketServer::OpenStemFolderDialog{});
+      } else if (json.value("type", "") == "loadStemToBank") {
+        const auto stem_idx = json.value("stemIdx", -1);
+        const auto bank = json.value("bank", -1);
+        if (stem_idx >= 0 && bank >= 0) {
+          enqueue_command(WebSocketServer::LoadStemToBank{
+              .stem_idx = static_cast<std::size_t>(stem_idx),
+              .bank = static_cast<std::size_t>(bank),
+              .trim_start = std::clamp(json.value("trimStart", 0.0F), 0.0F, 1.0F),
+              .trim_end = std::clamp(json.value("trimEnd", 1.0F), 0.0F, 1.0F),
+          });
+        }
       }
     } catch (const std::exception &exception) {
       std::cerr << "invalid websocket JSON: " << exception.what() << '\n';
@@ -557,9 +928,9 @@ private:
   }
 
   void do_write() {
-    ws_.text(true);
+    ws_->text(true);
 
-    ws_.async_write(
+    ws_->async_write(
         net::buffer(write_queue_.front()),
         beast::bind_front_handler(&Session::on_write, shared_from_this()));
   }
@@ -609,8 +980,9 @@ private:
   void on_accept(beast::error_code error, tcp::socket socket) {
     if (!error) {
       auto session = std::make_shared<Session>(std::move(socket), shared_);
-      shared_->sessions.push_back(session);
       session->run();
+      // Sessions add themselves to shared_->sessions after WebSocket upgrade.
+      // HTTP-only sessions (file uploads) are never added.
     } else {
       std::cerr << "websocket acceptor failed: " << error.message() << '\n';
     }
@@ -684,6 +1056,11 @@ public:
     });
   }
 
+  void set_stems_folder(const std::string &path) {
+    const auto lock = std::scoped_lock{shared_->stems_folder_mutex};
+    shared_->stems_folder = path;
+  }
+
   void publish_library(const WebLibraryState &state) {
     std::string message;
     try {
@@ -731,6 +1108,10 @@ WebSocketServer::~WebSocketServer() = default;
 void WebSocketServer::start() { impl_->start(); }
 
 void WebSocketServer::stop() { impl_->stop(); }
+
+void WebSocketServer::set_stems_folder(const std::string &path) {
+  impl_->set_stems_folder(path);
+}
 
 void WebSocketServer::publish_runtime(const WebRuntimeState &state) {
   impl_->publish_runtime(state);

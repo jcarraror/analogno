@@ -171,7 +171,7 @@ MusicMapper::map_controls(const ControllerState &controller) const {
       .filter_cutoff = positive_from_axis(-controller.right_y()),
       .filter_resonance = positive_from_axis(controller.right_x()),
       .modulation = 0.0F,
-      .vibrato = std::abs(gyro_vibrato) * vibrato_amount,
+      .vibrato = vibrato_amount,
   };
 }
 

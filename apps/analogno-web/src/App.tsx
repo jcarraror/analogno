@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PianoRoll } from "./components/PianoRoll";
 import { SequencerPanel, type SeqTrackEdit } from "./components/SequencerPanel";
 import { Spectrogram } from "./components/Spectrogram";
+import { StemSplitter } from "./components/StemSplitter";
 import { useAnalognoSocket } from "./hooks/useAnalognoSocket";
 import { GM_PROGRAMS, bankLabel, bankRole, formatNumber, midiNoteName, patchName, pluralize, soundfontFormat, soundfontName } from "./lib/music";
 import type { ConnectionState, Vec3 } from "./types/runtime";
@@ -94,22 +95,22 @@ function Meter({ label, value }: { label: string; value: number }) {
   );
 }
 
-function TrimWaveform({ waveform, trimStart, trimEnd, disabled, onChange }: {
+function TrimWaveform({ waveform, trimStart, trimEnd, totalFrames, disabled, onChange }: {
   waveform: number[];
   trimStart: number;
   trimEnd: number;
+  totalFrames: number;
   disabled: boolean;
   onChange: (next: { start?: number; end?: number }) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const dragging = useRef<'start' | 'end' | null>(null);
 
-  if (waveform.length === 0) return null;
-
   const W = 1000;
-  const H = 80;
+  const H = 100;
   const n = waveform.length;
-  const hitZone = 20;
+  const hitZone = 22;
+  const totalSecs = totalFrames / 48000;
 
   function svgX(e: React.MouseEvent | MouseEvent): number {
     const svg = svgRef.current;
@@ -136,8 +137,8 @@ function TrimWaveform({ waveform, trimStart, trimEnd, disabled, onChange }: {
     e.preventDefault();
     const onMove = (me: MouseEvent) => {
       const x = svgX(me);
-      if (dragging.current === 'start') onChange({ start: Math.min(x, trimEnd - 0.01) });
-      else onChange({ end: Math.max(x, trimStart + 0.01) });
+      if (dragging.current === 'start') onChange({ start: Math.min(x, trimEnd - 0.001) });
+      else onChange({ end: Math.max(x, trimStart + 0.001) });
     };
     const onUp = () => {
       dragging.current = null;
@@ -148,31 +149,60 @@ function TrimWaveform({ waveform, trimStart, trimEnd, disabled, onChange }: {
     window.addEventListener('mouseup', onUp);
   }
 
-  const midY = H / 2;
+  const fmtSec = (frac: number) => (frac * totalSecs).toFixed(2) + 's';
+
   return (
-    <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`}
-      className={`sample-waveform-svg${disabled ? '' : ' swv-interactive'}`}
-      preserveAspectRatio="none"
-      onMouseDown={onMouseDown}>
-      {/* Excluded regions */}
-      <rect x={0} y={0} width={trimStart * W} height={H} className="swv-excluded" />
-      <rect x={trimEnd * W} y={0} width={(1 - trimEnd) * W} height={H} className="swv-excluded" />
-      {/* Bars */}
-      {waveform.map((v, i) => {
-        const x = (i / n) * W;
-        const bw = W / n;
-        const h = Math.max(1, v * H);
-        const pos = (i + 0.5) / n;
-        return (
-          <rect key={i} x={x} y={(H - h) / 2}
-            width={Math.max(0.5, bw - 0.8)} height={h}
-            className={(pos >= trimStart && pos <= trimEnd) ? 'swv-bar-on' : 'swv-bar-off'} />
-        );
-      })}
-      {/* Trim lines */}
-      <line x1={trimStart * W} y1={0} x2={trimStart * W} y2={H} className="swv-marker" />
-      <line x1={trimEnd * W} y1={0} x2={trimEnd * W} y2={H} className="swv-marker" />
-    </svg>
+    <div className="trim-waveform-wrap">
+      {waveform.length > 0 ? (
+        <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`}
+          className={`sample-waveform-svg${disabled ? '' : ' swv-interactive'}`}
+          preserveAspectRatio="none"
+          onMouseDown={onMouseDown}>
+          <rect x={0} y={0} width={trimStart * W} height={H} className="swv-excluded" />
+          <rect x={trimEnd * W} y={0} width={(1 - trimEnd) * W} height={H} className="swv-excluded" />
+          {waveform.map((v, i) => {
+            const x = (i / n) * W;
+            const bw = W / n;
+            const h = Math.max(1, v * H);
+            const pos = (i + 0.5) / n;
+            return (
+              <rect key={i} x={x} y={(H - h) / 2}
+                width={Math.max(0.5, bw - 0.8)} height={h}
+                className={(pos >= trimStart && pos <= trimEnd) ? 'swv-bar-on' : 'swv-bar-off'} />
+            );
+          })}
+          <line x1={trimStart * W} y1={0} x2={trimStart * W} y2={H} className="swv-marker" />
+          <line x1={trimEnd * W} y1={0} x2={trimEnd * W} y2={H} className="swv-marker" />
+        </svg>
+      ) : (
+        <div className="swv-loading">computing waveform…</div>
+      )}
+      <div className="trim-controls">
+        <label className="trim-field">
+          <span>Start</span>
+          <input type="number" min={0} max={99.9} step={0.1} disabled={disabled}
+            value={(trimStart * 100).toFixed(1)}
+            onChange={e => {
+              const v = Math.max(0, Math.min(99.9, Number(e.target.value))) / 100;
+              onChange({ start: Math.min(v, trimEnd - 0.001) });
+            }} />
+          <span className="trim-secs">{fmtSec(trimStart)}</span>
+        </label>
+        <label className="trim-field">
+          <span>End</span>
+          <input type="number" min={0.1} max={100} step={0.1} disabled={disabled}
+            value={(trimEnd * 100).toFixed(1)}
+            onChange={e => {
+              const v = Math.max(0.1, Math.min(100, Number(e.target.value))) / 100;
+              onChange({ end: Math.max(v, trimStart + 0.001) });
+            }} />
+          <span className="trim-secs">{fmtSec(trimEnd)}</span>
+        </label>
+        <span className="trim-dur">
+          {((trimEnd - trimStart) * totalSecs).toFixed(2)}s selected
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -796,7 +826,11 @@ export function App() {
   const activeBank = music?.midiBank ?? 0;
   const activeSeqTrack = runtime?.seq.tracks[runtime.seq.activeTrack];
   const activeSeqTrackSampleBank = activeSeqTrack?.sampleBank ?? -1;
-  const activeBankHasMicSample = (() => { const b = audio?.banks[audio?.activeBank ?? 0]; return !!(b?.hasData && !b?.isWavetable); })();
+  const activeBankData = audio?.banks[audio?.activeBank ?? 0];
+  const activeBankHasSample = !!(activeBankData?.hasData && !activeBankData?.isWavetable);
+  const activeBankHasMicSample = activeBankHasSample && !(activeBankData?.isStream ?? false);
+  const activeStem = (audio?.stems ?? [])[audio?.stems?.findIndex(s => s.isActive) ?? -1] ?? (audio?.stems ?? [])[0];
+  const showStemWaveform = !activeBankHasSample && (audio?.stems ?? []).length > 0;
 
   return (
     <main className="app">
@@ -971,7 +1005,7 @@ export function App() {
                   )}
                   <p className="patch-active-name">
                     {activeSeqTrackSampleBank >= 0
-                      ? `Active track uses sampler bank B${activeSeqTrackSampleBank + 1}; choosing a patch switches it back to MIDI`
+                      ? `Active    sampler bank B${activeSeqTrackSampleBank + 1}`
                       : (() => {
                           const hit = presets.find(p => p.bank === activeBank && p.program === activePatch);
                           return hit
@@ -1007,21 +1041,25 @@ export function App() {
                   const bank = audio?.banks[i];
                   const isActive = (audio?.activeBank ?? 0) === i;
                   const hasData = bank?.hasData ?? false;
-                  const trimmedSecs = hasData
-                    ? (((bank?.trimEnd ?? 1) - (bank?.trimStart ?? 0)) * (bank?.frames ?? 0) / 48000).toFixed(2)
+                  const isStream = bank?.isStream ?? false;
+                  const frames = bank?.frames ?? 0;
+                  const totalSecs = frames / 48000;
+                  const trimmedSecs = hasData && frames > 0
+                    ? (((bank?.trimEnd ?? 1) - (bank?.trimStart ?? 0)) * totalSecs).toFixed(1)
                     : null;
                   return (
                     <div
                       key={i}
-                      className={`bank-slot${isActive ? " bank-active" : ""}${hasData ? " bank-filled" : ""}`}
+                      className={`bank-slot${isActive ? " bank-active" : ""}${hasData ? " bank-filled" : ""}${isStream ? " bank-stream" : ""}`}
                       role="button"
                       tabIndex={0}
                       onClick={() => { if (connection === "online") setActiveBank(i); }}
                       onKeyDown={(e) => { if (e.key === "Enter" && connection === "online") setActiveBank(i); }}
                     >
                       <span className="bank-num">B{i + 1}</span>
+                      {isStream && <span className="bank-type-tag">STR</span>}
                       <span className="bank-dur">{trimmedSecs != null ? `${trimmedSecs}s` : "—"}</span>
-                      {hasData && (
+                      {hasData && !isStream && (
                         <button
                           className="bank-save-btn"
                           type="button"
@@ -1042,12 +1080,19 @@ export function App() {
               <StateLine label="Recording" value={audio?.sampleRecording ? "armed" : "idle"} />
               <StateLine
                 label="Active bank"
-                value={audio?.sampleReady
-                  ? `${((audio.sampleTrimEnd - audio.sampleTrimStart) * audio.sampleFrames / 48000).toFixed(2)}s`
-                  : "empty"}
+                value={(() => {
+                  if (!activeBankData?.hasData) return "empty";
+                  const frames = activeBankData.frames;
+                  if (frames === 0) return "loading…";
+                  const totalSecs = frames / 48000;
+                  const trimmed = ((activeBankData.trimEnd - activeBankData.trimStart) * totalSecs).toFixed(2);
+                  const total = totalSecs.toFixed(2);
+                  const tag = activeBankData.isStream ? " [stream]" : activeBankData.isWavetable ? " [osc]" : " [sample]";
+                  return `${trimmed}s / ${total}s${tag}`;
+                })()}
               />
               <div className="wavetable-macros">
-                {!activeBankHasMicSample && (
+                {!activeBankHasSample && (
                   <WavetableMacroSlider label="Morph" tone="morph"
                     value={audio?.wavetableMorph ?? 0}
                     disabled={connection !== "online"}
@@ -1075,7 +1120,30 @@ export function App() {
                   />
                 </div>
               )}
-              {!activeBankHasMicSample && (
+              {activeBankHasSample ? (
+                <div className="trim">
+                  <TrimWaveform
+                    waveform={activeBankData?.waveform ?? []}
+                    trimStart={audio?.sampleTrimStart ?? 0}
+                    trimEnd={audio?.sampleTrimEnd ?? 1}
+                    totalFrames={activeBankData?.frames ?? 0}
+                    disabled={connection !== 'online'}
+                    onChange={setSampleTrim}
+                  />
+                </div>
+              ) : showStemWaveform ? (
+                <div className="trim">
+                  <TrimWaveform
+                    waveform={activeStem?.waveform ?? []}
+                    trimStart={0}
+                    trimEnd={1}
+                    totalFrames={activeStem?.frames ?? 0}
+                    disabled={true}
+                    onChange={() => {}}
+                  />
+                  <div className="stem-waveform-label">{activeStem?.name ?? ""}</div>
+                </div>
+              ) : (
                 <div className="touchpad-sketch">
                   <span className="touchpad-sketch-label">
                     Waveform editor · touchpad draws · presets below
@@ -1091,18 +1159,33 @@ export function App() {
                   />
                 </div>
               )}
-              <div className="trim">
-                {audio?.sampleReady && activeBankHasMicSample && (
-                  <TrimWaveform
-                    waveform={audio.sampleWaveform ?? []}
-                    trimStart={audio.sampleTrimStart ?? 0}
-                    trimEnd={audio.sampleTrimEnd ?? 1}
-                    disabled={connection !== 'online'}
-                    onChange={setSampleTrim}
-                  />
-                )}
-              </div>
             </div>
+          </div>
+          <div style={{ marginTop: 14 }}>
+            <div className="stems-section-head">
+              <span>Split track into stems</span>
+              <button
+                type="button"
+                className="stems-folder-btn"
+                disabled={connection !== "online"}
+                onClick={() => socket?.send(JSON.stringify({ type: "openStemFolderDialog" }))}
+                title={audio?.stemsFolder ?? ""}
+              >
+                📂 Stems folder
+              </button>
+            </div>
+            <StemSplitter
+              stemSplitState={audio?.stemSplitState ?? "idle"}
+              stemSplitError={audio?.stemSplitError ?? ""}
+              stemSplitProgress={audio?.stemSplitProgress ?? 0}
+              stemSplitDetail={audio?.stemSplitDetail ?? ""}
+              sampleWaveform={audio?.sampleWaveform ?? []}
+              sampleTrimStart={audio?.sampleTrimStart ?? 0}
+              sampleTrimEnd={audio?.sampleTrimEnd ?? 1}
+              stems={audio?.stems ?? []}
+              activeBank={audio?.activeBank ?? 0}
+              send={msg => socket?.send(JSON.stringify(msg))}
+            />
           </div>
         </Panel>
 

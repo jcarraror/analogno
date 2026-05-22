@@ -172,7 +172,10 @@ WebRuntimeState make_web_state(
     bool blow_mode, float wavetable_morph, float wavetable_noise,
     float wavetable_unison, float blow_sensitivity, bool blow_active,
     float blow_level, const VoiceSequencerStatus &voice_seq_status,
-    const std::vector<float> &spec_samples, float signals_volume) {
+    const std::vector<float> &spec_samples, float signals_volume,
+    const std::string &stem_split_state, const std::string &stem_split_error,
+    float stem_split_progress, const std::string &stem_split_detail,
+    const std::string &stems_folder) {
   std::vector<WebCaptureDevice> capture_devices{};
 
   for (const auto &device : audio_capture.devices()) {
@@ -193,6 +196,8 @@ WebRuntimeState make_web_state(
         .trim_start = audio_sampler.bank_trim_start(i),
         .trim_end = audio_sampler.bank_trim_end(i),
         .is_wavetable = audio_sampler.bank_is_wavetable(i),
+        .is_stream = audio_sampler.bank_is_stream(i),
+        .waveform = audio_sampler.bank_waveform(i, 256U),
     });
   }
 
@@ -304,6 +309,25 @@ WebRuntimeState make_web_state(
               .voice_seq_recorded_segments = voice_seq_status.recorded_segments,
               .voice_seq_record_progress = voice_seq_status.record_progress,
               .spec_samples = spec_samples,
+              .stem_split_state = stem_split_state,
+              .stem_split_error = stem_split_error,
+              .stem_split_progress = stem_split_progress,
+              .stem_split_detail = stem_split_detail,
+              .stems = [&] {
+                std::vector<WebStemSlot> slots{};
+                const auto n = audio_sampler.loaded_stem_count();
+                slots.reserve(n);
+                for (std::size_t i = 0; i < n; ++i) {
+                  slots.push_back(WebStemSlot{
+                      .name = audio_sampler.stem_name(i),
+                      .frames = audio_sampler.stem_frame_count(i),
+                      .is_active = audio_sampler.stem_is_active(i),
+                      .waveform = audio_sampler.stem_waveform(i, 256U),
+                  });
+                }
+                return slots;
+              }(),
+              .stems_folder = stems_folder,
           },
       .seq = seq_web_state(seq),
       .piano_roll_visible = piano_roll_visible,

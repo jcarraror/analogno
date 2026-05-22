@@ -143,6 +143,34 @@ public:
   struct SetVoiceSeq final {
     VoiceSeqConfig config{};
   };
+  struct SplitAudioFile final {
+    std::string path{};
+  };
+  struct StreamPlayBank final {
+    std::size_t bank{};
+  };
+  struct StreamStopBank final {
+    std::size_t bank{};
+  };
+  struct StemPlay final {
+    std::size_t idx{};
+  };
+  struct StemStop final {
+    std::size_t idx{};
+  };
+  struct SetStemFolder final {
+    std::string path{};
+  };
+  struct SetActiveStem final {
+    std::size_t idx{};
+  };
+  struct OpenStemFolderDialog final {};
+  struct LoadStemToBank final {
+    std::size_t stem_idx{};
+    std::size_t bank{};
+    float trim_start{0.0F};
+    float trim_end{1.0F};
+  };
 
   using Command = std::variant<Panic, SetCaptureDevice, SetSampleTrim,
                                SetActiveBank, SaveSample, SetPatch,
@@ -152,7 +180,10 @@ public:
                                SetSoundfont, SetBlowMode, SetBlowSensitivity,
                                SetVoiceSeq, SetTrackVolume, SetTrackPan,
                                SetTrackVelocityScale, SetTrackSolo,
-                               SetSignalsVolume>;
+                               SetSignalsVolume, SplitAudioFile,
+                               StreamPlayBank, StreamStopBank,
+                               StemPlay, StemStop, SetStemFolder, SetActiveStem,
+                               OpenStemFolderDialog, LoadStemToBank>;
 
   explicit WebSocketServer(std::uint16_t port = 8765);
   ~WebSocketServer();
@@ -165,6 +196,7 @@ public:
 
   void start();
   void stop();
+  void set_stems_folder(const std::string &path);
   void publish_runtime(const WebRuntimeState &state);
   void publish_library(const WebLibraryState &state);
 

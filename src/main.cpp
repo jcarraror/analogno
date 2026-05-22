@@ -12,6 +12,7 @@
 #include "sdl_gamepad.hpp"
 #include "sequencer.hpp"
 #include "sf2_reader.hpp"
+#include "stem_splitter.hpp"
 #include "voice_sequencer.hpp"
 #include "web_server.hpp"
 #include "web_state.hpp"
@@ -29,6 +30,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
@@ -56,6 +58,7 @@ using analogno::MidiOutput;
 using analogno::MusicalIntent;
 using analogno::MusicMapper;
 using analogno::Note;
+using analogno::StemSplitter;
 using analogno::WebSocketServer;
 
 
@@ -258,13 +261,17 @@ void update_sampler_controls(const ContinuousControls &controls,
                              AudioSampler &sampler,
                              bool seq_playing,
                              bool l2_controls_gain,
+                             bool fixed_gain,
                              float signals_volume) {
   constexpr auto sampler_gain_boost = 1.25F;
   const auto live_gain = l2_controls_gain ? controls.expression : 1.0F;
-  const auto gain = (seq_playing ? 1.0F : live_gain) *
-                    sampler_gain_boost * signals_volume;
+  const auto gain = fixed_gain
+                        ? signals_volume
+                        : (seq_playing ? 1.0F : live_gain) *
+                              sampler_gain_boost * signals_volume;
   sampler.set_gain(gain);
-  sampler.set_pitch_controls(controls.pitch_bend, controls.vibrato);
+  sampler.set_pitch_controls(fixed_gain ? 0.0F : controls.pitch_bend,
+                             fixed_gain ? 0.0F : controls.vibrato);
 }
 
 bool sample_record_button_active(const ControllerState &controller) {
@@ -379,6 +386,17 @@ void run_event_loop(Gamepad &gamepad,
   analogno::Sequencer seq{};
   BlowController blow{};
   analogno::VoiceSequencer voice_seq{};
+  StemSplitter stem_splitter{};
+  std::string stem_split_state{"idle"};
+  std::string stem_split_error{};
+  float stem_split_progress{};
+  std::string stem_split_detail{};
+  std::string stems_folder = [] {
+    const auto *home = std::getenv("HOME");
+    return std::string{home ? home : "/tmp"} + "/.local/share/analogno/stems";
+  }();
+  bool live_sampler_gate_active = false;
+  bool previous_l2_gate = false;
   // Touchpad swipe for seq step navigation (active when a step is armed).
   struct TouchSwipe { float prev_x{0.0f}; float prev_y{0.0f}; bool active{false}; };
   TouchSwipe tp_swipe{};
@@ -430,6 +448,30 @@ void run_event_loop(Gamepad &gamepad,
   std::deque<LedFlash> led_sequence{};
   constexpr auto led_slot_ms = std::chrono::milliseconds{80};
 
+  auto load_stems_from_folder = [&](const std::string &folder) {
+    constexpr std::array<const char *, 6> labels{"drums","bass","vocals","guitar","piano","other"};
+    audio_sampler.clear_stems();
+    std::size_t found = 0;
+    for (const auto *lbl : labels) {
+      const auto wav_path = std::filesystem::path{folder} / (std::string{lbl} + ".wav");
+      if (std::filesystem::exists(wav_path)) {
+        audio_sampler.set_stem(found, lbl, wav_path.string());
+        ++found;
+        std::cout << "[stems] loaded: " << lbl << '\n';
+      }
+    }
+    return found;
+  };
+
+  web.set_stems_folder(stems_folder);
+  {
+    const auto found = load_stems_from_folder(stems_folder);
+    if (found > 0) {
+      stem_split_state = "done";
+      stem_split_progress = 1.0F;
+      stem_split_detail = "Stems ready";
+    }
+  }
 
   while (running) {
     SDL_Event event{};
@@ -591,6 +633,7 @@ void run_event_loop(Gamepad &gamepad,
             panic.note_off_all = true;
             midi.apply(panic);
             audio_sampler.stop_all();
+            audio_sampler.stream_stop_all();
             active_notes.apply(panic);
             last_intent = panic;
             for (auto &rf : ribbon) {
@@ -932,8 +975,120 @@ void run_event_loop(Gamepad &gamepad,
           },
           [&](const WebSocketServer::SetSignalsVolume &cmd) {
             signals_volume = std::clamp(cmd.volume, 0.0F, 1.0F);
+          },
+          [&](const WebSocketServer::SplitAudioFile &cmd) {
+            stem_splitter.split(cmd.path);
+            stem_split_state = "running";
+            stem_split_error.clear();
+            stem_split_progress = 0.0F;
+            stem_split_detail = "Queued";
+            std::cout << "[stem] splitting: " << cmd.path << '\n';
+          },
+          [&](const WebSocketServer::StreamPlayBank &cmd) {
+            audio_sampler.stream_play(cmd.bank);
+          },
+          [&](const WebSocketServer::StreamStopBank &cmd) {
+            audio_sampler.stream_stop(cmd.bank);
+          },
+          [&](const WebSocketServer::StemPlay &cmd) {
+            audio_sampler.stem_play(cmd.idx);
+          },
+          [&](const WebSocketServer::StemStop &cmd) {
+            audio_sampler.stem_stop(cmd.idx);
+          },
+          [&](const WebSocketServer::SetActiveStem &cmd) {
+            audio_sampler.set_active_stem(cmd.idx);
+          },
+          [&](const WebSocketServer::LoadStemToBank &cmd) {
+            constexpr std::array<const char *, 6> labels{"drums","bass","vocals","guitar","piano","other"};
+            if (cmd.stem_idx >= labels.size() || cmd.bank >= 8) return;
+            const auto path = std::filesystem::path{stems_folder} / (std::string{labels[cmd.stem_idx]} + ".wav");
+            if (!std::filesystem::exists(path)) return;
+            audio_sampler.load_stem_to_bank(cmd.bank, path.string(), cmd.trim_start, cmd.trim_end);
+            audio_sampler.set_active_bank(cmd.bank);
+            sampler_mode = true;
+            std::cout << "[stems] loaded " << labels[cmd.stem_idx] << " -> bank " << cmd.bank << '\n';
+          },
+          [&](const WebSocketServer::SetStemFolder &cmd) {
+            stems_folder = cmd.path;
+            web.set_stems_folder(stems_folder);
+            load_stems_from_folder(stems_folder);
+            std::cout << "[stems] folder changed to: " << stems_folder << '\n';
+          },
+          [&](const WebSocketServer::OpenStemFolderDialog &) {
+            const auto try_dialog = [](const char *cmd) -> std::string {
+              FILE *pipe = popen(cmd, "r");
+              if (!pipe) return {};
+              char buf[4096]{};
+              std::string result;
+              if (fgets(buf, sizeof(buf), pipe)) result = buf;
+              pclose(pipe);
+              while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
+                result.pop_back();
+              return result;
+            };
+            auto path = try_dialog("zenity --file-selection --directory --title='Select stems folder' 2>/dev/null");
+            if (path.empty())
+              path = try_dialog("kdialog --getexistingdirectory / 2>/dev/null");
+            if (!path.empty()) {
+              stems_folder = path;
+              web.set_stems_folder(stems_folder);
+              load_stems_from_folder(stems_folder);
+              std::cout << "[stems] folder changed to: " << stems_folder << '\n';
+            }
           }},
           command);
+    }
+
+    if (stem_splitter.state() == analogno::StemSplitState::done &&
+        stem_split_state == "running") {
+      stem_split_state = "done";
+      stem_split_progress = 1.0F;
+      stem_split_detail = "Copying stems";
+      auto paths = stem_splitter.take_result();
+      if (paths) {
+        constexpr std::array<const char *, 6> labels{"drums", "bass", "vocals", "guitar", "piano", "other"};
+        const std::array<const std::filesystem::path *, 6> stem_src_paths{
+            &paths->drums, &paths->bass, &paths->vocals, &paths->guitar, &paths->piano, &paths->other};
+
+        const auto web_stem_dir = std::filesystem::path{stems_folder};
+        std::error_code stem_copy_ec;
+        std::filesystem::create_directories(web_stem_dir, stem_copy_ec);
+        for (std::size_t i = 0; i < stem_src_paths.size(); ++i) {
+          const auto dest = web_stem_dir / (std::string{labels[i]} + ".wav");
+          if (!stem_copy_ec) {
+            std::error_code copy_ec;
+            std::filesystem::copy_file(
+                *stem_src_paths[i], dest,
+                std::filesystem::copy_options::overwrite_existing,
+                copy_ec);
+            if (copy_ec) {
+              std::cerr << "[stem] failed to publish " << labels[i]
+                        << " wav: " << copy_ec.message() << '\n';
+            }
+          }
+        }
+        load_stems_from_folder(stems_folder);
+        stem_split_detail = "Stems ready";
+        stem_splitter.reset();
+      }
+    }
+
+    if (stem_splitter.state() == analogno::StemSplitState::error &&
+        stem_split_state == "running") {
+      stem_split_state = "error";
+      stem_split_progress = stem_splitter.progress();
+      stem_split_detail = stem_splitter.detail();
+      auto err = stem_splitter.take_error();
+      stem_split_error = err.value_or("unknown error");
+      std::cerr << "[stem] error: " << stem_split_error << '\n';
+      stem_splitter.reset();
+    }
+
+    if (stem_split_state == "running" &&
+        stem_splitter.state() == analogno::StemSplitState::running) {
+      stem_split_progress = stem_splitter.progress();
+      stem_split_detail = stem_splitter.detail();
     }
 
     if (state.button_pressed(SDL_GAMEPAD_BUTTON_TOUCHPAD) &&
@@ -993,6 +1148,7 @@ void run_event_loop(Gamepad &gamepad,
       panic.note_off_all = true;
       midi.apply(panic);
       audio_sampler.stop_all();
+      audio_sampler.stream_stop_all();
       active_notes.apply(panic);
       last_intent = panic;
       std::cout << "sample cleared; MIDI mode restored\n";
@@ -1037,12 +1193,21 @@ void run_event_loop(Gamepad &gamepad,
     const auto l2_controls_sampler_gain =
         ((active_track_sample_bank >= 0 &&
           audio_sampler.bank_has_sample(static_cast<std::size_t>(active_track_sample_bank)) &&
-          !audio_sampler.bank_is_wavetable(static_cast<std::size_t>(active_track_sample_bank))) ||
+          !audio_sampler.bank_is_wavetable(static_cast<std::size_t>(active_track_sample_bank)) &&
+          !audio_sampler.bank_is_stream(static_cast<std::size_t>(active_track_sample_bank))) ||
          (sampler_mode && audio_sampler.has_sample() &&
-          !audio_sampler.bank_is_wavetable(active_sampler_bank)));
+          !audio_sampler.bank_is_wavetable(active_sampler_bank) &&
+          !audio_sampler.bank_is_stream(active_sampler_bank)));
     update_sampler_controls(mapper.map_controls(state), audio_sampler,
-                            seq.playing, l2_controls_sampler_gain, signals_volume);
+                            seq.playing, l2_controls_sampler_gain,
+                            false, signals_volume);
     const auto should_map = state.changed_this_frame();
+    const bool l2_gate_now = state.left_trigger() > 0.05F;
+    if (live_sampler_gate_active && previous_l2_gate && !l2_gate_now) {
+      audio_sampler.stop_all();
+      live_sampler_gate_active = false;
+    }
+    previous_l2_gate = l2_gate_now;
 
     // Live MIDI channel: follows the active sequencer track.
     const auto live_ch = [&] {
@@ -1158,42 +1323,60 @@ void run_event_loop(Gamepad &gamepad,
       for (auto &n : intent.note_ons)  n.channel = live_ch;
       for (auto &n : intent.note_offs) n.channel = live_ch;
 
-      const bool l2_gate = state.left_trigger() > 0.05F;
+      const bool l2_gate = l2_gate_now;
 
       if (active_track_sample_bank >= 0 &&
           audio_sampler.bank_has_sample(static_cast<std::size_t>(active_track_sample_bank))) {
-        if (intent.note_off_all) {
-          audio_sampler.stop_all();
-        }
-        constexpr auto sampler_root_for_release = 48;
-        for (const auto &note : intent.note_offs) {
-          const auto semitones = note.midi_note - sampler_root_for_release;
-          audio_sampler.release_bank(
-              static_cast<std::size_t>(active_track_sample_bank),
-              std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
-        }
-        if (l2_gate) {
-          for (const auto &note : intent.note_ons) {
-            const auto semitones = note.midi_note - sampler_root_for_release;
-            audio_sampler.trigger_bank(
-                static_cast<std::size_t>(active_track_sample_bank),
-                std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+        const auto asb = static_cast<std::size_t>(active_track_sample_bank);
+        if (audio_sampler.bank_is_stream(asb)) {
+          if (intent.note_off_all) {
+            audio_sampler.stream_stop(asb);
+          }
+          if (l2_gate && !intent.note_ons.empty()) {
+            if (audio_sampler.stream_is_active(asb)) {
+              audio_sampler.stream_stop(asb);
+            } else {
+              audio_sampler.stream_play(asb);
+            }
+            live_sampler_gate_active = true;
+          }
+        } else {
+          if (intent.note_off_all) {
+            audio_sampler.stop_all();
+          }
+          constexpr auto sampler_root_for_release = 48;
+          if (l2_gate) {
+            for (const auto &note : intent.note_ons) {
+              const auto semitones = note.midi_note - sampler_root_for_release;
+              audio_sampler.trigger_bank(
+                  asb,
+                  std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+              live_sampler_gate_active = true;
+            }
           }
         }
         active_notes.apply(intent);
       } else if (sampler_mode && audio_sampler.has_sample()) {
         if (intent.note_off_all) {
           audio_sampler.stop_all();
+          audio_sampler.stream_stop_all();
         }
-        // Release sampler voices on note-off (important for looping wavetables).
-        constexpr auto sampler_root_for_release = 48;
-        for (const auto &note : intent.note_offs) {
-          const auto semitones = note.midi_note - sampler_root_for_release;
-          audio_sampler.release(
-              std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
-        }
-        if (l2_gate) {
-          trigger_sampler_notes(intent, audio_sampler);
+        if (audio_sampler.bank_is_stream(active_sampler_bank)) {
+          for (const auto &note : intent.note_ons) {
+            (void)note;
+            if (audio_sampler.stream_is_active(active_sampler_bank)) {
+              audio_sampler.stream_stop(active_sampler_bank);
+            } else {
+              audio_sampler.stream_play(active_sampler_bank);
+            }
+          }
+        } else {
+          if (l2_gate) {
+            trigger_sampler_notes(intent, audio_sampler);
+            if (!intent.note_ons.empty()) {
+              live_sampler_gate_active = true;
+            }
+          }
         }
         active_notes.apply(intent);
       } else if (blow.enabled) {
@@ -1335,7 +1518,12 @@ void run_event_loop(Gamepad &gamepad,
                                             0.0F, 2.0F),
                                  voice_seq.status(),
                                  spec_data,
-                                 signals_volume));
+                                 signals_volume,
+                                 stem_split_state,
+                                 stem_split_error,
+                                 stem_split_progress,
+                                 stem_split_detail,
+                                 stems_folder));
       last_web_publish = now;
     }
 
@@ -1351,6 +1539,7 @@ void run_event_loop(Gamepad &gamepad,
 
     std::this_thread::sleep_for(std::chrono::milliseconds{1});
   }
+
 }
 
 } // namespace

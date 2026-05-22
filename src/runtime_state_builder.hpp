@@ -35,7 +35,10 @@ build_wavetable(const std::vector<std::pair<float, float>> &points,
     bool blow_mode, float wavetable_morph, float wavetable_noise,
     float wavetable_unison, float blow_sensitivity, bool blow_active,
     float blow_level, const VoiceSequencerStatus &voice_seq_status,
-    const std::vector<float> &spec_samples, float signals_volume);
+    const std::vector<float> &spec_samples, float signals_volume,
+    const std::string &stem_split_state, const std::string &stem_split_error,
+    float stem_split_progress, const std::string &stem_split_detail,
+    const std::string &stems_folder);
 
 [[nodiscard]] WebLibraryState make_web_library_state(
     const std::vector<WebPreset> &presets,

@@ -66,6 +66,8 @@ export type RuntimeState = {
       trimStart: number;
       trimEnd: number;
       isWavetable: boolean;
+      isStream: boolean;
+      waveform: number[];
     }>;
     activeBank: number;
     touchpadSketch: number[];
@@ -94,6 +96,12 @@ export type RuntimeState = {
     voiceSeqRecordProgress: number;
     specSamples: number[];
     signalsVolume: number;
+    stemSplitState: "idle" | "running" | "done" | "error";
+    stemSplitError: string;
+    stemSplitProgress: number;
+    stemSplitDetail: string;
+    stems: Array<{ name: string; frames: number; isActive: boolean; waveform: number[] }>;
+    stemsFolder: string;
   };
   seq: {
     playing: boolean;

@@ -39,12 +39,21 @@ struct WebControllerState final {
   WebVec3 accel{};
 };
 
+struct WebStemSlot final {
+  std::string name{};
+  std::uint64_t frames{};
+  bool is_active{};
+  std::vector<float> waveform{};
+};
+
 struct WebSampleBank final {
   bool has_sample{};
   std::uint32_t frames{};
   float trim_start{};
   float trim_end{1.0F};
   bool is_wavetable{};
+  bool is_stream{};
+  std::vector<float> waveform{};
 };
 
 struct WebAudioState final {
@@ -92,6 +101,12 @@ struct WebAudioState final {
   std::size_t voice_seq_recorded_segments{};
   float voice_seq_record_progress{};
   std::vector<float> spec_samples{}; // 2048 raw audio samples for frontend FFT
+  std::string stem_split_state{"idle"}; // idle | running | done | error
+  std::string stem_split_error{};
+  float stem_split_progress{};
+  std::string stem_split_detail{};
+  std::vector<WebStemSlot> stems{};
+  std::string stems_folder{};
 };
 
 struct WebMusicState final {

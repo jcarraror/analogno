@@ -1781,6 +1781,234 @@ h1 {
   cursor: default;
 }
 
+.stems-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #9ca7ff;
+}
+
+.stems-folder-btn {
+  padding: 3px 10px;
+  border: 1px solid rgba(156, 167, 255, 0.3);
+  border-radius: 5px;
+  background: rgba(156, 167, 255, 0.08);
+  color: #9ca7ff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.stems-folder-btn:hover {
+  background: rgba(156, 167, 255, 0.18);
+}
+
+.stems-folder-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.stem-players {
+  margin-top: 14px;
+  border: 1px solid rgba(156, 167, 255, 0.2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(156, 167, 255, 0.04);
+}
+
+.stem-players-head {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #9ca7ff;
+  margin-bottom: 8px;
+}
+
+.stem-players-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.stem-player-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.stem-player-row:hover {
+  background: rgba(156, 167, 255, 0.08);
+}
+
+.stem-player-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #c8d0e8;
+  letter-spacing: 0.03em;
+  flex: 1;
+  text-transform: capitalize;
+}
+
+.stem-player-dur {
+  font-size: 0.72rem;
+  color: #667;
+  min-width: 38px;
+  text-align: right;
+}
+
+.stem-player-btn {
+  padding: 2px 10px;
+  border: 1px solid rgba(156, 167, 255, 0.35);
+  border-radius: 5px;
+  background: rgba(156, 167, 255, 0.1);
+  color: #9ca7ff;
+  font-size: 0.75rem;
+  cursor: pointer;
+  min-width: 32px;
+  text-align: center;
+}
+
+.stem-player-btn:hover {
+  background: rgba(156, 167, 255, 0.22);
+}
+
+.stem-player-btn-stop {
+  border-color: rgba(255, 100, 100, 0.5);
+  background: rgba(255, 80, 80, 0.12);
+  color: #ff8080;
+}
+
+.stem-player-btn-stop:hover {
+  background: rgba(255, 80, 80, 0.22);
+}
+
+.stem-player-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.stem-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stem-folder-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #667;
+  white-space: nowrap;
+}
+
+.stem-folder-input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  color: #9ca7ff;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+  font-family: monospace;
+}
+
+.bank-type-tag {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #9ca7ff;
+  background: rgba(156, 167, 255, 0.12);
+  border: 1px solid rgba(156, 167, 255, 0.3);
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin-top: 1px;
+}
+
+.bank-slot.bank-stream .bank-dur {
+  color: #9ca7ff;
+}
+
+.trim-waveform-wrap {
+  display: grid;
+  gap: 10px;
+}
+
+.swv-loading {
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d1117;
+  border-radius: 4px;
+  color: #556;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+}
+
+.trim-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.trim-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: #8e97aa;
+}
+
+.trim-field input[type="number"] {
+  width: 68px;
+  padding: 3px 6px;
+  background: #0d1117;
+  border: 1px solid #2a3347;
+  border-radius: 4px;
+  color: #e8e2d3;
+  font-size: 0.8rem;
+  text-align: right;
+}
+
+.trim-field input[type="number"]:focus {
+  outline: none;
+  border-color: #fbbf24;
+}
+
+.trim-secs {
+  color: #fbbf24;
+  font-variant-numeric: tabular-nums;
+  min-width: 52px;
+}
+
+.trim-dur {
+  font-size: 0.8rem;
+  color: #8dffa8;
+  font-weight: 600;
+  margin-left: auto;
+}
+
+.stem-waveform-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: capitalize;
+  color: #9ca7ff;
+  text-align: center;
+  margin-top: 4px;
+}
+
 /* ── Synth patches ────────────────────────────────────── */
 
 /* ── Synth patches ────────────────────────────────────── */

@@ -82,6 +82,8 @@ add_executable(analogno
   src/audio_sampler.cpp
   src/voice_sequencer.cpp
   src/miniaudio_impl.cpp
+  src/stem_splitter.cpp
+  src/wav_stream.cpp
 )
 
 target_include_directories(analogno

@@ -1,13 +1,15 @@
 #pragma once
 
+#include "wav_stream.hpp"
+
 #include <miniaudio.h>
 
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -16,6 +18,7 @@ namespace analogno {
 class AudioSampler final {
 public:
   static constexpr auto bank_count = std::size_t{8};
+  static constexpr auto stem_count = std::size_t{8};
 
   AudioSampler();
   ~AudioSampler();
@@ -28,10 +31,37 @@ public:
 
   // Operates on the active bank
   void set_sample(std::vector<float> sample);
+  void set_sample(std::vector<float> sample, std::uint32_t channel_count,
+                  std::uint32_t src_rate = 48000U);
+  void set_sample_for_bank(std::size_t bank, std::vector<float> sample,
+                           std::uint32_t channel_count, std::uint32_t src_rate = 48000U);
+  void set_bank_file(std::size_t bank, std::string path);
+
+  // Raw stream playback
+  void stream_play(std::size_t bank);
+  void stream_stop(std::size_t bank);
+  void stream_stop_all();
+  [[nodiscard]] bool stream_is_active(std::size_t bank) const;
+
+  // Stem player
+  void set_stem(std::size_t idx, std::string name, std::string path);
+  void clear_stems();
+  void stem_play(std::size_t idx);
+  void stem_stop(std::size_t idx);
+  void stem_stop_all();
+  [[nodiscard]] bool stem_is_active(std::size_t idx) const;
+  [[nodiscard]] std::string stem_name(std::size_t idx) const;
+  [[nodiscard]] std::uint64_t stem_frame_count(std::size_t idx) const;
+  [[nodiscard]] std::vector<float> stem_waveform(std::size_t idx, std::size_t n_points = 256) const;
+  [[nodiscard]] std::size_t loaded_stem_count() const;
+  void set_active_stem(std::size_t idx);
+  [[nodiscard]] std::size_t active_stem() const;
   void set_wavetable(std::vector<float> samples,
                      std::vector<float> morph_samples = {}); // looping single-cycle wavetable
   void clear_sample();
   void set_trim(float start, float end);
+  void set_bank_trim(std::size_t bank, float start, float end);
+  void load_stem_to_bank(std::size_t bank, const std::string &path, float trim_start, float trim_end);
   void set_gain(float gain);
   void set_wavetable_controls(float morph, float noise, float unison);
   void set_pitch_controls(float pitch_bend, float vibrato_depth);
@@ -59,6 +89,9 @@ public:
   [[nodiscard]] float bank_trim_start(std::size_t bank) const;
   [[nodiscard]] float bank_trim_end(std::size_t bank) const;
   [[nodiscard]] bool bank_is_wavetable(std::size_t bank) const;
+  [[nodiscard]] bool bank_is_long_sample(std::size_t bank) const;
+  [[nodiscard]] bool bank_is_stream(std::size_t bank) const;
+  [[nodiscard]] std::vector<float> bank_waveform(std::size_t bank, std::size_t n_points = 256) const;
 
   [[nodiscard]] bool is_running() const;
 
@@ -67,8 +100,8 @@ private:
     bool active{};
     bool releasing{};
     bool loop{};       // wavetable: loops between trim_start and trim_end
-    float position{};
-    float rate{1.0F};
+    double position{};
+    double rate{1.0};
     float envelope{};
     std::size_t bank_index{};
     std::uint32_t noise_state{1};
@@ -85,9 +118,24 @@ private:
   std::array<std::shared_ptr<const std::vector<float>>, bank_count> bank_morph_banks_{};
   std::array<Voice, voice_count> voices_{};
   mutable std::mutex mutex_{};
+  std::array<std::atomic<std::uint32_t>, bank_count> bank_channels_{};
   std::array<std::atomic<float>, bank_count> bank_trim_start_{};
   std::array<std::atomic<float>, bank_count> bank_trim_end_{};
   std::array<std::atomic<bool>, bank_count> bank_is_wavetable_{};
+  std::array<std::atomic<bool>, bank_count> bank_stream_{};
+  std::array<std::atomic<bool>, bank_count> bank_file_backed_{};
+  std::array<std::atomic<std::uint64_t>, bank_count> bank_file_frames_{};
+  std::array<std::string, bank_count> bank_wav_file_{};
+  std::array<std::unique_ptr<WavStream>, bank_count> wav_streams_{};
+  std::array<std::shared_ptr<const std::vector<float>>, bank_count> bank_cached_waveforms_{};
+  std::array<std::unique_ptr<WavStream>, stem_count> stem_streams_{};
+  std::array<std::string, stem_count> stem_paths_{};
+  std::array<std::string, stem_count> stem_names_{};
+  std::array<std::atomic<std::uint64_t>, stem_count> stem_frames_{};
+  std::array<std::shared_ptr<const std::vector<float>>, stem_count> stem_cached_waveforms_{};
+  std::atomic<std::size_t> loaded_stem_count_{};
+  std::atomic<std::size_t> active_stem_{};
+  std::array<std::atomic<float>, bank_count> bank_playback_rate_{};
   std::atomic<std::size_t> active_bank_{};
   std::atomic<float> gain_{};
   std::atomic<float> wavetable_morph_{};
@@ -96,6 +144,8 @@ private:
   std::atomic<float> pitch_bend_{};
   std::atomic<float> vibrato_depth_{};
   std::atomic<std::uint64_t> voice_generation_{};
+  std::array<std::atomic<std::uint64_t>, bank_count> stream_pos_{};
+  std::array<std::atomic<bool>, bank_count> stream_active_{};
   float vibrato_phase_{};
   bool device_ready_{};
   bool running_{};
@@ -104,10 +154,19 @@ private:
   static void playback_callback(ma_device *device, void *output,
                                 const void *input, ma_uint32 frame_count);
   [[nodiscard]] static float sample_at(const std::vector<float> &sample,
-                                       float position);
+                                       double position,
+                                       std::uint32_t channel_count,
+                                       std::uint32_t channel);
   [[nodiscard]] static float sample_at_loop(const std::vector<float> &sample,
-                                            float position);
+                                            double position,
+                                            std::uint32_t channel_count,
+                                            std::uint32_t channel);
   [[nodiscard]] static float noise_sample(std::uint32_t &state);
+  [[nodiscard]] static std::vector<float>
+  compute_waveform(const std::vector<float> &samples, std::uint32_t channel_count,
+                   std::size_t n_points);
+  [[nodiscard]] static std::vector<float>
+  compute_file_waveform(const std::string &path, std::size_t n_points);
 };
 
 } // namespace analogno
