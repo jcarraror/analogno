@@ -64,7 +64,7 @@ public:
   VoiceSequencer &operator=(VoiceSequencer &&) = delete;
 
   void configure(const VoiceSequencerConfig &config);
-  void start_recording(float bpm, int step_count, int step_division);
+  void start_recording(int step_count);
   [[nodiscard]] std::optional<VoiceSequencerPattern> stop_recording(
       int root_midi_note, int octave_offset, ScaleKind scale);
   [[nodiscard]] const VoiceSequencerConfig &config() const;
@@ -93,9 +93,7 @@ private:
   std::size_t rejected_notes_{};
   std::uint64_t frame_cursor_{};
   bool recording_{};
-  float record_bpm_{120.0F};
   int record_step_count_{16};
-  int record_step_division_{16};
   std::uint64_t record_start_frame_{};
   std::vector<Segment> segments_{};
   std::vector<TimedEvent> events_{};

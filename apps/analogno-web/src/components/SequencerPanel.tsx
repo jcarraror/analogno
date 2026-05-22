@@ -1,4 +1,4 @@
-import React, { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import React, { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ConnectionState, RuntimeState, SoundfontPreset } from "../types/runtime";
 import { midiNoteName, patchName } from "../lib/music";
 
@@ -67,6 +67,12 @@ export function SequencerPanel({
   const [stepDivision, setStepDivision] = useState(16);
   const [stepPage, setStepPage] = useState(0);
   const [showMixer, setShowMixer] = useState(false);
+  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const [lastAnchor, setLastAnchor] = useState<{ ti: number; si: number } | null>(null);
+  const mouseDownRef = useRef<{ ti: number; si: number; dragged: boolean } | null>(null);
+  const tracksRef = useRef<SeqTrackEdit[]>([]);
+  const selectionRef = useRef<Set<string>>(new Set());
+  const localDirtyRef = useRef(false);
   const [tracks, setTracks] = useState<SeqTrackEdit[]>(
     Array.from({ length: 4 }, (_, ti) => ({
       midiChannel: ti, midiProgram: 0, midiBank: 0, sampleBank: -1, loopLength: 32,
@@ -95,7 +101,7 @@ export function SequencerPanel({
     const nextSignature = seqTracksSignature(seq.tracks);
     if (nextSignature !== tracksSignature.current) {
       tracksSignature.current = nextSignature;
-      setTracks(seq.tracks.map(t => ({
+      const newTracks = seq.tracks.map(t => ({
         midiChannel: t.midiChannel,
         midiProgram: t.midiProgram,
         midiBank: t.midiBank,
@@ -107,7 +113,13 @@ export function SequencerPanel({
         muted: t.muted,
         solo: t.solo ?? false,
         steps: resizeSeqSteps(t.steps.map(s => ({ ...s })), nextStepCount),
-      })));
+      }));
+      const localSignature = seqTracksSignature(tracksRef.current);
+      if (!localDirtyRef.current || nextSignature === localSignature) {
+        tracksRef.current = newTracks;
+        localDirtyRef.current = false;
+        setTracks(newTracks);
+      }
     }
   }, [seq]);
 
@@ -142,16 +154,156 @@ export function SequencerPanel({
     }
   }, [playing, activeTrackCurrentStep]);
 
+  const stateRef = useRef({ tracks, bpm, gate, stepCount, stepDivision, selection, activeTrack, selectedStep, onChange, onSelectStep });
+  stateRef.current = { tracks, bpm, gate, stepCount, stepDivision, selection, activeTrack, selectedStep, onChange, onSelectStep };
+  selectionRef.current = selection;
+
+  function applyTracks(next: SeqTrackEdit[]) {
+    tracksRef.current = next;
+    localDirtyRef.current = true;
+    setTracks(next);
+  }
+
+  function applySelection(next: Set<string>) {
+    selectionRef.current = next;
+    setSelection(next);
+  }
+
+  function deleteSelectionFn() {
+    const sel = selectionRef.current;
+    const t = tracksRef.current;
+    const { bpm: b, gate: g, stepCount: sc, stepDivision: sd, activeTrack: at, selectedStep: ss, onChange: oc, onSelectStep: osp } = stateRef.current;
+    if (sel.size === 0) return;
+    const next = t.map((track, ti) => ({
+      ...track,
+      steps: track.steps.map((s, si) => sel.has(`${ti}-${si}`) ? emptySeqStep() : s),
+    }));
+    applyTracks(next);
+    applySelection(new Set());
+    if (ss >= 0 && sel.has(`${at}-${ss}`)) osp(-1);
+    oc({ bpm: b, gatePct: g, stepCount: sc, stepDivision: sd, tracks: next });
+  }
+
+  function shiftSelectionFn(delta: number) {
+    const sel = selectionRef.current;
+    const t = tracksRef.current;
+    const { bpm: b, gate: g, stepCount: sc, stepDivision: sd, onChange: oc } = stateRef.current;
+    if (sel.size === 0) return;
+    const byTrack = new Map<number, number[]>();
+    for (const key of sel) {
+      const [ti, si] = key.split('-').map(Number);
+      if (!byTrack.has(ti)) byTrack.set(ti, []);
+      byTrack.get(ti)!.push(si);
+    }
+    const newSel = new Set<string>();
+    const next = t.map((track, ti) => {
+      const selected = byTrack.get(ti);
+      if (!selected) return track;
+      const loopLen = track.loopLength;
+      if (selected.some(si => si + delta < 0 || si + delta >= loopLen)) {
+        for (const si of selected) newSel.add(`${ti}-${si}`);
+        return track;
+      }
+      const steps = track.steps.map(s => ({ ...s }));
+      const selSet = new Set(selected);
+      if (selected.some(si => !selSet.has(si + delta) && steps[si + delta]?.active)) {
+        for (const si of selected) newSel.add(`${ti}-${si}`);
+        return track;
+      }
+      const savedSel = new Map(selected.map(si => [si, { ...steps[si] }]));
+      for (const si of selected) steps[si] = { ...steps[si], active: false };
+      for (const si of selected) { steps[si + delta] = savedSel.get(si)!; newSel.add(`${ti}-${si + delta}`); }
+      return { ...track, steps };
+    });
+    applyTracks(next);
+    applySelection(newSel);
+    if (newSel.size > 0) {
+      const stepIndices = [...newSel].map(k => Number(k.split('-')[1]));
+      const leadStep = delta > 0 ? Math.max(...stepIndices) : Math.min(...stepIndices);
+      setStepPage(Math.floor(leadStep / SEQ_PAGE_SIZE));
+    }
+    oc({ bpm: b, gatePct: g, stepCount: sc, stepDivision: sd, tracks: next });
+  }
+
+  const deleteRef = useRef(deleteSelectionFn);
+  deleteRef.current = deleteSelectionFn;
+  const shiftRef = useRef(shiftSelectionFn);
+  shiftRef.current = shiftSelectionFn;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (selectionRef.current.size === 0) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (e.key === 'Escape') { setSelection(new Set()); }
+      else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteRef.current(); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); shiftRef.current(-1); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); shiftRef.current(1); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  useEffect(() => {
+    const stop = () => { mouseDownRef.current = null; };
+    window.addEventListener('mouseup', stop);
+    return () => window.removeEventListener('mouseup', stop);
+  }, []);
+
   function send(t: SeqTrackEdit[], b: number, g: number, count = stepCount, division = stepDivision) {
     onChange({ bpm: b, gatePct: g, stepCount: count, stepDivision: division, tracks: t });
   }
 
-  function handleStepClick(trackIdx: number, stepIdx: number) {
+  function handleStepClick(trackIdx: number, stepIdx: number, e: React.MouseEvent) {
+    if (mouseDownRef.current?.dragged) { mouseDownRef.current = null; return; }
+    mouseDownRef.current = null;
     if (stepIdx >= (tracks[trackIdx]?.loopLength ?? stepCount)) return;
-    if (activeTrack !== trackIdx) {
-      onSelectTrack(trackIdx);
+
+    if (e.shiftKey && lastAnchor) {
+      const lo = Math.min(lastAnchor.si, stepIdx);
+      const hi = Math.max(lastAnchor.si, stepIdx);
+      const loY = Math.min(lastAnchor.ti, trackIdx);
+      const hiY = Math.max(lastAnchor.ti, trackIdx);
+      setSelection(prev => {
+        const next = new Set(prev);
+        for (let row = loY; row <= hiY; row++) {
+          const loopLen = tracks[row]?.loopLength ?? stepCount;
+          for (let col = lo; col <= hi && col < loopLen; col++) next.add(`${row}-${col}`);
+        }
+        return next;
+      });
+      return;
     }
+
+    setSelection(new Set());
+    setLastAnchor({ ti: trackIdx, si: stepIdx });
+    if (activeTrack !== trackIdx) onSelectTrack(trackIdx);
     onSelectStep(activeTrack === trackIdx && selectedStep === stepIdx ? -1 : stepIdx);
+  }
+
+  function handleStepMouseDown(trackIdx: number, stepIdx: number) {
+    if (disabled || stepIdx >= (tracks[trackIdx]?.loopLength ?? stepCount)) return;
+    mouseDownRef.current = { ti: trackIdx, si: stepIdx, dragged: false };
+  }
+
+  function handleStepMouseEnter(trackIdx: number, stepIdx: number, e: React.MouseEvent) {
+    const down = mouseDownRef.current;
+    if (!down || e.buttons !== 1 || disabled) return;
+    const loopLen = tracks[trackIdx]?.loopLength ?? stepCount;
+    if (stepIdx >= loopLen) return;
+    if (!down.dragged) {
+      down.dragged = true;
+      setLastAnchor({ ti: down.ti, si: down.si });
+    }
+    const loX = Math.min(down.si, stepIdx);
+    const hiX = Math.max(down.si, stepIdx);
+    const loY = Math.min(down.ti, trackIdx);
+    const hiY = Math.max(down.ti, trackIdx);
+    const next = new Set<string>();
+    for (let row = loY; row <= hiY; row++) {
+      const rowLoop = tracks[row]?.loopLength ?? stepCount;
+      for (let col = loX; col <= hiX && col < rowLoop; col++) next.add(`${row}-${col}`);
+    }
+    setSelection(next);
   }
 
   function clearArmedStep() {
@@ -189,7 +341,7 @@ export function SequencerPanel({
     setGate(nextGate); send(tracks, bpm, nextGate);
   }
 
-  function handleGatePointer(e: ReactPointerEvent<HTMLSpanElement>) {
+  function handleGatePointer(e: React.PointerEvent<HTMLSpanElement>) {
     if (disabled) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const nextGate = ((e.clientX - rect.left) / rect.width) * 100;
@@ -399,7 +551,7 @@ export function SequencerPanel({
         </div>
       )}
 
-      <div className="seq-tracks">
+      <div className={`seq-tracks${selection.size > 0 ? ' has-selection' : ''}`}>
         {visibleTracks.map((track, ti) => (
           <div key={ti}
             className={`seq-track-row${tracks[ti].muted ? ' seq-track-muted' : ''}${ti === activeTrack ? ' seq-row-active' : ''}`}
@@ -466,6 +618,7 @@ export function SequencerPanel({
                 const si = visibleStart + offset;
                 const label = step.midiNote >= 0 ? midiNoteName(step.midiNote) : '';
                 const isArmed = ti === activeTrack && selectedStep === si;
+                const isSelected = selection.has(`${ti}-${si}`);
                 const loopLength = Math.max(1, Math.min(stepCount, track.loopLength));
                 const isInLoop = si < loopLength;
                 const isCurrent = isInLoop && playheadStep >= 0 && playheadStep % loopLength === si && playing;
@@ -479,10 +632,13 @@ export function SequencerPanel({
                       step.active ? 'seq-step-on' : '',
                       isCurrent ? 'seq-step-current' : '',
                       isArmed ? 'seq-step-armed' : '',
+                      isSelected ? 'seq-step-selected' : '',
                     ].filter(Boolean).join(' ')}
                     disabled={disabled || !isInLoop}
-                    onClick={() => handleStepClick(ti, si)}
+                    onClick={(e) => handleStepClick(ti, si, e)}
                     onContextMenu={(e) => { if (!disabled) handleStepRightClick(ti, si, e); }}
+                    onMouseDown={() => handleStepMouseDown(ti, si)}
+                    onMouseEnter={(e) => handleStepMouseEnter(ti, si, e)}
                     title={`T${ti + 1} step ${si + 1}${isInLoop ? '' : ' out of loop'}${step.active ? ` \u2014 ${step.tie ? 'tie' : (label || 'scale')} vel ${step.velocity}` : ''}`}>
                     <span className="seq-step-num">{si + 1}</span>
                     {step.active && (

@@ -915,6 +915,7 @@ h1 {
   opacity: 0.3;
 }
 
+
 .seq-add-track-btn {
   align-self: flex-start;
   margin-top: 6px;
@@ -1170,7 +1171,19 @@ h1 {
 
 .seq-step-selected {
   outline: 2px solid #f59e0b;
-  outline-offset: 2px;
+  outline-offset: 1px;
+  animation: seq-select-pulse 1.6s ease-in-out infinite;
+}
+@keyframes seq-select-pulse {
+  0%, 100% { outline-color: #f59e0b; outline-offset: 1px; }
+  50% { outline-color: rgba(245, 158, 11, 0.45); outline-offset: 3px; }
+}
+.seq-tracks.has-selection .seq-step-btn:not(.seq-step-selected):not(.seq-step-current) {
+  opacity: 0.38;
+  transition: opacity 0.12s;
+}
+.seq-tracks.has-selection .seq-step-btn.seq-step-selected {
+  opacity: 1;
 }
 
 .seq-step-btn:disabled { opacity: 0.4; cursor: default; }

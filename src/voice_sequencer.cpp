@@ -21,8 +21,7 @@ constexpr auto buffer_size = unsigned{2048};
 constexpr auto hop_size = unsigned{512};
 constexpr auto max_drain_frames = std::size_t{8192};
 constexpr auto min_segment_frames = std::uint64_t{2400};
-constexpr auto event_fuse_frames = std::uint64_t{3600};
-constexpr auto default_input_latency_frames = std::int64_t{2048};
+constexpr auto event_fuse_frames = std::uint64_t{1200};
 
 #if ANALOGNO_HAVE_AUBIO
 struct ScaleMatch final {
@@ -70,7 +69,7 @@ ScaleMatch nearest_scale_match(int midi_note, int root_midi_note,
 
 float silence_db_for_sensitivity(float sensitivity) {
   const auto clamped = std::clamp(sensitivity, 0.0F, 1.0F);
-  return -30.0F - clamped * 55.0F;
+  return -22.0F - clamped * 38.0F;
 }
 
 float onset_threshold_for_sensitivity(float sensitivity) {
@@ -130,7 +129,7 @@ struct VoiceSequencer::Impl final {
                 output != nullptr && onset_output != nullptr;
 
     if (available) {
-      aubio_notes_set_minioi_ms(notes, 35.0F);
+      aubio_notes_set_minioi_ms(notes, 20.0F);
       aubio_notes_set_release_drop(notes, 12.0F);
       aubio_notes_set_silence(notes, silence_db_for_sensitivity(0.65F));
       aubio_onset_set_minioi_ms(onset, 22.0F);
@@ -206,18 +205,6 @@ void VoiceSequencer::configure(const VoiceSequencerConfig &config) {
 const VoiceSequencerConfig &VoiceSequencer::config() const { return config_; }
 
 VoiceSequencerStatus VoiceSequencer::status() const {
-  const auto record_frames =
-      static_cast<float>(sample_rate) * 60.0F * 4.0F /
-      std::max(record_bpm_, 1.0F) /
-      static_cast<float>(std::max(record_step_division_, 1)) *
-      static_cast<float>(record_step_count_);
-  const auto progress =
-      recording_ && record_frames > 0.0F
-          ? std::clamp(static_cast<float>(frame_cursor_ - record_start_frame_) /
-                           record_frames,
-                       0.0F, 1.0F)
-          : 0.0F;
-
   return VoiceSequencerStatus{
       .compiled =
 #if ANALOGNO_HAVE_AUBIO
@@ -237,15 +224,12 @@ VoiceSequencerStatus VoiceSequencer::status() const {
       .accepted_notes = accepted_notes_,
       .rejected_notes = rejected_notes_,
       .recorded_segments = events_.size(),
-      .record_progress = progress,
+      .record_progress = 0.0F,
   };
 }
 
-void VoiceSequencer::start_recording(float bpm, int step_count,
-                                     int step_division) {
-  record_bpm_ = std::clamp(bpm, 20.0F, 300.0F);
+void VoiceSequencer::start_recording(int step_count) {
   record_step_count_ = std::clamp(step_count, 1, 64);
-  record_step_division_ = std::clamp(step_division, 8, 32);
   record_start_frame_ = frame_cursor_;
   segments_.clear();
   events_.clear();
@@ -275,26 +259,23 @@ std::optional<VoiceSequencerPattern> VoiceSequencer::stop_recording(
   pattern.steps.resize(static_cast<std::size_t>(record_step_count_));
   pattern.segment_count = segments_.size() + events_.size();
 
+  const auto record_end_frame = frame_cursor_;
+  const auto actual_frames =
+      static_cast<double>(record_end_frame - record_start_frame_);
   const auto frames_per_step =
-      static_cast<double>(sample_rate) * 60.0 * 4.0 /
-      static_cast<double>(record_bpm_) /
-      static_cast<double>(record_step_division_);
-  const auto record_end_frame =
-      record_start_frame_ + static_cast<std::uint64_t>(
-                                std::llround(frames_per_step *
-                                             static_cast<double>(
-                                                 record_step_count_)));
+      actual_frames > 0.0
+          ? actual_frames / static_cast<double>(record_step_count_)
+          : 1.0;
 
   auto quantize_step = [&](std::uint64_t frame) {
     const auto offset_frames =
         static_cast<std::int64_t>(std::llround(
             static_cast<double>(config_.timing_offset_ms) *
             static_cast<double>(sample_rate) / 1000.0));
-    const auto correction = default_input_latency_frames - offset_frames;
     const auto adjusted =
-        static_cast<std::int64_t>(frame) > correction
+        static_cast<std::int64_t>(frame) > offset_frames
             ? static_cast<std::uint64_t>(
-                  static_cast<std::int64_t>(frame) - correction)
+                  static_cast<std::int64_t>(frame) - offset_frames)
             : std::uint64_t{0};
     const auto clamped = std::clamp(adjusted, record_start_frame_,
                                     record_end_frame);
@@ -420,7 +401,10 @@ void VoiceSequencer::process(AudioCapture &capture, int root_midi_note,
     const auto rms =
         std::sqrt(sum / static_cast<float>(hop_size));
     const auto hit_velocity =
-        std::clamp(25 + static_cast<int>(std::lround(rms * 950.0F)), 1, 127);
+        std::clamp(static_cast<int>(std::lround(
+                       std::sqrt(std::min(rms / 0.08F, 1.0F)) * 115.0F)) +
+                       12,
+                   1, 127);
 
     aubio_notes_do(impl_->notes, impl_->input, impl_->output);
     aubio_onset_do(impl_->onset, impl_->input, impl_->onset_output);

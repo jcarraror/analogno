@@ -1235,7 +1235,7 @@ export function App() {
                   recording: !(audio?.voiceSeqRecording ?? false),
                 })}
               >
-                {(audio?.voiceSeqRecording ?? false) ? "Stop record" : "Record 1 bar"}
+                {(audio?.voiceSeqRecording ?? false) ? "Stop" : "Record"}
               </button>
               <span className="voice-seq-status">
                 {(audio?.voiceSeqAvailable ?? false)
@@ -1309,10 +1309,7 @@ export function App() {
               <span>accepted {audio?.voiceSeqAcceptedNotes ?? 0}</span>
               <span>rejected {audio?.voiceSeqRejectedNotes ?? 0}</span>
               <span>segments {audio?.voiceSeqRecordedSegments ?? 0}</span>
-              {(audio?.voiceSeqRecording ?? false) && (
-                <span>{Math.round((audio?.voiceSeqRecordProgress ?? 0) * 100)}%</span>
-              )}
-              <span>{(audio?.voiceSeqCompiled ?? false) ? "compiled aubio" : "no aubio in binary"}</span>
+<span>{(audio?.voiceSeqCompiled ?? false) ? "compiled aubio" : "no aubio in binary"}</span>
               <span>armed step {((runtime?.seq.selectedStep ?? -1) >= 0) ? (runtime!.seq.selectedStep + 1) : "none"}</span>
             </div>
           </div>

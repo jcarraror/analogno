@@ -928,8 +928,7 @@ void run_event_loop(Gamepad &gamepad,
 
             const auto was_recording = voice_seq.status().recording;
             if (cfg.recording && !was_recording) {
-              voice_seq.start_recording(seq.bpm, analogno::active_track_loop_length(seq),
-                                        seq.step_division);
+              voice_seq.start_recording(analogno::active_track_loop_length(seq));
             } else if (!cfg.recording && was_recording) {
               if (auto pattern = voice_seq.stop_recording(last_intent.root_midi_note,
                                                           last_intent.octave_offset,
@@ -1229,16 +1228,6 @@ void run_event_loop(Gamepad &gamepad,
     } else {
       voice_seq.process(audio_capture, last_intent.root_midi_note,
                         last_intent.octave_offset, last_intent.scale);
-      const auto voice_status = voice_seq.status();
-      if (voice_status.recording && voice_status.record_progress >= 1.0F) {
-        if (auto pattern = voice_seq.stop_recording(last_intent.root_midi_note,
-                                                    last_intent.octave_offset,
-                                                    last_intent.scale)) {
-          analogno::apply_voice_pattern_to_seq(seq, *pattern);
-          std::cout << "voice seq: quantized " << pattern->segment_count
-                    << " segments to track " << seq.active_track << '\n';
-        }
-      }
     }
 
     if (blow.enabled && !(sampler_mode && audio_sampler.has_sample())) {
@@ -1329,6 +1318,7 @@ void run_event_loop(Gamepad &gamepad,
       for (auto &n : intent.note_offs) n.channel = live_ch;
 
       const bool l2_gate = l2_gate_now;
+      const auto raw_note_ons = intent.note_ons;
 
       if (active_track_sample_bank >= 0 &&
           audio_sampler.bank_has_sample(static_cast<std::size_t>(active_track_sample_bank))) {
@@ -1420,8 +1410,8 @@ void run_event_loop(Gamepad &gamepad,
 
       // Arm recording: write any note-on into the selected (armed) step,
       // then auto-advance the arm to the next step.
-      if (seq.selected_step >= 0 && !intent.note_ons.empty()) {
-        const auto &n = intent.note_ons[0];
+      if (seq.selected_step >= 0 && !raw_note_ons.empty()) {
+        const auto &n = raw_note_ons[0];
         const auto tidx = static_cast<std::size_t>(seq.active_track);
         const auto sidx = static_cast<std::size_t>(seq.selected_step);
         seq.tracks[tidx].steps[sidx] = {true, false, n.degree, n.velocity,

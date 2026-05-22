@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -385,18 +384,19 @@ private:
     const auto ct = std::string_view{req[beast::http::field::content_type]};
     const auto ext = extension_for_content_type(ct);
 
-    const auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::system_clock::now().time_since_epoch())
-                        .count();
-    const auto tmp_path =
-        std::string{"/tmp/analogno-upload-"} + std::to_string(ts) + std::string{ext};
+    std::string tmp_path = std::string{"/tmp/analogno-upload-XXXXXX"} + std::string{ext};
+    const int fd = mkstemps(tmp_path.data(), static_cast<int>(ext.size()));
+    if (fd == -1) {
+      std::cerr << "[upload] failed to create temp file\n";
+      return;
+    }
 
     const auto &body = req.body();
-    std::ofstream out{tmp_path, std::ios::binary};
-    out.write(body.data(), static_cast<std::streamsize>(body.size()));
-    out.close();
+    const bool wrote =
+        write(fd, body.data(), body.size()) == static_cast<ssize_t>(body.size());
+    close(fd);
 
-    const bool ok = out.good() && fs::exists(tmp_path);
+    const bool ok = wrote;
     if (ok) {
       enqueue_command(WebSocketServer::SplitAudioFile{.path = tmp_path});
     } else {
