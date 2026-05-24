@@ -32,6 +32,9 @@ public:
   void set_live_channel(int ch);
   void set_channel_volume(int ch, int volume);
   void set_channel_pan(int ch, int pan);
+  void send_clock();
+  void send_start();
+  void send_stop();
 
 private:
   static constexpr auto midi_channel_count = std::size_t{16};

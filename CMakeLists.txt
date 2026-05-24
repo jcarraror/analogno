@@ -77,8 +77,10 @@ add_executable(analogno
   src/midi_output.cpp
   src/runtime_state_builder.cpp
   src/sequencer.cpp
+  src/session.cpp
   src/web_server.cpp
   src/audio_capture.cpp
+  src/audio_downloader.cpp
   src/audio_sampler.cpp
   src/voice_sequencer.cpp
   src/miniaudio_impl.cpp

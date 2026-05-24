@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
-type StemSplitState = "idle" | "uploading" | "running" | "done" | "error";
+type StemSplitState = "idle" | "uploading" | "downloading" | "running" | "done" | "error";
 
 interface Props {
   stemSplitState: string;
@@ -108,6 +108,8 @@ export function StemSplitter({
   const [localState, setLocalState] = useState<StemSplitState>("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
+  const [inputMode, setInputMode] = useState<"upload" | "download">("upload");
   const [playing, setPlaying] = useState<boolean[]>(Array(6).fill(false));
   const [playPositions, setPlayPositions] = useState<number[]>(Array(6).fill(0));
   const [editingBank, setEditingBank] = useState<number | null>(null);
@@ -210,6 +212,13 @@ export function StemSplitter({
     localState === "uploading" ? "uploading"
     : (stemSplitState as StemSplitState) ?? "idle";
 
+  const submitUrl = useCallback(() => {
+    const url = urlInput.trim();
+    if (!url) return;
+    send({ type: "downloadAudio", source: url });
+    setUrlInput("");
+  }, [urlInput, send]);
+
   const upload = useCallback(async (file: File) => {
     setLocalState("uploading");
     setUploadProgress(0);
@@ -238,23 +247,24 @@ export function StemSplitter({
     if (files?.length) upload(files[0]);
   }, [upload]);
 
-  const busy = state === "uploading" || state === "running";
+  const busy = state === "uploading" || state === "downloading" || state === "running";
   const progress =
     state === "uploading" ? Math.max(0.02, uploadProgress)
-    : state === "running" ? Math.max(0.02, Math.min(0.98, stemSplitProgress || 0))
+    : state === "downloading" || state === "running" ? Math.max(0.02, Math.min(0.98, stemSplitProgress || 0))
     : state === "done" ? 1 : 0;
   const progressPct = Math.round(progress * 100);
 
   const statusLabel = (() => {
     if (state === "uploading") return "Uploading…";
+    if (state === "downloading") return stemSplitDetail || "Downloading…";
     if (state === "running") return stemSplitDetail || "Separating stems…";
     if (state === "done") return "Stems loaded into banks 1–6";
-    if (state === "error") return stemSplitError || "Upload failed";
+    if (state === "error") return stemSplitError || "Failed";
     return null;
   })();
 
   const hasLog = stemSplitLog.length > 0;
-  const showLogBtn = (state === "running" || state === "done" || state === "error") && hasLog;
+  const showLogBtn = (state === "running" || state === "downloading" || state === "done" || state === "error") && hasLog;
   const borderColor = dragging ? "#9ca7ff"
     : state === "done" ? "rgba(134,239,172,0.4)"
     : state === "error" ? "rgba(251,113,133,0.4)"
@@ -262,74 +272,138 @@ export function StemSplitter({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <div
-        onDragOver={e => { e.preventDefault(); setDragging(true); }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={e => { e.preventDefault(); setDragging(false); onFiles(e.dataTransfer.files); }}
-        onClick={() => !busy && fileRef.current?.click()}
-        style={{
-          border: `1.5px dashed ${borderColor}`,
-          borderRadius: 12, padding: "14px 16px",
-          cursor: busy ? "default" : "pointer",
-          background: dragging ? "rgba(156,167,255,0.07)" : "rgba(255,255,255,0.03)",
-          transition: "border-color 0.15s, background 0.15s",
-          fontSize: "0.82rem",
-        }}
-      >
-        {state === "idle" || state === "uploading" ? (
-          state === "uploading" ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: "rgba(255,255,255,0.6)" }}>
-                <span>Uploading…</span>
-                <span style={{ fontVariantNumeric: "tabular-nums" }}>{progressPct}%</span>
-              </div>
-              <div style={{ height: 5, borderRadius: 999, overflow: "hidden", background: "rgba(255,255,255,0.1)" }}>
-                <div style={{ width: `${progressPct}%`, height: "100%", borderRadius: 999, background: "#9ca7ff", transition: "width 0.2s ease" }} />
-              </div>
-            </div>
-          ) : (
-            <span style={{ color: "rgba(255,255,255,0.5)" }}>Drop audio file or click to browse</span>
-          )
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <span style={{
-                fontSize: "0.78rem", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                color: state === "done" ? "#86efac" : state === "error" ? "#fb7185" : "rgba(255,255,255,0.7)",
-              }}>
-                {statusLabel}
-              </span>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                {showLogBtn && (
-                  <button
-                    type="button"
-                    onClick={e => { e.stopPropagation(); setShowLog(v => !v); }}
-                    style={{
-                      padding: "2px 8px", borderRadius: 4, fontSize: "0.65rem",
-                      background: showLog ? "rgba(156,167,255,0.18)" : "rgba(255,255,255,0.07)",
-                      border: `1px solid ${showLog ? "rgba(156,167,255,0.5)" : "rgba(255,255,255,0.15)"}`,
-                      color: showLog ? "#9ca7ff" : "rgba(255,255,255,0.4)",
-                      cursor: "pointer",
-                    }}
-                  >log</button>
+
+      {/* Mode toggle — hidden while processing */}
+      {!busy && (
+        <div style={{ display: "flex", gap: 5 }}>
+          {(["upload", "download"] as const).map(mode => {
+            const active = inputMode === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setInputMode(mode)}
+                title={mode === "upload" ? "Upload audio file" : "Download from URL"}
+                style={{
+                  display: "flex", alignItems: "center", gap: 5,
+                  padding: "5px 10px", borderRadius: 7, fontSize: "0.72rem",
+                  background: active ? "rgba(156,167,255,0.14)" : "rgba(255,255,255,0.04)",
+                  border: `1.5px solid ${active ? "rgba(156,167,255,0.45)" : "rgba(255,255,255,0.1)"}`,
+                  color: active ? "#9ca7ff" : "rgba(255,255,255,0.38)",
+                  cursor: "pointer",
+                }}
+              >
+                {mode === "upload" ? (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
+                ) : (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                  </svg>
                 )}
-                {state === "running" && (
-                  <span style={{ fontVariantNumeric: "tabular-nums", fontSize: "0.75rem", color: "rgba(255,255,255,0.45)" }}>{progressPct}%</span>
-                )}
-              </div>
+                {mode}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Status bar — shown when busy or after done/error */}
+      {statusLabel && (
+        <div style={{
+          border: `1.5px solid ${borderColor}`,
+          borderRadius: 10, padding: "8px 12px", fontSize: "0.78rem",
+          display: "flex", flexDirection: "column", gap: 6,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <span style={{
+              minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              color: state === "done" ? "#86efac" : state === "error" ? "#fb7185" : "rgba(255,255,255,0.7)",
+            }}>
+              {statusLabel}
+            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+              {showLogBtn && (
+                <button
+                  type="button"
+                  onClick={() => setShowLog(v => !v)}
+                  style={{
+                    padding: "2px 8px", borderRadius: 4, fontSize: "0.65rem",
+                    background: showLog ? "rgba(156,167,255,0.18)" : "rgba(255,255,255,0.07)",
+                    border: `1px solid ${showLog ? "rgba(156,167,255,0.5)" : "rgba(255,255,255,0.15)"}`,
+                    color: showLog ? "#9ca7ff" : "rgba(255,255,255,0.4)",
+                    cursor: "pointer",
+                  }}
+                >log</button>
+              )}
+              {busy && (
+                <span style={{ fontVariantNumeric: "tabular-nums", fontSize: "0.75rem", color: "rgba(255,255,255,0.45)" }}>{progressPct}%</span>
+              )}
             </div>
-            {state === "running" && (
-              <div style={{ height: 5, borderRadius: 999, overflow: "hidden", background: "rgba(255,255,255,0.1)" }}>
-                <div style={{ width: `${progressPct}%`, height: "100%", borderRadius: 999, background: "#9ca7ff", transition: "width 0.25s ease" }} />
-              </div>
-            )}
-            {(state === "done" || state === "error") && (
-              <span style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.3)" }}>drop a new file to replace</span>
-            )}
           </div>
-        )}
-        <input ref={fileRef} type="file" accept="audio/*" style={{ display: "none" }} onChange={e => onFiles(e.target.files)} />
-      </div>
+          {busy && (
+            <div style={{ height: 4, borderRadius: 999, overflow: "hidden", background: "rgba(255,255,255,0.1)" }}>
+              <div style={{ width: `${progressPct}%`, height: "100%", borderRadius: 999, background: "#9ca7ff", transition: "width 0.25s ease" }} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Input area — always visible when not busy */}
+      {!busy && (inputMode === "upload" ? (
+        <div
+          onDragOver={e => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={e => { e.preventDefault(); setDragging(false); onFiles(e.dataTransfer.files); }}
+          onClick={() => fileRef.current?.click()}
+          style={{
+            border: "1.5px dashed rgba(255,255,255,0.18)",
+            borderRadius: 12, padding: "18px 16px",
+            cursor: "pointer",
+            background: dragging ? "rgba(156,167,255,0.07)" : "rgba(255,255,255,0.03)",
+            transition: "border-color 0.15s, background 0.15s",
+            fontSize: "0.82rem", textAlign: "center",
+            color: "rgba(255,255,255,0.4)",
+          }}
+        >
+          Drop audio file or click to browse
+        </div>
+      ) : (
+        <form
+          onSubmit={e => { e.preventDefault(); submitUrl(); }}
+          style={{ display: "flex", gap: 6 }}
+        >
+          <input
+            type="url"
+            placeholder="https://youtube.com/watch?v=…"
+            value={urlInput}
+            onChange={e => setUrlInput(e.target.value)}
+            style={{
+              flex: 1, padding: "8px 10px", borderRadius: 7,
+              background: "rgba(255,255,255,0.05)",
+              border: "1.5px solid rgba(255,255,255,0.14)",
+              color: "rgba(255,255,255,0.85)", fontSize: "0.8rem",
+              outline: "none",
+            }}
+          />
+          <button
+            type="submit"
+            disabled={!urlInput.trim()}
+            style={{
+              padding: "8px 14px", borderRadius: 7, fontSize: "0.78rem",
+              background: urlInput.trim() ? "rgba(156,167,255,0.18)" : "rgba(255,255,255,0.05)",
+              border: `1.5px solid ${urlInput.trim() ? "rgba(156,167,255,0.5)" : "rgba(255,255,255,0.1)"}`,
+              color: urlInput.trim() ? "#9ca7ff" : "rgba(255,255,255,0.25)",
+              cursor: urlInput.trim() ? "pointer" : "default",
+            }}
+          >↓</button>
+        </form>
+      ))}
+      <input ref={fileRef} type="file" accept="audio/*" style={{ display: "none" }} onChange={e => onFiles(e.target.files)} />
 
       {showLog && hasLog && (
         <div

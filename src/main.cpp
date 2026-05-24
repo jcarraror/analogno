@@ -1,5 +1,6 @@
 #include "active_note_tracker.hpp"
 #include "audio_capture.hpp"
+#include "audio_downloader.hpp"
 #include "audio_sampler.hpp"
 #include "blow_controller.hpp"
 #include "controller_state.hpp"
@@ -11,6 +12,7 @@
 #include "sdl_check.hpp"
 #include "sdl_gamepad.hpp"
 #include "sequencer.hpp"
+#include "session.hpp"
 #include "sf2_reader.hpp"
 #include "stem_splitter.hpp"
 #include "voice_sequencer.hpp"
@@ -27,8 +29,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -46,6 +50,10 @@
 
 namespace {
 
+std::atomic<bool> g_quit{false};
+void handle_signal(int) { g_quit = true; }
+
+
 using analogno::ActiveNoteTracker;
 using analogno::AudioCapture;
 using analogno::AudioSampler;
@@ -58,6 +66,7 @@ using analogno::MidiOutput;
 using analogno::MusicalIntent;
 using analogno::MusicMapper;
 using analogno::Note;
+using analogno::AudioDownloader;
 using analogno::StemSplitter;
 using analogno::WebSocketServer;
 
@@ -384,9 +393,28 @@ void run_event_loop(Gamepad &gamepad,
 
   analogno::WaveformSketch sketch{};
   analogno::Sequencer seq{};
+  const auto session_path = analogno::default_session_path();
+  if (auto loaded = analogno::load_session(session_path)) {
+    seq = std::move(*loaded);
+    for (const auto &track : seq.tracks) {
+      const auto ch = analogno::effective_midi_channel(track);
+      midi.set_channel_volume(ch, track.volume);
+      midi.set_channel_pan(ch, track.pan);
+      if (track.sample_bank < 0) {
+        midi.program_change(track.midi_program, track.midi_bank, ch);
+      }
+    }
+    const auto at = static_cast<std::size_t>(seq.active_track);
+    if (at < seq.tracks.size()) {
+      current_midi_bank = seq.tracks[at].midi_bank;
+      current_midi_program = seq.tracks[at].midi_program;
+    }
+  }
+  auto clock_next = std::chrono::steady_clock::time_point{};
   BlowController blow{};
   analogno::VoiceSequencer voice_seq{};
   StemSplitter stem_splitter{};
+  AudioDownloader audio_downloader{};
   std::string stem_split_state{"idle"};
   std::string stem_split_error{};
   float stem_split_progress{};
@@ -476,6 +504,10 @@ void run_event_loop(Gamepad &gamepad,
 
   while (running) {
     SDL_Event event{};
+
+    if (g_quit) {
+      running = false;
+    }
 
     while (SDL_PollEvent(&event)) {
       running = handle_event(event, state);
@@ -752,6 +784,8 @@ void run_event_loop(Gamepad &gamepad,
             seq.current_step = -1;
             seq.playhead_step = -1;
             seq.step_start = std::chrono::steady_clock::now();
+            midi.send_start();
+            clock_next = std::chrono::steady_clock::now();
             std::cout << "seq: play\n";
           },
           [&](const WebSocketServer::SeqStop &) {
@@ -762,6 +796,8 @@ void run_event_loop(Gamepad &gamepad,
                 track.pending_note_off.reset();
               }
             }
+            midi.send_stop();
+            analogno::save_session(seq, session_path);
             std::cout << "seq: stop\n";
           },
           [&](const WebSocketServer::SeqAddTrack &) {
@@ -861,6 +897,7 @@ void run_event_loop(Gamepad &gamepad,
                 midi.set_channel_pan(ch, seq.tracks[t].pan);
               }
             }
+            analogno::save_session(seq, session_path);
           },
           [&](const WebSocketServer::SetSoundfont &cmd) {
             sampler_mode = false;
@@ -1016,6 +1053,25 @@ void run_event_loop(Gamepad &gamepad,
             load_stems_from_folder(stems_folder);
             std::cout << "[stems] folder changed to: " << stems_folder << '\n';
           },
+          [&](const WebSocketServer::DownloadAudio &cmd) {
+            if (analogno::AudioDownloader::is_url(cmd.source)) {
+              audio_downloader.download(cmd.source);
+              stem_split_state = "downloading";
+              stem_split_error.clear();
+              stem_split_progress = 0.0F;
+              stem_split_detail = "Starting download";
+              stem_split_log.clear();
+              std::cout << "[dl] downloading: " << cmd.source << '\n';
+            } else {
+              stem_splitter.split(cmd.source);
+              stem_split_state = "running";
+              stem_split_error.clear();
+              stem_split_progress = 0.0F;
+              stem_split_detail = "Queued";
+              stem_split_log.clear();
+              std::cout << "[dl] local file: " << cmd.source << '\n';
+            }
+          },
           [&](const WebSocketServer::OpenStemFolderDialog &) {
             const auto try_dialog = [](const char *cmd) -> std::string {
               FILE *pipe = popen(cmd, "r");
@@ -1095,6 +1151,39 @@ void run_event_loop(Gamepad &gamepad,
       stem_split_log = stem_splitter.log();
     }
 
+    if (audio_downloader.state() == analogno::DownloadState::done &&
+        stem_split_state == "downloading") {
+      auto path = audio_downloader.take_result();
+      audio_downloader.reset();
+      if (path) {
+        stem_splitter.split(*path);
+        stem_split_state = "running";
+        stem_split_progress = 0.0F;
+        stem_split_detail = "Queued";
+        stem_split_log.clear();
+        std::cout << "[dl] handing off to demucs: " << path->string() << '\n';
+      }
+    }
+
+    if (audio_downloader.state() == analogno::DownloadState::error &&
+        stem_split_state == "downloading") {
+      auto err = audio_downloader.take_error();
+      stem_split_error = err.value_or("unknown error");
+      stem_split_state = "error";
+      stem_split_progress = audio_downloader.progress();
+      stem_split_detail = audio_downloader.detail();
+      stem_split_log = audio_downloader.log();
+      std::cerr << "[dl] error: " << stem_split_error << '\n';
+      audio_downloader.reset();
+    }
+
+    if (stem_split_state == "downloading" &&
+        audio_downloader.state() == analogno::DownloadState::running) {
+      stem_split_progress = audio_downloader.progress();
+      stem_split_detail = audio_downloader.detail();
+      stem_split_log = audio_downloader.log();
+    }
+
     if (state.button_pressed(SDL_GAMEPAD_BUTTON_TOUCHPAD) &&
         !state.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) {
       const auto next = (audio_sampler.active_bank() + 1) % AudioSampler::bank_count;
@@ -1134,12 +1223,16 @@ void run_event_loop(Gamepad &gamepad,
             track.pending_note_off.reset();
           }
         }
+        midi.send_stop();
+        analogno::save_session(seq, session_path);
         std::cout << "seq: stop (controller)\n";
       } else {
         seq.playing = true;
         seq.current_step = -1;
         seq.playhead_step = -1;
         seq.step_start = std::chrono::steady_clock::now();
+        midi.send_start();
+        clock_next = std::chrono::steady_clock::now();
         std::cout << "seq: play (controller)\n";
       }
     }
@@ -1472,6 +1565,17 @@ void run_event_loop(Gamepad &gamepad,
       }
     }
 
+    if (seq.playing) {
+      const auto clock_now = std::chrono::steady_clock::now();
+      using clock_ms = std::chrono::duration<double, std::milli>;
+      const clock_ms tick_ms{60000.0 / (static_cast<double>(seq.bpm) * 24.0)};
+      while (clock_now >= clock_next) {
+        midi.send_clock();
+        clock_next +=
+            std::chrono::round<std::chrono::steady_clock::duration>(tick_ms);
+      }
+    }
+
     {
       const auto led_now = std::chrono::steady_clock::now();
       if (led_now < drum_pad.flash_until) {
@@ -1547,11 +1651,17 @@ void run_event_loop(Gamepad &gamepad,
     std::this_thread::sleep_for(std::chrono::milliseconds{1});
   }
 
+  if (seq.playing) {
+    midi.send_stop();
+  }
+  analogno::save_session(seq, session_path);
 }
 
 } // namespace
 
 int main(int argc, char *argv[]) {
+  std::signal(SIGINT, handle_signal);
+  std::signal(SIGTERM, handle_signal);
   std::string soundfont_path{};
   for (int i = 1; i < argc; ++i) {
     if (std::string_view{argv[i]} == "--soundfont" && i + 1 < argc) {

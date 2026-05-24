@@ -428,6 +428,10 @@ bool MidiOutput::valid_midi_note(int note) {
   return note >= 0 && note < static_cast<int>(midi_note_count);
 }
 
+void MidiOutput::send_clock() { emit({0xF8}); }
+void MidiOutput::send_start() { emit({0xFA}); }
+void MidiOutput::send_stop()  { emit({0xFC}); }
+
 bool MidiOutput::send(RtMidiOut &midi, std::vector<unsigned char> message) {
   static auto last_print = std::chrono::steady_clock::time_point{};
   static int suppressed = 0;

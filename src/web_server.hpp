@@ -171,6 +171,9 @@ public:
     float trim_start{0.0F};
     float trim_end{1.0F};
   };
+  struct DownloadAudio final {
+    std::string source{};
+  };
 
   using Command = std::variant<Panic, SetCaptureDevice, SetSampleTrim,
                                SetActiveBank, SaveSample, SetPatch,
@@ -183,7 +186,8 @@ public:
                                SetSignalsVolume, SplitAudioFile,
                                StreamPlayBank, StreamStopBank,
                                StemPlay, StemStop, SetStemFolder, SetActiveStem,
-                               OpenStemFolderDialog, LoadStemToBank>;
+                               OpenStemFolderDialog, LoadStemToBank,
+                               DownloadAudio>;
 
   explicit WebSocketServer(std::uint16_t port = 8765);
   ~WebSocketServer();
@@ -197,7 +201,7 @@ public:
   void start();
   void stop();
   void set_stems_folder(const std::string &path);
-  void publish_runtime(const WebRuntimeState &state);
+  void publish_runtime(WebRuntimeState state);
   void publish_library(const WebLibraryState &state);
 
   [[nodiscard]] std::vector<Command> consume_commands();

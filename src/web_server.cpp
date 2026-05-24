@@ -898,6 +898,11 @@ private:
           enqueue_command(WebSocketServer::StreamStopBank{
               .bank = static_cast<std::size_t>(bank)});
         }
+      } else if (json.value("type", "") == "downloadAudio") {
+        if (json.contains("source") && json["source"].is_string()) {
+          enqueue_command(WebSocketServer::DownloadAudio{
+              .source = json["source"].get<std::string>()});
+        }
       } else if (json.value("type", "") == "openStemFolderDialog") {
         enqueue_command(WebSocketServer::OpenStemFolderDialog{});
       } else if (json.value("type", "") == "loadStemToBank") {
@@ -1034,20 +1039,24 @@ public:
     }
   }
 
-  void publish_runtime(const WebRuntimeState &state) {
-    std::string message;
-    try {
-      message = runtime_json_string(state);
-    } catch (const std::exception &e) {
-      std::cerr << "[ws] publish serialization error: " << e.what() << '\n';
-      return;
-    }
-
-    net::post(shared_->ioc, [shared = shared_, message] {
+  void publish_runtime(WebRuntimeState state) {
+    net::post(shared_->ioc, [shared = shared_, state = std::move(state)]() mutable {
       shared->sessions.erase(
           std::remove_if(shared->sessions.begin(), shared->sessions.end(),
-                         [](const auto &session) { return session.expired(); }),
+                         [](const auto &s) { return s.expired(); }),
           shared->sessions.end());
+
+      if (shared->sessions.empty()) {
+        return;
+      }
+
+      std::string message;
+      try {
+        message = runtime_json_string(state);
+      } catch (const std::exception &e) {
+        std::cerr << "[ws] publish serialization error: " << e.what() << '\n';
+        return;
+      }
 
       for (const auto &weak_session : shared->sessions) {
         if (const auto session = weak_session.lock()) {
@@ -1114,8 +1123,8 @@ void WebSocketServer::set_stems_folder(const std::string &path) {
   impl_->set_stems_folder(path);
 }
 
-void WebSocketServer::publish_runtime(const WebRuntimeState &state) {
-  impl_->publish_runtime(state);
+void WebSocketServer::publish_runtime(WebRuntimeState state) {
+  impl_->publish_runtime(std::move(state));
 }
 
 void WebSocketServer::publish_library(const WebLibraryState &state) {
