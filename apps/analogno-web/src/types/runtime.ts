@@ -68,6 +68,8 @@ export type RuntimeState = {
       isWavetable: boolean;
       isStream: boolean;
       waveform: number[];
+      rootNote: number;
+      sliceCount: number;
     }>;
     activeBank: number;
     touchpadSketch: number[];

@@ -108,6 +108,9 @@ AudioSampler::AudioSampler() {
   for (auto &t : bank_trim_end_) {
     t.store(1.0F);
   }
+  for (auto &rn : bank_root_note_) {
+    rn.store(48);
+  }
   for (auto &r : bank_playback_rate_) {
     r.store(1.0F);
   }
@@ -219,6 +222,8 @@ void AudioSampler::set_sample_for_bank(std::size_t bank, std::vector<float> samp
   stream_active_[bank].store(false, std::memory_order_release);
   stream_pos_[bank].store(0, std::memory_order_relaxed);
 
+  bank_onset_frames_[bank].clear();
+
   for (auto &voice : voices_) {
     if (voice.bank_index == bank) {
       voice = {};
@@ -311,6 +316,9 @@ void AudioSampler::set_trim(float start, float end) {
 void AudioSampler::load_stem_to_bank(std::size_t bank, const std::string &path,
                                      float trim_start, float trim_end) {
   if (bank >= bank_count) return;
+  for (std::size_t i = 0; i < stem_count; ++i) {
+    if (stem_streams_[i]->is_active()) stem_streams_[i]->stop();
+  }
 
   auto cfg = ma_decoder_config_init(ma_format_f32, 2U, 48000U);
   ma_decoder dec{};
@@ -377,11 +385,11 @@ void AudioSampler::set_active_bank(std::size_t bank) {
   }
 }
 
-void AudioSampler::trigger(float rate) {
-  trigger_bank(active_bank_.load(), rate);
+void AudioSampler::trigger(float rate, int midi_note) {
+  trigger_bank(active_bank_.load(), rate, midi_note);
 }
 
-void AudioSampler::trigger_bank(std::size_t bank, float rate) {
+void AudioSampler::trigger_bank(std::size_t bank, float rate, int midi_note) {
   if (bank >= bank_count) {
     return;
   }
@@ -394,23 +402,53 @@ void AudioSampler::trigger_bank(std::size_t bank, float rate) {
 
   const auto is_wavetable = bank_is_wavetable_[bank].load();
   const auto bank_channel_count = std::max<std::size_t>(bank_channels_[bank].load(), 1U);
-  const auto clamped_rate = static_cast<double>(std::clamp(rate, 0.25F, 4.0F));
-  const auto trim_pos =
-      static_cast<double>(bank_trim_start_[bank].load()) *
-      static_cast<double>(banks_[bank]->size() / bank_channel_count);
+  const auto total_frames = static_cast<double>(banks_[bank]->size() / bank_channel_count);
+  const auto trim_start_f = static_cast<double>(bank_trim_start_[bank].load()) * total_frames;
+  const auto trim_end_f = static_cast<double>(bank_trim_end_[bank].load()) * total_frames;
 
-  // Choke-on-retrigger: if a voice is already playing this bank at the same
-  // pitch, restart it in place rather than layering a new one.  This gives
-  // mono behaviour for repeated notes while still allowing polyphony across
-  // different pitches (different rates).
-  for (auto &voice : voices_) {
-    if (voice.active && voice.bank_index == bank &&
-        std::abs(voice.rate - clamped_rate) < 0.005) {
-      voice.releasing = false;
-      voice.position = trim_pos;
-      voice.envelope = 0.0F;
-      voice_generation_.fetch_add(1, std::memory_order_relaxed);
-      return;
+  const auto slice_count = bank_slice_count_[bank].load();
+  const auto use_slice = slice_count > 0 && midi_note >= 0 && !is_wavetable;
+
+  double voice_rate{};
+  double start_pos{};
+  double end_override{-1.0};
+  int voice_slice_idx = -1;
+
+  if (use_slice) {
+    const auto root = bank_root_note_[bank].load();
+    const auto sidx = std::clamp(midi_note - root, 0, slice_count - 1);
+    voice_slice_idx = sidx;
+    voice_rate = 1.0;
+    const auto slice_len = (trim_end_f - trim_start_f) / static_cast<double>(slice_count);
+    start_pos = trim_start_f + static_cast<double>(sidx) * slice_len;
+    end_override = trim_start_f + static_cast<double>(sidx + 1) * slice_len;
+
+    for (auto &voice : voices_) {
+      if (voice.active && voice.bank_index == bank && voice.slice_idx == sidx) {
+        voice.releasing = false;
+        voice.position = start_pos;
+        voice.trim_end_override = end_override;
+        voice.envelope = 0.0F;
+        voice_generation_.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
+    }
+  } else {
+    const auto clamped_rate = static_cast<double>(std::clamp(rate, 0.25F, 4.0F));
+    voice_rate = clamped_rate;
+    start_pos = trim_start_f;
+
+    for (auto &voice : voices_) {
+      if (voice.active && voice.bank_index == bank &&
+          std::abs(voice.rate - clamped_rate) < 0.005) {
+        voice.releasing = false;
+        voice.position = start_pos;
+        voice.trim_end_override = -1.0;
+        voice.slice_idx = -1;
+        voice.envelope = 0.0F;
+        voice_generation_.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
     }
   }
 
@@ -420,8 +458,10 @@ void AudioSampler::trigger_bank(std::size_t bank, float rate) {
       .active = true,
       .releasing = false,
       .loop = is_wavetable,
-      .position = trim_pos,
-      .rate = clamped_rate,
+      .position = start_pos,
+      .rate = voice_rate,
+      .trim_end_override = end_override,
+      .slice_idx = voice_slice_idx,
       .envelope = 0.0F,
       .bank_index = bank,
       .noise_state = static_cast<std::uint32_t>(
@@ -433,25 +473,140 @@ void AudioSampler::trigger_bank(std::size_t bank, float rate) {
   voice_generation_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void AudioSampler::release(float rate) {
-  release_bank(active_bank_.load(), rate);
+void AudioSampler::release(float rate, int midi_note) {
+  release_bank(active_bank_.load(), rate, midi_note);
 }
 
-void AudioSampler::release_bank(std::size_t bank, float rate) {
+void AudioSampler::release_bank(std::size_t bank, float rate, int midi_note) {
   if (bank >= bank_count) {
     return;
   }
 
   const auto lock = std::scoped_lock{mutex_};
-  const auto clamped_rate = static_cast<double>(std::clamp(rate, 0.25F, 4.0F));
+  const auto slice_count = bank_slice_count_[bank].load();
+  const auto use_slice = slice_count > 0 && midi_note >= 0;
 
   for (auto &voice : voices_) {
+    if (!voice.active || voice.releasing || voice.bank_index != bank) {
+      continue;
+    }
+
+    bool match;
+    if (use_slice) {
+      const auto root = bank_root_note_[bank].load();
+      const auto sidx = std::clamp(midi_note - root, 0, slice_count - 1);
+      match = voice.slice_idx == sidx;
+    } else {
+      const auto clamped_rate = static_cast<double>(std::clamp(rate, 0.25F, 4.0F));
+      match = std::abs(voice.rate - clamped_rate) < 0.005;
+    }
+
+    if (match) {
+      voice.releasing = true;
+      voice_generation_.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+}
+
+void AudioSampler::set_bank_root_note(std::size_t bank, int note) {
+  if (bank < bank_count) {
+    bank_root_note_[bank].store(std::clamp(note, 0, 127));
+  }
+}
+
+int AudioSampler::bank_root_note(std::size_t bank) const {
+  if (bank >= bank_count) return 48;
+  return bank_root_note_[bank].load();
+}
+
+void AudioSampler::set_bank_slice_count(std::size_t bank, int count) {
+  if (bank < bank_count) {
+    bank_slice_count_[bank].store(std::clamp(count, 0, 64));
+  }
+}
+
+int AudioSampler::bank_slice_count(std::size_t bank) const {
+  if (bank >= bank_count) return 0;
+  return bank_slice_count_[bank].load();
+}
+
+void AudioSampler::set_bank_onset_frames(std::size_t bank,
+                                         std::vector<double> frame_positions) {
+  if (bank >= bank_count) return;
+  const auto lock = std::scoped_lock{mutex_};
+  bank_onset_frames_[bank] = std::move(frame_positions);
+}
+
+void AudioSampler::clear_bank_onset_frames(std::size_t bank) {
+  if (bank >= bank_count) return;
+  const auto lock = std::scoped_lock{mutex_};
+  bank_onset_frames_[bank].clear();
+}
+
+bool AudioSampler::bank_has_onsets(std::size_t bank) const {
+  if (bank >= bank_count) return false;
+  const auto lock = std::scoped_lock{mutex_};
+  return !bank_onset_frames_[bank].empty();
+}
+
+void AudioSampler::trigger_bank_onset(std::size_t bank, int onset_idx) {
+  if (bank >= bank_count) return;
+
+  const auto lock = std::scoped_lock{mutex_};
+
+  if (!banks_[bank] || banks_[bank]->empty()) return;
+  if (bank_onset_frames_[bank].empty()) return;
+
+  const auto &onsets = bank_onset_frames_[bank];
+  const auto sidx = std::clamp(onset_idx, 0, static_cast<int>(onsets.size()) - 1);
+  const auto start_pos = onsets[static_cast<std::size_t>(sidx)];
+  const auto bank_channel_count = std::max<std::size_t>(bank_channels_[bank].load(), 1U);
+  const auto total_frames = static_cast<double>(banks_[bank]->size() / bank_channel_count);
+  const auto trim_end_pos = static_cast<double>(bank_trim_end_[bank].load()) * total_frames;
+  const auto end_pos = (static_cast<std::size_t>(sidx) + 1U < onsets.size())
+                           ? onsets[static_cast<std::size_t>(sidx) + 1U]
+                           : trim_end_pos;
+
+  for (auto &voice : voices_) {
+    if (voice.active && voice.bank_index == bank && voice.slice_idx == sidx) {
+      voice.releasing = false;
+      voice.position = start_pos;
+      voice.trim_end_override = end_pos;
+      voice.envelope = 0.0F;
+      voice_generation_.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+  }
+
+  const auto voice_index = next_voice_;
+  voices_[voice_index] = Voice{
+      .active = true,
+      .releasing = false,
+      .loop = false,
+      .position = start_pos,
+      .rate = 1.0,
+      .trim_end_override = end_pos,
+      .slice_idx = sidx,
+      .envelope = 0.0F,
+      .bank_index = bank,
+      .noise_state = static_cast<std::uint32_t>(
+          0x9E3779B9U ^ ((bank + 1U) * 0x85EBCA6BU) ^
+          ((voice_index + 1U) * 0xC2B2AE35U)),
+  };
+  next_voice_ = (next_voice_ + 1) % voices_.size();
+  voice_generation_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void AudioSampler::release_bank_onset(std::size_t bank, int onset_idx) {
+  if (bank >= bank_count) return;
+  const auto lock = std::scoped_lock{mutex_};
+  if (bank_onset_frames_[bank].empty()) return;
+  const auto sidx = std::clamp(onset_idx, 0, static_cast<int>(bank_onset_frames_[bank].size()) - 1);
+  for (auto &voice : voices_) {
     if (voice.active && !voice.releasing && voice.bank_index == bank &&
-        std::abs(voice.rate - clamped_rate) < 0.005) {
-      if (voice.loop) {
-        voice.releasing = true;
-        voice_generation_.fetch_add(1, std::memory_order_relaxed);
-      }
+        voice.slice_idx == sidx) {
+      voice.releasing = true;
+      voice_generation_.fetch_add(1, std::memory_order_relaxed);
     }
   }
 }
@@ -535,6 +690,20 @@ std::vector<float> AudioSampler::bank_waveform(std::size_t bank, std::size_t n_p
     result[i] = (*cached)[src];
   }
   return result;
+}
+
+AudioSampler::BankSnapshot AudioSampler::bank_snapshot(std::size_t bank) const {
+  if (bank >= bank_count || bank_is_wavetable_[bank].load() ||
+      bank_stream_[bank].load()) {
+    return {};
+  }
+  const auto lock = std::scoped_lock{mutex_};
+  return BankSnapshot{
+      .samples = banks_[bank],
+      .channel_count = bank_channels_[bank].load(),
+      .trim_start = bank_trim_start_[bank].load(),
+      .trim_end = bank_trim_end_[bank].load(),
+  };
 }
 
 bool AudioSampler::bank_has_sample(std::size_t bank) const {
@@ -831,7 +1000,9 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
         continue;
       }
 
-      const auto trim_end = trim_ends[voice.bank_index];
+      const auto trim_end = voice.trim_end_override >= 0.0
+                                ? voice.trim_end_override
+                                : trim_ends[voice.bank_index];
       const auto index = static_cast<std::size_t>(voice.position);
 
       const auto channel_count = std::max(bank_channels[voice.bank_index], 1U);

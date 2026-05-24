@@ -54,6 +54,8 @@ struct WebSampleBank final {
   bool is_wavetable{};
   bool is_stream{};
   std::vector<float> waveform{};
+  int root_note{48};
+  int slice_count{0};
 };
 
 struct WebAudioState final {

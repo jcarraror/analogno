@@ -199,6 +199,8 @@ WebRuntimeState make_web_state(
         .is_wavetable = audio_sampler.bank_is_wavetable(i),
         .is_stream = audio_sampler.bank_is_stream(i),
         .waveform = audio_sampler.bank_waveform(i, 256U),
+        .root_note = audio_sampler.bank_root_note(i),
+        .slice_count = audio_sampler.bank_slice_count(i),
     });
   }
 

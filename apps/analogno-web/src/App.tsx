@@ -736,6 +736,18 @@ export function App() {
     socket?.send(JSON.stringify({ type: "saveSample", bank }));
   }
 
+  function setBankRootNote(bank: number, note: number) {
+    socket?.send(JSON.stringify({ type: "setBankRootNote", bank, note }));
+  }
+
+  function setBankSliceCount(bank: number, count: number) {
+    socket?.send(JSON.stringify({ type: "setBankSliceCount", bank, count }));
+  }
+
+  function transcribeBankToSeq(bank: number) {
+    socket?.send(JSON.stringify({ type: "transcribeBankToSeq", bank }));
+  }
+
   function setPatch(bank: number, program: number) {
     socket?.send(JSON.stringify({ type: "setPatch", bank, program }));
   }
@@ -1091,6 +1103,50 @@ export function App() {
                   return `${trimmed}s / ${total}s${tag}`;
                 })()}
               />
+              {activeBankHasSample && (
+                <div className="bank-params">
+                  <div className="bank-param-row">
+                    <span className="bank-param-label">Root note</span>
+                    <select
+                      className="bank-root-select"
+                      value={activeBankData?.rootNote ?? 48}
+                      disabled={connection !== "online"}
+                      onChange={(e) => setBankRootNote(audio?.activeBank ?? 0, Number(e.target.value))}
+                    >
+                      {Array.from({ length: 128 }, (_, i) => (
+                        <option key={i} value={i}>{midiNoteName(i)} ({i})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="bank-param-row">
+                    <span className="bank-param-label">Slices</span>
+                    <div className="slice-chips">
+                      {[0, 4, 8, 16, 32].map((n) => (
+                        <button
+                          key={n}
+                          type="button"
+                          className={`slice-chip${(activeBankData?.sliceCount ?? 0) === n ? " slice-chip-active" : ""}`}
+                          disabled={connection !== "online"}
+                          onClick={() => setBankSliceCount(audio?.activeBank ?? 0, n)}
+                        >
+                          {n === 0 ? "off" : n}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="bank-param-row">
+                    <button
+                      type="button"
+                      className="transcribe-btn"
+                      disabled={connection !== "online"}
+                      title="Detect onsets and pitches in this sample and write them as sequencer steps on the active track"
+                      onClick={() => transcribeBankToSeq(audio?.activeBank ?? 0)}
+                    >
+                      Transcribe to seq
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="wavetable-macros">
                 {!activeBankHasSample && (
                   <WavetableMacroSlider label="Morph" tone="morph"

@@ -65,10 +65,12 @@ public:
   void set_gain(float gain);
   void set_wavetable_controls(float morph, float noise, float unison);
   void set_pitch_controls(float pitch_bend, float vibrato_depth);
-  void trigger(float rate = 1.0F);
-  void trigger_bank(std::size_t bank, float rate = 1.0F);
-  void release(float rate = 1.0F); // begin release for matching active voice
-  void release_bank(std::size_t bank, float rate = 1.0F);
+  void trigger(float rate = 1.0F, int midi_note = -1);
+  void trigger_bank(std::size_t bank, float rate = 1.0F, int midi_note = -1);
+  void trigger_bank_onset(std::size_t bank, int onset_idx);
+  void release(float rate = 1.0F, int midi_note = -1);
+  void release_bank(std::size_t bank, float rate = 1.0F, int midi_note = -1);
+  void release_bank_onset(std::size_t bank, int onset_idx);
   void stop_all();
 
   void set_active_bank(std::size_t bank);
@@ -82,6 +84,22 @@ public:
   [[nodiscard]] std::size_t active_bank() const;
   // Returns N peak-abs values downsampled from the active bank's sample.
   [[nodiscard]] std::vector<float> sample_waveform(std::size_t n_points = 256) const;
+
+  void set_bank_root_note(std::size_t bank, int note);
+  [[nodiscard]] int bank_root_note(std::size_t bank) const;
+  void set_bank_slice_count(std::size_t bank, int count);
+  [[nodiscard]] int bank_slice_count(std::size_t bank) const;
+  void set_bank_onset_frames(std::size_t bank, std::vector<double> frame_positions);
+  void clear_bank_onset_frames(std::size_t bank);
+  [[nodiscard]] bool bank_has_onsets(std::size_t bank) const;
+
+  struct BankSnapshot final {
+    std::shared_ptr<const std::vector<float>> samples{};
+    std::uint32_t channel_count{1};
+    float trim_start{};
+    float trim_end{1.0F};
+  };
+  [[nodiscard]] BankSnapshot bank_snapshot(std::size_t bank) const;
 
   // Per-bank queries
   [[nodiscard]] bool bank_has_sample(std::size_t bank) const;
@@ -99,9 +117,11 @@ private:
   struct Voice final {
     bool active{};
     bool releasing{};
-    bool loop{};       // wavetable: loops between trim_start and trim_end
+    bool loop{};
     double position{};
     double rate{1.0};
+    double trim_end_override{-1.0};
+    int slice_idx{-1};
     float envelope{};
     std::size_t bank_index{};
     std::uint32_t noise_state{1};
@@ -121,6 +141,9 @@ private:
   std::array<std::atomic<std::uint32_t>, bank_count> bank_channels_{};
   std::array<std::atomic<float>, bank_count> bank_trim_start_{};
   std::array<std::atomic<float>, bank_count> bank_trim_end_{};
+  std::array<std::atomic<int>, bank_count> bank_root_note_{};
+  std::array<std::atomic<int>, bank_count> bank_slice_count_{};
+  std::array<std::vector<double>, bank_count> bank_onset_frames_{};
   std::array<std::atomic<bool>, bank_count> bank_is_wavetable_{};
   std::array<std::atomic<bool>, bank_count> bank_stream_{};
   std::array<std::atomic<bool>, bank_count> bank_file_backed_{};

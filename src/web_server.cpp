@@ -59,6 +59,8 @@ Json sample_banks_json(const std::vector<WebSampleBank> &banks) {
         {"isWavetable", bank.is_wavetable},
         {"isStream", bank.is_stream},
         {"waveform", bank.waveform},
+        {"rootNote", bank.root_note},
+        {"sliceCount", bank.slice_count},
     });
   }
 
@@ -231,7 +233,7 @@ std::string runtime_json_string(const WebRuntimeState &state) {
       {"spectrogramVisible", state.spectrogram_visible},
   };
 
-  return json.dump();
+  return json.dump(-1, ' ', false, Json::error_handler_t::replace);
 }
 
 std::string library_json_string(const WebLibraryState &state) {
@@ -257,7 +259,7 @@ std::string library_json_string(const WebLibraryState &state) {
       {"activeSoundfont", state.active_soundfont},
   };
 
-  return json.dump();
+  return json.dump(-1, ' ', false, Json::error_handler_t::replace);
 }
 
 class SharedState final {
@@ -915,6 +917,23 @@ private:
               .trim_start = std::clamp(json.value("trimStart", 0.0F), 0.0F, 1.0F),
               .trim_end = std::clamp(json.value("trimEnd", 1.0F), 0.0F, 1.0F),
           });
+        }
+      } else if (json.value("type", "") == "setBankRootNote") {
+        const auto bank = json.value("bank", -1);
+        const auto note = std::clamp(json.value("note", 48), 0, 127);
+        if (bank >= 0 && bank < 8) {
+          enqueue_command(WebSocketServer::SetBankRootNote{.bank = bank, .note = note});
+        }
+      } else if (json.value("type", "") == "setBankSliceCount") {
+        const auto bank = json.value("bank", -1);
+        const auto count = std::clamp(json.value("count", 0), 0, 64);
+        if (bank >= 0 && bank < 8) {
+          enqueue_command(WebSocketServer::SetBankSliceCount{.bank = bank, .count = count});
+        }
+      } else if (json.value("type", "") == "transcribeBankToSeq") {
+        const auto bank = json.value("bank", -1);
+        if (bank >= 0 && bank < 8) {
+          enqueue_command(WebSocketServer::TranscribeBankToSeq{.bank = bank});
         }
       }
     } catch (const std::exception &exception) {

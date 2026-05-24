@@ -85,6 +85,7 @@ add_executable(analogno
   src/voice_sequencer.cpp
   src/miniaudio_impl.cpp
   src/stem_splitter.cpp
+  src/stem_transcriber.cpp
   src/wav_stream.cpp
 )
 

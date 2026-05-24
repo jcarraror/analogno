@@ -131,6 +131,17 @@ public:
     int track{};
     bool solo{};
   };
+  struct SetBankRootNote final {
+    int bank{};
+    int note{48};
+  };
+  struct TranscribeBankToSeq final {
+    int bank{};
+  };
+  struct SetBankSliceCount final {
+    int bank{};
+    int count{0};
+  };
   struct SetSignalsVolume final {
     float volume{1.0F};
   };
@@ -183,7 +194,9 @@ public:
                                SetSoundfont, SetBlowMode, SetBlowSensitivity,
                                SetVoiceSeq, SetTrackVolume, SetTrackPan,
                                SetTrackVelocityScale, SetTrackSolo,
-                               SetSignalsVolume, SplitAudioFile,
+                               SetSignalsVolume, SetBankRootNote,
+                               SetBankSliceCount, TranscribeBankToSeq,
+                               SplitAudioFile,
                                StreamPlayBank, StreamStopBank,
                                StemPlay, StemStop, SetStemFolder, SetActiveStem,
                                OpenStemFolderDialog, LoadStemToBank,

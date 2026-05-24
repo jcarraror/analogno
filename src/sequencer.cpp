@@ -135,7 +135,14 @@ SeqTick tick_sequencer(Sequencer &seq, const MusicalIntent &ctx) {
   if (elapsed >= step_dur) {
     seq.playhead_step = seq.playhead_step >= 0 ? seq.playhead_step + 1 : 0;
     seq.current_step = seq.playhead_step % seq.step_count;
-    seq.step_start = now;
+    const auto next_start =
+        seq.step_start +
+        std::chrono::round<std::chrono::steady_clock::duration>(step_dur);
+    seq.step_start = (now - next_start >
+                      std::chrono::round<std::chrono::steady_clock::duration>(
+                          step_dur))
+                         ? now
+                         : next_start;
     result.stepped = true;
 
     for (auto &track : seq.tracks) {

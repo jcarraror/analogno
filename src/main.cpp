@@ -15,6 +15,7 @@
 #include "session.hpp"
 #include "sf2_reader.hpp"
 #include "stem_splitter.hpp"
+#include "stem_transcriber.hpp"
 #include "voice_sequencer.hpp"
 #include "web_server.hpp"
 #include "web_state.hpp"
@@ -36,6 +37,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -254,15 +256,14 @@ bool handle_event(const SDL_Event &event, ControllerState &state) {
 }
 
 void trigger_sampler_notes(const MusicalIntent &intent, AudioSampler &sampler) {
-  constexpr auto sampler_root_midi_note = 48;
-
   if (!sampler.has_sample()) {
     return;
   }
 
+  const auto root = sampler.bank_root_note(sampler.active_bank());
   for (const auto &note : intent.note_ons) {
-    const auto semitones = note.midi_note - sampler_root_midi_note;
-    sampler.trigger(std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+    const auto semitones = note.midi_note - root;
+    sampler.trigger(std::pow(2.0F, static_cast<float>(semitones) / 12.0F), note.midi_note);
   }
 }
 
@@ -420,12 +421,11 @@ void run_event_loop(Gamepad &gamepad,
   float stem_split_progress{};
   std::string stem_split_detail{};
   std::vector<std::string> stem_split_log{};
-  std::string stems_folder = [] {
+  std::string stems_base_dir = [] {
     const auto *home = std::getenv("HOME");
     return std::string{home ? home : "/tmp"} + "/.local/share/analogno/stems";
   }();
-  bool live_sampler_gate_active = false;
-  bool previous_l2_gate = false;
+  std::string stems_folder = stems_base_dir;
   // Touchpad swipe for seq step navigation (active when a step is armed).
   struct TouchSwipe { float prev_x{0.0f}; float prev_y{0.0f}; bool active{false}; };
   TouchSwipe tp_swipe{};
@@ -533,10 +533,8 @@ void run_event_loop(Gamepad &gamepad,
 
         if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN) {
           if (fi == 0 && seq.selected_step >= 0 && !l1_held && !tp_click && !r1_held) {
-            // Seq armed, finger 0 → swipe-to-navigate.
             tp_swipe = { event.gtouchpad.x, event.gtouchpad.y, true };
           } else if (fi == 0 && l1_held && !tp_click) {
-            // L1 + touch → waveform draw.
             if (!sketch.active) { sketch.active = true; sketch.points.clear(); }
             sketch.points.emplace_back(event.gtouchpad.x, event.gtouchpad.y);
           } else if (fi < ribbon_max && r1_held && !l1_held && current_midi_bank == 128) {
@@ -573,7 +571,6 @@ void run_event_loop(Gamepad &gamepad,
               }
             }
           } else if (!l1_held && !tp_click && !r1_held && fi < ribbon_max) {
-            // Bare touch → ribbon controller (any finger).
             const int note = ribbon_note_for_x(event.gtouchpad.x,
                 last_intent.root_midi_note, last_intent.octave_offset, last_intent.scale);
             const int vel = std::clamp(
@@ -866,8 +863,6 @@ void run_event_loop(Gamepad &gamepad,
                 if (cfg.tracks[t].midi_channel >= 0) {
                   seq.tracks[t].midi_channel = cfg.tracks[t].midi_channel;
                 }
-                seq.tracks[t].midi_program = cfg.tracks[t].midi_program;
-                seq.tracks[t].midi_bank = cfg.tracks[t].midi_bank;
                 seq.tracks[t].sample_bank = cfg.tracks[t].sample_bank;
                 seq.tracks[t].loop_length =
                     std::clamp(cfg.tracks[t].loop_length, 1, seq.step_count);
@@ -897,7 +892,6 @@ void run_event_loop(Gamepad &gamepad,
                 midi.set_channel_pan(ch, seq.tracks[t].pan);
               }
             }
-            analogno::save_session(seq, session_path);
           },
           [&](const WebSocketServer::SetSoundfont &cmd) {
             sampler_mode = false;
@@ -1072,6 +1066,86 @@ void run_event_loop(Gamepad &gamepad,
               std::cout << "[dl] local file: " << cmd.source << '\n';
             }
           },
+          [&](const WebSocketServer::SetBankRootNote &cmd) {
+            if (cmd.bank >= 0 && cmd.bank < 8) {
+              audio_sampler.set_bank_root_note(static_cast<std::size_t>(cmd.bank), cmd.note);
+              std::cout << "bank " << cmd.bank << " root note: " << cmd.note << '\n';
+            }
+          },
+          [&](const WebSocketServer::SetBankSliceCount &cmd) {
+            if (cmd.bank >= 0 && cmd.bank < 8) {
+              audio_sampler.set_bank_slice_count(static_cast<std::size_t>(cmd.bank), cmd.count);
+              std::cout << "bank " << cmd.bank << " slice count: " << cmd.count << '\n';
+            }
+          },
+          [&](const WebSocketServer::TranscribeBankToSeq &cmd) {
+            if (cmd.bank < 0 || cmd.bank >= 8) return;
+            if (seq.active_track < 0 ||
+                static_cast<std::size_t>(seq.active_track) >= seq.tracks.size()) return;
+
+            const auto snap = audio_sampler.bank_snapshot(
+                static_cast<std::size_t>(cmd.bank));
+            if (!snap.samples || snap.samples->empty()) {
+              std::cout << "[transcribe] bank " << cmd.bank << " has no in-memory audio\n";
+              return;
+            }
+
+            std::cout << "[transcribe] analyzing bank " << cmd.bank << "...\n";
+            const auto res = analogno::transcribe_to_seq(
+                *snap.samples,
+                snap.channel_count,
+                snap.trim_start,
+                snap.trim_end,
+                static_cast<float>(seq.bpm),
+                seq.step_division,
+                seq.step_count);
+
+            if (res.tracks.empty() || res.onset_frames.empty()) {
+              std::cout << "[transcribe] no onsets detected\n";
+              return;
+            }
+
+            const auto bank_idx = static_cast<std::size_t>(cmd.bank);
+            {
+              const auto bank_ch = std::max<std::size_t>(snap.channel_count, 1U);
+              const auto total_f = snap.samples->size() / bank_ch;
+              const auto trim_start_f =
+                  static_cast<double>(snap.trim_start) * static_cast<double>(total_f);
+              std::vector<double> onset_positions;
+              onset_positions.reserve(res.onset_frames.size());
+              for (const auto of : res.onset_frames) {
+                onset_positions.push_back(trim_start_f + of);
+              }
+              audio_sampler.set_bank_onset_frames(bank_idx, std::move(onset_positions));
+            }
+            audio_sampler.set_bank_slice_count(bank_idx,
+                static_cast<int>(res.onset_frames.size()));
+            audio_sampler.set_bank_root_note(bank_idx, res.suggested_root_note);
+
+            const auto first_track = static_cast<std::size_t>(seq.active_track);
+            const auto n_tracks =
+                std::min(res.tracks.size(), seq.tracks.size() - first_track);
+
+            for (std::size_t t = 0; t < n_tracks; ++t) {
+              auto &track = seq.tracks[first_track + t];
+              for (auto &step : track.steps) step = {};
+              track.sample_bank = cmd.bank;
+              track.loop_length = res.suggested_loop_length;
+              for (const auto &n : res.tracks[t]) {
+                if (n.step < 0 || n.step >= seq.step_count) continue;
+                auto &step = track.steps[static_cast<std::size_t>(n.step)];
+                step.active = true;
+                step.midi_note = n.midi_note;
+                step.degree = n.onset_idx;
+                step.velocity = n.velocity;
+              }
+            }
+
+            std::cout << "[transcribe] " << res.onset_frames.size()
+                      << " onsets, " << n_tracks << " tracks -> starting at track "
+                      << seq.active_track << ", root=" << res.suggested_root_note
+                      << ", loop=" << res.suggested_loop_length << '\n';
+          },
           [&](const WebSocketServer::OpenStemFolderDialog &) {
             const auto try_dialog = [](const char *cmd) -> std::string {
               FILE *pipe = popen(cmd, "r");
@@ -1108,7 +1182,16 @@ void run_event_loop(Gamepad &gamepad,
         const std::array<const std::filesystem::path *, 6> stem_src_paths{
             &paths->drums, &paths->bass, &paths->vocals, &paths->guitar, &paths->piano, &paths->other};
 
-        const auto web_stem_dir = std::filesystem::path{stems_folder};
+        const auto now_t = std::chrono::system_clock::to_time_t(
+            std::chrono::system_clock::now());
+        std::tm tm_buf{};
+        localtime_r(&now_t, &tm_buf);
+        char ts_buf[20]{};
+        std::strftime(ts_buf, sizeof(ts_buf), "%Y%m%d_%H%M%S", &tm_buf);
+        const auto web_stem_dir =
+            std::filesystem::path{stems_base_dir} / ts_buf;
+        stems_folder = web_stem_dir.string();
+        web.set_stems_folder(stems_folder);
         std::error_code stem_copy_ec;
         std::filesystem::create_directories(web_stem_dir, stem_copy_ec);
         for (std::size_t i = 0; i < stem_src_paths.size(); ++i) {
@@ -1213,7 +1296,6 @@ void run_event_loop(Gamepad &gamepad,
       std::cout << "spectrogram: " << (spectrogram_visible ? "on" : "off") << '\n';
     }
 
-    // Start button: toggle sequencer play/stop.
     if (state.button_pressed(SDL_GAMEPAD_BUTTON_START)) {
       if (seq.playing) {
         seq.playing = false;
@@ -1300,11 +1382,6 @@ void run_event_loop(Gamepad &gamepad,
                             false, signals_volume);
     const auto should_map = state.changed_this_frame();
     const bool l2_gate_now = state.left_trigger() > 0.05F;
-    if (live_sampler_gate_active && previous_l2_gate && !l2_gate_now) {
-      audio_sampler.stop_all();
-      live_sampler_gate_active = false;
-    }
-    previous_l2_gate = l2_gate_now;
 
     // Live MIDI channel: follows the active sequencer track.
     const auto live_ch = [&] {
@@ -1426,26 +1503,29 @@ void run_event_loop(Gamepad &gamepad,
             } else {
               audio_sampler.stream_play(asb);
             }
-            live_sampler_gate_active = true;
           }
         } else {
           if (intent.note_off_all) {
             audio_sampler.stop_all();
           }
-          constexpr auto sampler_root_for_release = 48;
-          for (const auto &note : intent.note_offs) {
-            const auto semitones = note.midi_note - sampler_root_for_release;
-            audio_sampler.release_bank(
-                asb,
-                std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+          if (audio_sampler.bank_is_wavetable(asb)) {
+            for (const auto &note : intent.note_offs) {
+              const auto root = audio_sampler.bank_root_note(asb);
+              const auto semitones = note.midi_note - root;
+              audio_sampler.release_bank(
+                  asb,
+                  std::pow(2.0F, static_cast<float>(semitones) / 12.0F),
+                  note.midi_note);
+            }
           }
           if (l2_gate) {
             for (const auto &note : intent.note_ons) {
-              const auto semitones = note.midi_note - sampler_root_for_release;
+              const auto root = audio_sampler.bank_root_note(asb);
+              const auto semitones = note.midi_note - root;
               audio_sampler.trigger_bank(
                   asb,
-                  std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
-              live_sampler_gate_active = true;
+                  std::pow(2.0F, static_cast<float>(semitones) / 12.0F),
+                  note.midi_note);
             }
           }
         }
@@ -1465,16 +1545,17 @@ void run_event_loop(Gamepad &gamepad,
             }
           }
         } else {
-          constexpr auto sampler_root = 48;
-          for (const auto &note : intent.note_offs) {
-            const auto semitones = note.midi_note - sampler_root;
-            audio_sampler.release(std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+          if (audio_sampler.bank_is_wavetable(active_sampler_bank)) {
+            for (const auto &note : intent.note_offs) {
+              const auto root = audio_sampler.bank_root_note(active_sampler_bank);
+              const auto semitones = note.midi_note - root;
+              audio_sampler.release(
+                  std::pow(2.0F, static_cast<float>(semitones) / 12.0F),
+                  note.midi_note);
+            }
           }
           if (l2_gate) {
             trigger_sampler_notes(intent, audio_sampler);
-            if (!intent.note_ons.empty()) {
-              live_sampler_gate_active = true;
-            }
           }
         }
         active_notes.apply(intent);
@@ -1531,18 +1612,31 @@ void run_event_loop(Gamepad &gamepad,
         midi.apply_notes_only(tick.note_offs, tick.note_ons);
       }
       if (!tick.sample_note_ons.empty() || !tick.sample_note_offs.empty()) {
-        constexpr auto sampler_root = 48;
         for (const auto &sample_event : tick.sample_note_offs) {
-          audio_sampler.release_bank(
-              static_cast<std::size_t>(sample_event.bank),
-              std::pow(2.0F, static_cast<float>(sample_event.note.midi_note - sampler_root) /
-                                  12.0F));
+          const auto seq_bank = static_cast<std::size_t>(sample_event.bank);
+          if (audio_sampler.bank_has_onsets(seq_bank)) {
+            audio_sampler.release_bank_onset(seq_bank, sample_event.note.degree);
+          } else {
+            const auto root = audio_sampler.bank_root_note(seq_bank);
+            audio_sampler.release_bank(
+                seq_bank,
+                std::pow(2.0F, static_cast<float>(sample_event.note.midi_note - root) / 12.0F),
+                sample_event.note.midi_note);
+          }
         }
         for (const auto &sample_event : tick.sample_note_ons) {
-          audio_sampler.trigger_bank(
-              static_cast<std::size_t>(sample_event.bank),
-              std::pow(2.0F, static_cast<float>(sample_event.note.midi_note - sampler_root) /
-                                  12.0F));
+          const auto seq_bank = static_cast<std::size_t>(sample_event.bank);
+          if (audio_sampler.bank_has_onsets(seq_bank)) {
+            // Onset-based: play exactly the slice for this step (rate=1.0,
+            // natural pitch). degree holds the onset index from transcription.
+            audio_sampler.trigger_bank_onset(seq_bank, sample_event.note.degree);
+          } else {
+            const auto root = audio_sampler.bank_root_note(seq_bank);
+            audio_sampler.trigger_bank(
+                seq_bank,
+                std::pow(2.0F, static_cast<float>(sample_event.note.midi_note - root) / 12.0F),
+                sample_event.note.midi_note);
+          }
         }
       }
       // Lightbar: enqueue one colour flash per note_on, preserving order.

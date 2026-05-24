@@ -1794,6 +1794,97 @@ h1 {
   cursor: default;
 }
 
+.bank-params {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+
+.bank-param-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bank-param-label {
+  font-size: 0.72rem;
+  color: #9ca7ff;
+  letter-spacing: 0.06em;
+  min-width: 62px;
+  flex-shrink: 0;
+}
+
+.bank-root-select {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  color: #e0e0f0;
+  font-size: 0.75rem;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.bank-root-select:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.slice-chips {
+  display: flex;
+  gap: 4px;
+}
+
+.slice-chip {
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(156, 167, 255, 0.25);
+  background: rgba(156, 167, 255, 0.07);
+  color: #9ca7ff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.slice-chip:hover:not(:disabled) {
+  background: rgba(156, 167, 255, 0.18);
+}
+
+.slice-chip-active {
+  background: rgba(156, 167, 255, 0.25);
+  border-color: rgba(156, 167, 255, 0.6);
+  color: #c4ceff;
+}
+
+.slice-chip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.transcribe-btn {
+  padding: 4px 12px;
+  border-radius: 5px;
+  border: 1px solid rgba(120, 220, 160, 0.35);
+  background: rgba(120, 220, 160, 0.09);
+  color: #7adca0;
+  font-size: 0.73rem;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.transcribe-btn:hover:not(:disabled) {
+  background: rgba(120, 220, 160, 0.2);
+  border-color: rgba(120, 220, 160, 0.6);
+}
+
+.transcribe-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .stems-section-head {
   display: flex;
   align-items: center;
