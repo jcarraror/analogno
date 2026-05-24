@@ -84,6 +84,7 @@ public:
   [[nodiscard]] std::size_t active_bank() const;
   // Returns N peak-abs values downsampled from the active bank's sample.
   [[nodiscard]] std::vector<float> sample_waveform(std::size_t n_points = 256) const;
+  [[nodiscard]] std::vector<float> bank_wavetable_cycle(std::size_t bank, std::size_t n_points = 128) const;
 
   void set_bank_root_note(std::size_t bank, int note);
   [[nodiscard]] int bank_root_note(std::size_t bank) const;

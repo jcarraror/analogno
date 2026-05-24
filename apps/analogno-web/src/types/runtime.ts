@@ -60,6 +60,7 @@ export type RuntimeState = {
     sampleTrimStart: number;
     sampleTrimEnd: number;
     sampleWaveform: number[];
+    wavetableCycle: number[];
     banks: Array<{
       hasData: boolean;
       frames: number;

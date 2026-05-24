@@ -255,17 +255,6 @@ bool handle_event(const SDL_Event &event, ControllerState &state) {
   return true;
 }
 
-void trigger_sampler_notes(const MusicalIntent &intent, AudioSampler &sampler) {
-  if (!sampler.has_sample()) {
-    return;
-  }
-
-  const auto root = sampler.bank_root_note(sampler.active_bank());
-  for (const auto &note : intent.note_ons) {
-    const auto semitones = note.midi_note - root;
-    sampler.trigger(std::pow(2.0F, static_cast<float>(semitones) / 12.0F), note.midi_note);
-  }
-}
 
 void update_sampler_controls(const ContinuousControls &controls,
                              AudioSampler &sampler,
@@ -1039,6 +1028,11 @@ void run_event_loop(Gamepad &gamepad,
             audio_sampler.load_stem_to_bank(cmd.bank, path.string(), cmd.trim_start, cmd.trim_end);
             audio_sampler.set_active_bank(cmd.bank);
             sampler_mode = true;
+            if (seq.active_track >= 0 &&
+                static_cast<std::size_t>(seq.active_track) < seq.tracks.size()) {
+              seq.tracks[static_cast<std::size_t>(seq.active_track)].sample_bank =
+                  static_cast<int>(cmd.bank);
+            }
             std::cout << "[stems] loaded " << labels[cmd.stem_idx] << " -> bank " << cmd.bank << '\n';
           },
           [&](const WebSocketServer::SetStemFolder &cmd) {
@@ -1490,13 +1484,18 @@ void run_event_loop(Gamepad &gamepad,
       const bool l2_gate = l2_gate_now;
       const auto raw_note_ons = intent.note_ons;
 
-      if (active_track_sample_bank >= 0 &&
-          audio_sampler.bank_has_sample(static_cast<std::size_t>(active_track_sample_bank))) {
-        const auto asb = static_cast<std::size_t>(active_track_sample_bank);
+      const auto live_asb = sampler_mode && audio_sampler.bank_has_sample(active_sampler_bank)
+                                ? static_cast<int>(active_sampler_bank)
+                                : active_track_sample_bank;
+
+      if (live_asb >= 0 &&
+          audio_sampler.bank_has_sample(static_cast<std::size_t>(live_asb))) {
+        const auto asb = static_cast<std::size_t>(live_asb);
+        if (intent.note_off_all) {
+          audio_sampler.stop_all();
+          audio_sampler.stream_stop_all();
+        }
         if (audio_sampler.bank_is_stream(asb)) {
-          if (intent.note_off_all) {
-            audio_sampler.stream_stop(asb);
-          }
           if (l2_gate && !intent.note_ons.empty()) {
             if (audio_sampler.stream_is_active(asb)) {
               audio_sampler.stream_stop(asb);
@@ -1505,18 +1504,13 @@ void run_event_loop(Gamepad &gamepad,
             }
           }
         } else {
-          if (intent.note_off_all) {
-            audio_sampler.stop_all();
-          }
-          if (audio_sampler.bank_is_wavetable(asb)) {
-            for (const auto &note : intent.note_offs) {
-              const auto root = audio_sampler.bank_root_note(asb);
-              const auto semitones = note.midi_note - root;
-              audio_sampler.release_bank(
-                  asb,
-                  std::pow(2.0F, static_cast<float>(semitones) / 12.0F),
-                  note.midi_note);
-            }
+          for (const auto &note : intent.note_offs) {
+            const auto root = audio_sampler.bank_root_note(asb);
+            const auto semitones = note.midi_note - root;
+            audio_sampler.release_bank(
+                asb,
+                std::pow(2.0F, static_cast<float>(semitones) / 12.0F),
+                note.midi_note);
           }
           if (l2_gate) {
             for (const auto &note : intent.note_ons) {
@@ -1527,35 +1521,6 @@ void run_event_loop(Gamepad &gamepad,
                   std::pow(2.0F, static_cast<float>(semitones) / 12.0F),
                   note.midi_note);
             }
-          }
-        }
-        active_notes.apply(intent);
-      } else if (sampler_mode && audio_sampler.has_sample()) {
-        if (intent.note_off_all) {
-          audio_sampler.stop_all();
-          audio_sampler.stream_stop_all();
-        }
-        if (audio_sampler.bank_is_stream(active_sampler_bank)) {
-          for (const auto &note : intent.note_ons) {
-            (void)note;
-            if (audio_sampler.stream_is_active(active_sampler_bank)) {
-              audio_sampler.stream_stop(active_sampler_bank);
-            } else {
-              audio_sampler.stream_play(active_sampler_bank);
-            }
-          }
-        } else {
-          if (audio_sampler.bank_is_wavetable(active_sampler_bank)) {
-            for (const auto &note : intent.note_offs) {
-              const auto root = audio_sampler.bank_root_note(active_sampler_bank);
-              const auto semitones = note.midi_note - root;
-              audio_sampler.release(
-                  std::pow(2.0F, static_cast<float>(semitones) / 12.0F),
-                  note.midi_note);
-            }
-          }
-          if (l2_gate) {
-            trigger_sampler_notes(intent, audio_sampler);
           }
         }
         active_notes.apply(intent);

@@ -74,7 +74,8 @@ struct WebAudioState final {
   std::uint32_t sample_frames{};
   float sample_trim_start{};
   float sample_trim_end{1.0F};
-  std::vector<float> sample_waveform{}; // downsampled peak-abs of captured sample
+  std::vector<float> sample_waveform{};
+  std::vector<float> wavetable_cycle{};
   std::vector<WebSampleBank> banks{};
   std::size_t active_bank{};
   std::vector<float> touchpad_sketch{};                   // live waveform preview while drawing

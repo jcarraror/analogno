@@ -270,6 +270,7 @@ WebRuntimeState make_web_state(
               .sample_trim_start = audio_sampler.trim_start(),
               .sample_trim_end = audio_sampler.trim_end(),
               .sample_waveform = audio_sampler.sample_waveform(),
+              .wavetable_cycle = audio_sampler.bank_wavetable_cycle(audio_sampler.active_bank(), 128U),
               .banks = std::move(sample_banks),
               .active_bank = audio_sampler.active_bank(),
               .touchpad_sketch = sketch.active

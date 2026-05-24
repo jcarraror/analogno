@@ -338,6 +338,9 @@ function WaveformEditor({
   unisonAmount,
   onApply,
   disabled,
+  activeBank,
+  bankCycle,
+  bankIsWavetable,
 }: {
   touchpadSketch: number[];
   touchpadDrawing: boolean;
@@ -346,6 +349,9 @@ function WaveformEditor({
   unisonAmount: number;
   onApply: (samples: number[], morphSamples: number[]) => void;
   disabled?: boolean;
+  activeBank: number;
+  bankCycle: number[];
+  bankIsWavetable: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ptsRef = useRef<CP[]>([...PRESET_POINTS.sine]);
@@ -437,6 +443,17 @@ function WaveformEditor({
       ctx.strokeStyle = '#141923'; ctx.lineWidth = 1.5; ctx.stroke();
     }
   }
+
+  useEffect(() => {
+    if (!bankIsWavetable || bankCycle.length < 2) return;
+    const n = Math.min(bankCycle.length, 64);
+    ptsRef.current = Array.from({ length: n }, (_, i) => ({
+      x: i / (n - 1),
+      amp: bankCycle[Math.round(i * (bankCycle.length - 1) / (n - 1))],
+    }));
+    setMainName(null);
+    setVer(v => v + 1);
+  }, [activeBank]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Redraws when ver bumps (structural CP changes like add/delete/preset).
   useEffect(() => { redraw(); }, [ver]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1212,6 +1229,9 @@ export function App() {
                     unisonAmount={audio?.wavetableUnison ?? 0}
                     onApply={sendWavetable}
                     disabled={connection !== "online"}
+                    activeBank={audio?.activeBank ?? 0}
+                    bankCycle={audio?.wavetableCycle ?? []}
+                    bankIsWavetable={activeBankData?.isWavetable ?? false}
                   />
                 </div>
               )}

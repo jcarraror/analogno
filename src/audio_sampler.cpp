@@ -673,6 +673,23 @@ std::vector<float> AudioSampler::sample_waveform(std::size_t n_points) const {
   return bank_waveform(active_bank_.load(), n_points);
 }
 
+std::vector<float> AudioSampler::bank_wavetable_cycle(std::size_t bank, std::size_t n_points) const {
+  if (bank >= bank_count || n_points == 0 || !bank_is_wavetable_[bank].load()) {
+    return std::vector<float>(n_points, 0.0F);
+  }
+  const auto lock = std::scoped_lock{mutex_};
+  if (!banks_[bank] || banks_[bank]->empty()) {
+    return std::vector<float>(n_points, 0.0F);
+  }
+  const auto &src = *banks_[bank];
+  std::vector<float> result(n_points);
+  for (std::size_t i = 0; i < n_points; ++i) {
+    const auto idx = i * src.size() / n_points;
+    result[i] = idx < src.size() ? src[idx] : 0.0F;
+  }
+  return result;
+}
+
 std::vector<float> AudioSampler::bank_waveform(std::size_t bank, std::size_t n_points) const {
   if (bank >= bank_count || n_points == 0) {
     return std::vector<float>(n_points, 0.0F);

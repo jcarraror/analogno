@@ -136,6 +136,7 @@ std::string runtime_json_string(const WebRuntimeState &state) {
               {"sampleTrimStart", state.audio.sample_trim_start},
               {"sampleTrimEnd", state.audio.sample_trim_end},
               {"sampleWaveform", state.audio.sample_waveform},
+              {"wavetableCycle", state.audio.wavetable_cycle},
               {"banks", sample_banks_json(state.audio.banks)},
               {"activeBank", state.audio.active_bank},
               {"touchpadDrawing", state.audio.touchpad_drawing},
