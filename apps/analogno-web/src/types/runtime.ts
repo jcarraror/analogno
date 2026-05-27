@@ -99,6 +99,7 @@ export type RuntimeState = {
     voiceSeqRecordProgress: number;
     specSamples: number[];
     signalsVolume: number;
+    transcribeState: "idle" | "running";
     stemSplitState: "idle" | "running" | "done" | "error";
     stemSplitError: string;
     stemSplitProgress: number;

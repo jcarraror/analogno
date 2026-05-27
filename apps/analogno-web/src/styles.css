@@ -1885,6 +1885,26 @@ h1 {
   cursor: default;
 }
 
+.transcribe-btn--running {
+  opacity: 0.75;
+}
+
+.transcribe-spinner {
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  border: 2px solid rgba(120, 220, 160, 0.3);
+  border-top-color: #7adca0;
+  border-radius: 50%;
+  animation: transcribe-spin 0.7s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+@keyframes transcribe-spin {
+  to { transform: rotate(360deg); }
+}
+
 .stems-section-head {
   display: flex;
   align-items: center;

@@ -167,6 +167,7 @@ std::string runtime_json_string(const WebRuntimeState &state) {
                state.audio.voice_seq_recorded_segments},
               {"voiceSeqRecordProgress", state.audio.voice_seq_record_progress},
               {"specSamples", state.audio.spec_samples},
+              {"transcribeState", state.audio.transcribe_state},
               {"stemSplitState", state.audio.stem_split_state},
               {"stemSplitError", state.audio.stem_split_error},
               {"stemSplitProgress", state.audio.stem_split_progress},

@@ -1152,15 +1152,22 @@ export function App() {
                     </div>
                   </div>
                   <div className="bank-param-row">
-                    <button
-                      type="button"
-                      className="transcribe-btn"
-                      disabled={connection !== "online"}
-                      title="Detect onsets and pitches in this sample and write them as sequencer steps on the active track"
-                      onClick={() => transcribeBankToSeq(audio?.activeBank ?? 0)}
-                    >
-                      Transcribe to seq
-                    </button>
+                    {(() => {
+                      const ts = audio?.transcribeState ?? "idle";
+                      return (
+                        <button
+                          type="button"
+                          className={`transcribe-btn${ts === "running" ? " transcribe-btn--running" : ""}`}
+                          disabled={connection !== "online" || ts === "running"}
+                          title="Detect onsets and pitches in this sample and write them as sequencer steps on the active track"
+                          onClick={() => transcribeBankToSeq(audio?.activeBank ?? 0)}
+                        >
+                          {ts === "running" ? (
+                            <><span className="transcribe-spinner" /> Analyzing…</>
+                          ) : "Transcribe to seq"}
+                        </button>
+                      );
+                    })()}
                   </div>
                 </div>
               )}

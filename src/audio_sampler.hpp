@@ -20,7 +20,7 @@ public:
   static constexpr auto bank_count = std::size_t{8};
   static constexpr auto stem_count = std::size_t{8};
 
-  AudioSampler();
+  explicit AudioSampler(ma_context *shared_ctx = nullptr);
   ~AudioSampler();
 
   AudioSampler(const AudioSampler &) = delete;

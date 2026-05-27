@@ -95,7 +95,7 @@ std::vector<float> normalize_wavetable(std::vector<float> samples) {
 
 } // namespace
 
-AudioSampler::AudioSampler() {
+AudioSampler::AudioSampler(ma_context *shared_ctx) {
   for (auto &ws : wav_streams_) {
     ws = std::make_unique<WavStream>();
   }
@@ -121,7 +121,7 @@ AudioSampler::AudioSampler() {
   config.dataCallback = &AudioSampler::playback_callback;
   config.pUserData = this;
 
-  if (ma_device_init(nullptr, &config, &device_) != MA_SUCCESS) {
+  if (ma_device_init(shared_ctx, &config, &device_) != MA_SUCCESS) {
     std::cerr << "warning: failed to initialize sampler playback device\n";
     return;
   }
@@ -860,13 +860,16 @@ void AudioSampler::set_stem(std::size_t idx, std::string name, std::string path)
 }
 
 void AudioSampler::clear_stems() {
-  for (std::size_t i = 0; i < stem_count; ++i) {
+  for (std::size_t i = 0; i < stem_count; ++i)
     stem_streams_[i]->stop();
+  {
     const auto lock = std::scoped_lock{mutex_};
-    stem_names_[i].clear();
-    stem_paths_[i].clear();
-    stem_cached_waveforms_[i].reset();
-    stem_frames_[i].store(0);
+    for (std::size_t i = 0; i < stem_count; ++i) {
+      stem_names_[i].clear();
+      stem_paths_[i].clear();
+      stem_cached_waveforms_[i].reset();
+      stem_frames_[i].store(0);
+    }
   }
   loaded_stem_count_.store(0);
   active_stem_.store(0);
@@ -997,14 +1000,27 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
   constexpr auto vibrato_frequency = 6.0F;
   constexpr auto pi = std::numbers::pi_v<float>;
 
+  const auto unison_depth = std::sqrt(wavetable_unison);
+  const auto has_unison = unison_depth > 0.001F;
+  const auto spread_d = has_unison
+      ? static_cast<double>(std::pow(2.0F, (72.0F * unison_depth) / 1200.0F))
+      : 1.0;
+  const auto has_vibrato = vibrato_depth > 0.001F;
+  const auto static_pitch_rate = has_vibrato
+      ? 1.0F
+      : std::pow(2.0F, pitch_bend * pitch_bend_range_semitones / 12.0F);
+
   for (ma_uint32 frame = 0; frame < frame_count; ++frame) {
     auto mixed_left = 0.0F;
     auto mixed_right = 0.0F;
-    const auto vibrato =
-        std::sin(self->vibrato_phase_) * vibrato_depth * vibrato_range_semitones;
-    const auto pitch_semitones =
-        pitch_bend * pitch_bend_range_semitones + vibrato;
-    const auto pitch_rate = std::pow(2.0F, pitch_semitones / 12.0F);
+    float pitch_rate;
+    if (has_vibrato) {
+      const auto vibrato =
+          std::sin(self->vibrato_phase_) * vibrato_depth * vibrato_range_semitones;
+      pitch_rate = std::pow(2.0F, (pitch_bend * pitch_bend_range_semitones + vibrato) / 12.0F);
+    } else {
+      pitch_rate = static_pitch_rate;
+    }
 
     for (auto &voice : voices) {
       if (!voice.active) {
@@ -1063,12 +1079,7 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
         voice_right = voice_sample;
       }
 
-      const auto unison_depth = std::sqrt(wavetable_unison);
-      if (unison_depth > 0.001F) {
-        constexpr auto detune_cents = 72.0F;
-        const auto spread =
-            std::pow(2.0F, (detune_cents * unison_depth) / 1200.0F);
-        const auto spread_d = static_cast<double>(spread);
+      if (has_unison) {
         auto lower = voice.loop
                          ? sample_at_loop(*sample, voice.position / spread_d, channel_count, 0U)
                          : sample_at(*sample, voice.position / spread_d, channel_count, 0U);
@@ -1119,7 +1130,9 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
       self->vibrato_phase_ -= 2.0F * pi;
     }
 
-    const auto tremolo = 1.0F - vibrato_depth * 0.35F * (1.0F - std::sin(self->vibrato_phase_)) * 0.5F;
+    const auto tremolo = has_vibrato
+        ? 1.0F - vibrato_depth * 0.35F * (1.0F - std::sin(self->vibrato_phase_)) * 0.5F
+        : 1.0F;
 
     constexpr auto stream_gain_scale = 0.8F;
     const auto n_stems = self->loaded_stem_count_.load(std::memory_order_relaxed);
@@ -1232,10 +1245,9 @@ float AudioSampler::sample_at_loop(const std::vector<float> &sample,
   }
 
   const auto size = static_cast<double>(frame_count);
-  auto wrapped = std::fmod(position, size);
-  if (wrapped < 0.0) {
-    wrapped += size;
-  }
+  auto wrapped = position;
+  if (wrapped >= size) wrapped -= size;
+  if (wrapped < 0.0) wrapped += size;
 
   const auto lower_index = static_cast<std::size_t>(wrapped);
   const auto upper_index = (lower_index + 1U) % frame_count;

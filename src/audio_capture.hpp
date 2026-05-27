@@ -46,6 +46,7 @@ public:
   [[nodiscard]] std::vector<float> spec_samples() const;
   [[nodiscard]] std::vector<float> consume_analysis_frames(std::size_t max_frames);
   void start_loopback();
+  [[nodiscard]] ma_context *shared_context();
   [[nodiscard]] std::optional<std::vector<float>> consume_captured_sample();
   [[nodiscard]] std::size_t captured_sample_frames() const;
   [[nodiscard]] const std::string &selected_device_name() const;

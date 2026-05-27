@@ -7,6 +7,7 @@ namespace analogno {
 
 struct TranscribedNote {
   int step{};
+  int duration_steps{1};
   int midi_note{};
   int velocity{100};
   std::size_t onset_frame{};  // frame within the trimmed region (0-based)

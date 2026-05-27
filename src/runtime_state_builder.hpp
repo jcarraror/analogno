@@ -39,7 +39,8 @@ build_wavetable(const std::vector<std::pair<float, float>> &points,
     const std::string &stem_split_state, const std::string &stem_split_error,
     float stem_split_progress, const std::string &stem_split_detail,
     const std::vector<std::string> &stem_split_log,
-    const std::string &stems_folder);
+    const std::string &stems_folder,
+    const std::string &transcribe_state);
 
 [[nodiscard]] WebLibraryState make_web_library_state(
     const std::vector<WebPreset> &presets,

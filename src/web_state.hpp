@@ -104,6 +104,7 @@ struct WebAudioState final {
   std::size_t voice_seq_recorded_segments{};
   float voice_seq_record_progress{};
   std::vector<float> spec_samples{}; // 2048 raw audio samples for frontend FFT
+  std::string transcribe_state{"idle"}; // idle | running | done
   std::string stem_split_state{"idle"}; // idle | running | done | error
   std::string stem_split_error{};
   float stem_split_progress{};

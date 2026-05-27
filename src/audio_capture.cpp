@@ -491,6 +491,8 @@ void AudioCapture::loopback_callback(ma_device *device, void *output,
   }
 }
 
+ma_context *AudioCapture::shared_context() { return &context_; }
+
 void AudioCapture::start_loopback() {
   if (!context_ready_ || loopback_ready_.load()) return;
 

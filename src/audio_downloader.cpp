@@ -131,23 +131,27 @@ void AudioDownloader::download(std::string source) {
     std::error_code ec;
     fs::create_directories(k_out_dir, ec);
 
-    // Remove any previous download so we can reliably find the new one
-    for (const auto *ext :
-         {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".webm", ".opus"}) {
-      const auto p = fs::path{k_out_dir} / (std::string{"download"} + ext);
-      fs::remove(p, ec);
+    // Remove any previous downloads so we can reliably find the new one
+    for (const auto &entry : fs::directory_iterator(k_out_dir, ec)) {
+      const auto ext = entry.path().extension().string();
+      if (ext == ".mp3" || ext == ".wav" || ext == ".flac" ||
+          ext == ".ogg" || ext == ".m4a" || ext == ".webm" || ext == ".opus") {
+        fs::remove(entry.path(), ec);
+      }
     }
 
     const auto out_template =
-        std::string{k_out_dir} + "/download.%(ext)s";
+        std::string{k_out_dir} + "/%(title)s.%(ext)s";
 
     // --newline forces one progress line per stdout write (required for popen)
+    // --restrict-filenames keeps the title ASCII-safe for use as a folder name
     const std::string cmd =
         find_ytdlp() +
         " -x"
         " --audio-format mp3"
         " --audio-quality 0"
         " --no-playlist"
+        " --restrict-filenames"
         " --newline"
         " -o " + shell_quote(out_template) +
         " " + shell_quote(source) +
@@ -195,15 +199,19 @@ void AudioDownloader::download(std::string source) {
       return;
     }
 
-    // Find the output file (format may vary even with --audio-format mp3)
+    // Find the output file — title-based name so scan the directory
     std::optional<fs::path> out_path;
-    for (const auto *ext :
-         {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".webm", ".opus"}) {
-      const auto p = fs::path{k_out_dir} / (std::string{"download"} + ext);
-      if (fs::exists(p)) {
-        out_path = p;
-        break;
+    static constexpr std::array audio_exts{
+        ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".webm", ".opus"};
+    for (const auto &entry : fs::directory_iterator(k_out_dir, ec)) {
+      const auto ext = entry.path().extension().string();
+      for (const auto *e : audio_exts) {
+        if (ext == e) {
+          out_path = entry.path();
+          break;
+        }
       }
+      if (out_path) break;
     }
 
     if (!out_path) {

@@ -22,7 +22,6 @@ void WavStream::start(std::string path, float trim_start, float trim_end) {
   read_pos_.store(0, std::memory_order_relaxed);
   eof_.store(false, std::memory_order_relaxed);
   stop_flag_.store(false, std::memory_order_relaxed);
-  std::fill(ring_.begin(), ring_.end(), 0.0F);
 
   active_.store(true, std::memory_order_release);
   reader_ = std::thread(&WavStream::reader_func, this,
@@ -38,6 +37,10 @@ void WavStream::stop() {
 }
 
 bool WavStream::read_frame(float &l, float &r) {
+  if (!active_.load(std::memory_order_acquire)) {
+    return false;
+  }
+
   const auto w = write_pos_.load(std::memory_order_acquire);
   const auto rd = read_pos_.load(std::memory_order_relaxed);
 
