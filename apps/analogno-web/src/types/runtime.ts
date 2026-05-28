@@ -71,6 +71,7 @@ export type RuntimeState = {
       waveform: number[];
       rootNote: number;
       sliceCount: number;
+      transcribeCached: boolean;
     }>;
     activeBank: number;
     touchpadSketch: number[];
@@ -99,6 +100,7 @@ export type RuntimeState = {
     voiceSeqRecordProgress: number;
     specSamples: number[];
     signalsVolume: number;
+    micHasSample: boolean;
     transcribeState: "idle" | "running";
     stemSplitState: "idle" | "running" | "done" | "error";
     stemSplitError: string;

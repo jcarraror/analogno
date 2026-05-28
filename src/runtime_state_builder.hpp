@@ -40,7 +40,9 @@ build_wavetable(const std::vector<std::pair<float, float>> &points,
     float stem_split_progress, const std::string &stem_split_detail,
     const std::vector<std::string> &stem_split_log,
     const std::string &stems_folder,
-    const std::string &transcribe_state);
+    const std::string &transcribe_state,
+    bool mic_has_sample,
+    const std::array<bool, AudioSampler::bank_count> &transcribe_cached);
 
 [[nodiscard]] WebLibraryState make_web_library_state(
     const std::vector<WebPreset> &presets,

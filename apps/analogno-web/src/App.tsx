@@ -765,6 +765,14 @@ export function App() {
     socket?.send(JSON.stringify({ type: "transcribeBankToSeq", bank }));
   }
 
+  function revertToTranscribed(bank: number) {
+    socket?.send(JSON.stringify({ type: "revertToTranscribed", bank }));
+  }
+
+  function transcribeMicToSeq() {
+    socket?.send(JSON.stringify({ type: "transcribeMicToSeq" }));
+  }
+
   function setPatch(bank: number, program: number) {
     socket?.send(JSON.stringify({ type: "setPatch", bank, program }));
   }
@@ -913,6 +921,22 @@ export function App() {
           <Meter label="Mic level" value={audio?.micLevel ?? 0} />
           <Meter label="Envelope" value={(audio?.envelope ?? 0) * 8} />
           <Waveform samples={audio?.waveform ?? []} />
+          {audio?.micHasSample && (() => {
+            const ts = audio?.transcribeState ?? "idle";
+            return (
+              <button
+                type="button"
+                className={`transcribe-btn${ts === "running" ? " transcribe-btn--running" : ""}`}
+                disabled={connection !== "online" || ts === "running"}
+                title="Analyze the last mic recording and write detected onsets as sequencer steps"
+                onClick={transcribeMicToSeq}
+              >
+                {ts === "running" ? (
+                  <><span className="transcribe-spinner" /> Analyzing…</>
+                ) : "Transcribe mic → seq"}
+              </button>
+            );
+          })()}
         </section>
         <section className="config-section">
           <h3>Motion</h3>
@@ -1154,18 +1178,32 @@ export function App() {
                   <div className="bank-param-row">
                     {(() => {
                       const ts = audio?.transcribeState ?? "idle";
+                      const cached = activeBankData?.transcribeCached ?? false;
                       return (
-                        <button
-                          type="button"
-                          className={`transcribe-btn${ts === "running" ? " transcribe-btn--running" : ""}`}
-                          disabled={connection !== "online" || ts === "running"}
-                          title="Detect onsets and pitches in this sample and write them as sequencer steps on the active track"
-                          onClick={() => transcribeBankToSeq(audio?.activeBank ?? 0)}
-                        >
-                          {ts === "running" ? (
-                            <><span className="transcribe-spinner" /> Analyzing…</>
-                          ) : "Transcribe to seq"}
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            className={`transcribe-btn${ts === "running" ? " transcribe-btn--running" : ""}`}
+                            disabled={connection !== "online" || ts === "running"}
+                            title="Detect onsets and pitches in this sample and write them as sequencer steps on the active track"
+                            onClick={() => transcribeBankToSeq(audio?.activeBank ?? 0)}
+                          >
+                            {ts === "running" ? (
+                              <><span className="transcribe-spinner" /> Analyzing…</>
+                            ) : "Transcribe to seq"}
+                          </button>
+                          {cached && (
+                            <button
+                              type="button"
+                              className="transcribe-btn"
+                              disabled={connection !== "online" || ts === "running"}
+                              title="Revert sequencer tracks to the last transcription result for this bank"
+                              onClick={() => revertToTranscribed(audio?.activeBank ?? 0)}
+                            >
+                              Revert
+                            </button>
+                          )}
+                        </>
                       );
                     })()}
                   </div>

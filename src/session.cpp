@@ -20,7 +20,8 @@ std::string default_session_path() {
          "/.local/share/analogno/session.json";
 }
 
-void save_session(const Sequencer &seq, const std::string &path) {
+void save_session(const Sequencer &seq, const std::string &stems_folder,
+                  const std::string &path) {
   Json jtracks = Json::array();
   for (const auto &track : seq.tracks) {
     Json jsteps = Json::array();
@@ -54,6 +55,7 @@ void save_session(const Sequencer &seq, const std::string &path) {
       {"step_count", seq.step_count},
       {"step_division", seq.step_division},
       {"tracks", jtracks},
+      {"stems_folder", stems_folder},
   };
 
   std::filesystem::create_directories(
@@ -67,7 +69,7 @@ void save_session(const Sequencer &seq, const std::string &path) {
   }
 }
 
-std::optional<Sequencer> load_session(const std::string &path) {
+std::optional<SessionData> load_session(const std::string &path) {
   std::ifstream f{path};
   if (!f) {
     return std::nullopt;
@@ -124,8 +126,9 @@ std::optional<Sequencer> load_session(const std::string &path) {
       }
     }
 
+    const auto stems_folder = j.value("stems_folder", std::string{});
     std::cout << "[session] loaded (" << seq.tracks.size() << " tracks)\n";
-    return seq;
+    return SessionData{std::move(seq), stems_folder};
   } catch (const std::exception &e) {
     std::cerr << "[session] load failed: " << e.what() << '\n';
     return std::nullopt;

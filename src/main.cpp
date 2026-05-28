@@ -384,8 +384,13 @@ void run_event_loop(Gamepad &gamepad,
   analogno::WaveformSketch sketch{};
   analogno::Sequencer seq{};
   const auto session_path = analogno::default_session_path();
+  std::string session_stems_folder{};
   if (auto loaded = analogno::load_session(session_path)) {
-    seq = std::move(*loaded);
+    seq = std::move(loaded->seq);
+    if (!loaded->stems_folder.empty() &&
+        std::filesystem::exists(loaded->stems_folder)) {
+      session_stems_folder = loaded->stems_folder;
+    }
     for (const auto &track : seq.tracks) {
       const auto ch = analogno::effective_midi_channel(track);
       midi.set_channel_volume(ch, track.volume);
@@ -411,7 +416,9 @@ void run_event_loop(Gamepad &gamepad,
   std::string stem_split_detail{};
   std::vector<std::string> stem_split_log{};
   std::string stems_base_dir{"/tmp/analogno-stems"};
-  std::string stems_folder = stems_base_dir;
+  std::string stems_folder = session_stems_folder.empty()
+                                 ? stems_base_dir
+                                 : session_stems_folder;
 
   // Async transcription state
   struct TranscribeJob {
@@ -423,6 +430,9 @@ void run_event_loop(Gamepad &gamepad,
   std::atomic<bool> transcribe_running{false};
   std::mutex transcribe_result_mutex{};
   std::optional<TranscribeJob> transcribe_result{};
+  std::array<std::optional<analogno::TranscriptionResult>,
+             AudioSampler::bank_count> transcribe_cache{};
+  std::vector<float> mic_capture{}; // last mic recording (mono, ch=1, 48kHz)
   // Touchpad swipe for seq step navigation (active when a step is armed).
   struct TouchSwipe { float prev_x{0.0f}; float prev_y{0.0f}; bool active{false}; };
   TouchSwipe tp_swipe{};
@@ -653,6 +663,54 @@ void run_event_loop(Gamepad &gamepad,
       }
     }
 
+    const auto apply_transcription = [&](const analogno::TranscriptionResult &res,
+                                         std::size_t bank_idx,
+                                         std::size_t first_track) {
+      if (res.tracks.empty() || res.onset_frames.empty()) return;
+
+      const auto snap = audio_sampler.bank_snapshot(bank_idx);
+      if (snap.samples && !snap.samples->empty()) {
+        const auto bank_ch = std::max<std::size_t>(snap.channel_count, 1U);
+        const auto total_f = snap.samples->size() / bank_ch;
+        const auto trim_start_f =
+            static_cast<double>(snap.trim_start) * static_cast<double>(total_f);
+        std::vector<double> onset_positions;
+        onset_positions.reserve(res.onset_frames.size());
+        for (const auto of : res.onset_frames)
+          onset_positions.push_back(trim_start_f + of);
+        audio_sampler.set_bank_onset_frames(bank_idx, std::move(onset_positions));
+      }
+      audio_sampler.set_bank_slice_count(bank_idx,
+          static_cast<int>(res.onset_frames.size()));
+      audio_sampler.set_bank_root_note(bank_idx, res.suggested_root_note);
+
+      const auto n_tracks = std::min(res.tracks.size(),
+          seq.tracks.size() - first_track);
+      for (std::size_t t = 0; t < n_tracks; ++t) {
+        auto &track = seq.tracks[first_track + t];
+        for (auto &step : track.steps) step = {};
+        track.sample_bank = static_cast<int>(bank_idx);
+        track.loop_length = res.suggested_loop_length;
+        for (const auto &n : res.tracks[t]) {
+          if (n.step < 0 || n.step >= seq.step_count) continue;
+          const auto note_len =
+              std::clamp(n.duration_steps, 1, std::max(1, seq.step_count - n.step));
+          auto &step = track.steps[static_cast<std::size_t>(n.step)];
+          step.active = true; step.tie = false;
+          step.midi_note = n.midi_note; step.degree = n.onset_idx;
+          step.velocity = n.velocity;
+          for (int hold = 1; hold < note_len; ++hold) {
+            auto &tie = track.steps[static_cast<std::size_t>(n.step + hold)];
+            tie.active = true; tie.tie = true;
+            tie.midi_note = n.midi_note; tie.degree = n.onset_idx;
+            tie.velocity = n.velocity;
+          }
+        }
+      }
+      std::cout << "[transcribe] applied: " << res.onset_frames.size()
+          << " onsets, " << n_tracks << " tracks, root=" << res.suggested_root_note << '\n';
+    };
+
     for (auto &command : web.consume_commands()) {
       std::visit(Overloaded{
           [&](const WebSocketServer::Panic &) {
@@ -791,7 +849,7 @@ void run_event_loop(Gamepad &gamepad,
               }
             }
             midi.send_stop();
-            analogno::save_session(seq, session_path);
+            analogno::save_session(seq, stems_folder, session_path);
             std::cout << "seq: stop\n";
           },
           [&](const WebSocketServer::SeqAddTrack &) {
@@ -1034,6 +1092,7 @@ void run_event_loop(Gamepad &gamepad,
             const auto path = std::filesystem::path{stems_folder} / (std::string{labels[cmd.stem_idx]} + ".wav");
             if (!std::filesystem::exists(path)) return;
             audio_sampler.load_stem_to_bank(cmd.bank, path.string(), cmd.trim_start, cmd.trim_end);
+            transcribe_cache[cmd.bank].reset();
             audio_sampler.set_active_bank(cmd.bank);
             sampler_mode = true;
             if (seq.active_track >= 0 &&
@@ -1112,6 +1171,49 @@ void run_event_loop(Gamepad &gamepad,
               transcribe_running.store(false);
             });
           },
+          [&](const WebSocketServer::TranscribeMicToSeq &) {
+            if (seq.active_track < 0 ||
+                static_cast<std::size_t>(seq.active_track) >= seq.tracks.size()) return;
+            if (transcribe_running.load()) return;
+            if (mic_capture.empty()) {
+              std::cout << "[transcribe] no mic capture available\n";
+              return;
+            }
+
+            if (transcribe_thread.joinable()) transcribe_thread.join();
+            transcribe_running.store(true);
+            const auto active_bank = audio_sampler.active_bank();
+            const auto first_track = static_cast<std::size_t>(seq.active_track);
+            const auto bpm = static_cast<float>(seq.bpm);
+            const auto step_div = seq.step_division;
+            const auto step_cnt = seq.step_count;
+            auto samples_copy = mic_capture;
+            std::cout << "[transcribe] analyzing mic capture async...\n";
+
+            transcribe_thread = std::thread([&, samples_copy = std::move(samples_copy),
+                                             active_bank, first_track, bpm, step_div, step_cnt] {
+              auto res = analogno::transcribe_to_seq(
+                  samples_copy, 1,
+                  0.0F, 1.0F,
+                  bpm, step_div, step_cnt);
+              const auto lock = std::scoped_lock{transcribe_result_mutex};
+              transcribe_result = TranscribeJob{std::move(res), active_bank, first_track};
+              transcribe_running.store(false);
+            });
+          },
+          [&](const WebSocketServer::RevertToTranscribed &cmd) {
+            if (cmd.bank < 0 || cmd.bank >= 8) return;
+            if (seq.active_track < 0 ||
+                static_cast<std::size_t>(seq.active_track) >= seq.tracks.size()) return;
+            if (transcribe_running.load()) return;
+            const auto bidx = static_cast<std::size_t>(cmd.bank);
+            if (!transcribe_cache[bidx]) {
+              std::cout << "[transcribe] no cached result for bank " << cmd.bank << '\n';
+              return;
+            }
+            apply_transcription(*transcribe_cache[bidx], bidx,
+                                static_cast<std::size_t>(seq.active_track));
+          },
           [&](const WebSocketServer::OpenStemFolderDialog &) {
             const auto try_dialog = [](const char *cmd) -> std::string {
               FILE *pipe = popen(cmd, "r");
@@ -1160,6 +1262,29 @@ void run_event_loop(Gamepad &gamepad,
         web.set_stems_folder(stems_folder);
         std::error_code stem_copy_ec;
         std::filesystem::create_directories(web_stem_dir, stem_copy_ec);
+
+        // Keep at most 5 stem folders; remove oldest by last-write-time.
+        constexpr std::size_t max_stem_folders = 5;
+        {
+          std::vector<std::pair<std::filesystem::file_time_type,
+                                std::filesystem::path>> dirs;
+          std::error_code ec;
+          for (const auto &entry :
+               std::filesystem::directory_iterator{stems_base_dir, ec}) {
+            if (entry.is_directory(ec)) {
+              dirs.emplace_back(entry.last_write_time(ec), entry.path());
+            }
+          }
+          if (dirs.size() > max_stem_folders) {
+            std::sort(dirs.begin(), dirs.end());
+            for (std::size_t i = 0; i + max_stem_folders < dirs.size(); ++i) {
+              std::error_code rm_ec;
+              std::filesystem::remove_all(dirs[i].second, rm_ec);
+              std::cout << "[stems] pruned old folder: "
+                        << dirs[i].second.filename() << '\n';
+            }
+          }
+        }
         for (std::size_t i = 0; i < stem_src_paths.size(); ++i) {
           const auto dest = web_stem_dir / (std::string{labels[i]} + ".wav");
           if (!stem_copy_ec) {
@@ -1233,54 +1358,15 @@ void run_event_loop(Gamepad &gamepad,
       stem_split_log = audio_downloader.log();
     }
 
+    // Apply a cached TranscriptionResult to the sequencer and sampler.
     if (!transcribe_running.load()) {
       const auto lock = std::scoped_lock{transcribe_result_mutex};
       if (transcribe_result) {
         auto job = std::move(*transcribe_result);
         transcribe_result.reset();
-        const auto &res = job.result;
-        if (!res.tracks.empty() && !res.onset_frames.empty()) {
-          const auto snap = audio_sampler.bank_snapshot(job.bank_idx);
-          if (snap.samples && !snap.samples->empty()) {
-            const auto bank_ch = std::max<std::size_t>(snap.channel_count, 1U);
-            const auto total_f = snap.samples->size() / bank_ch;
-            const auto trim_start_f =
-                static_cast<double>(snap.trim_start) * static_cast<double>(total_f);
-            std::vector<double> onset_positions;
-            onset_positions.reserve(res.onset_frames.size());
-            for (const auto of : res.onset_frames)
-              onset_positions.push_back(trim_start_f + of);
-            audio_sampler.set_bank_onset_frames(job.bank_idx, std::move(onset_positions));
-          }
-          audio_sampler.set_bank_slice_count(job.bank_idx,
-              static_cast<int>(res.onset_frames.size()));
-          audio_sampler.set_bank_root_note(job.bank_idx, res.suggested_root_note);
-
-          const auto n_tracks = std::min(res.tracks.size(),
-              seq.tracks.size() - job.first_track);
-          for (std::size_t t = 0; t < n_tracks; ++t) {
-            auto &track = seq.tracks[job.first_track + t];
-            for (auto &step : track.steps) step = {};
-            track.sample_bank = static_cast<int>(job.bank_idx);
-            track.loop_length = res.suggested_loop_length;
-            for (const auto &n : res.tracks[t]) {
-              if (n.step < 0 || n.step >= seq.step_count) continue;
-              const auto note_len =
-                  std::clamp(n.duration_steps, 1, std::max(1, seq.step_count - n.step));
-              auto &step = track.steps[static_cast<std::size_t>(n.step)];
-              step.active = true; step.tie = false;
-              step.midi_note = n.midi_note; step.degree = n.onset_idx;
-              step.velocity = n.velocity;
-              for (int hold = 1; hold < note_len; ++hold) {
-                auto &tie = track.steps[static_cast<std::size_t>(n.step + hold)];
-                tie.active = true; tie.tie = true;
-                tie.midi_note = n.midi_note; tie.degree = n.onset_idx;
-                tie.velocity = n.velocity;
-              }
-            }
-          }
-          std::cout << "[transcribe] " << res.onset_frames.size()
-              << " onsets, " << n_tracks << " tracks, root=" << res.suggested_root_note << '\n';
+        if (!job.result.tracks.empty() && !job.result.onset_frames.empty()) {
+          transcribe_cache[job.bank_idx] = job.result;
+          apply_transcription(job.result, job.bank_idx, job.first_track);
         } else {
           std::cout << "[transcribe] no onsets detected\n";
         }
@@ -1327,7 +1413,7 @@ void run_event_loop(Gamepad &gamepad,
           }
         }
         midi.send_stop();
-        analogno::save_session(seq, session_path);
+        analogno::save_session(seq, stems_folder, session_path);
         std::cout << "seq: stop (controller)\n";
       } else {
         seq.playing = true;
@@ -1370,6 +1456,8 @@ void run_event_loop(Gamepad &gamepad,
 
     if (auto sample = audio_capture.consume_captured_sample()) {
       const auto frame_count = sample->size();
+      mic_capture = *sample;
+      transcribe_cache[audio_sampler.active_bank()].reset();
       audio_sampler.set_sample(std::move(*sample));
       sampler_mode = true;
       MusicalIntent panic{};
@@ -1379,6 +1467,29 @@ void run_event_loop(Gamepad &gamepad,
       active_notes.apply(panic);
       last_intent = panic;
       std::cout << "captured sampler sound: " << frame_count << " frames\n";
+
+      if (!transcribe_running.load() && seq.active_track >= 0 &&
+          static_cast<std::size_t>(seq.active_track) < seq.tracks.size()) {
+        if (transcribe_thread.joinable()) transcribe_thread.join();
+        transcribe_running.store(true);
+        const auto active_bank = audio_sampler.active_bank();
+        const auto first_track = static_cast<std::size_t>(seq.active_track);
+        const auto bpm = static_cast<float>(seq.bpm);
+        const auto step_div = seq.step_division;
+        const auto step_cnt = seq.step_count;
+        auto samples_copy = mic_capture;
+        std::cout << "[transcribe] auto-analyzing mic capture...\n";
+        transcribe_thread = std::thread([&, samples_copy = std::move(samples_copy),
+                                         active_bank, first_track, bpm, step_div, step_cnt] {
+          auto res = analogno::transcribe_to_seq(
+              samples_copy, 1,
+              0.0F, 1.0F,
+              bpm, step_div, step_cnt);
+          const auto lock = std::scoped_lock{transcribe_result_mutex};
+          transcribe_result = TranscribeJob{std::move(res), active_bank, first_track};
+          transcribe_running.store(false);
+        });
+      }
     }
 
     const auto audio_features = audio_capture.consume_features();
@@ -1721,7 +1832,14 @@ void run_event_loop(Gamepad &gamepad,
                                  stem_split_detail,
                                  stem_split_log,
                                  stems_folder,
-                                 transcribe_running.load() ? std::string{"running"} : std::string{"idle"}));
+                                 transcribe_running.load() ? std::string{"running"} : std::string{"idle"},
+                                 !mic_capture.empty(),
+                                 [&] {
+                                   std::array<bool, AudioSampler::bank_count> cached{};
+                                   for (std::size_t i = 0; i < AudioSampler::bank_count; ++i)
+                                     cached[i] = transcribe_cache[i].has_value();
+                                   return cached;
+                                 }()));
       last_web_publish = now;
     }
 
@@ -1741,7 +1859,7 @@ void run_event_loop(Gamepad &gamepad,
   if (seq.playing) {
     midi.send_stop();
   }
-  analogno::save_session(seq, session_path);
+  analogno::save_session(seq, stems_folder, session_path);
 }
 
 } // namespace

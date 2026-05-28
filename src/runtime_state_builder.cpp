@@ -177,7 +177,9 @@ WebRuntimeState make_web_state(
     float stem_split_progress, const std::string &stem_split_detail,
     const std::vector<std::string> &stem_split_log,
     const std::string &stems_folder,
-    const std::string &transcribe_state) {
+    const std::string &transcribe_state,
+    bool mic_has_sample,
+    const std::array<bool, AudioSampler::bank_count> &transcribe_cached) {
   std::vector<WebCaptureDevice> capture_devices{};
 
   for (const auto &device : audio_capture.devices()) {
@@ -202,6 +204,7 @@ WebRuntimeState make_web_state(
         .waveform = audio_sampler.bank_waveform(i, 256U),
         .root_note = audio_sampler.bank_root_note(i),
         .slice_count = audio_sampler.bank_slice_count(i),
+        .transcribe_cached = transcribe_cached[i],
     });
   }
 
@@ -314,6 +317,7 @@ WebRuntimeState make_web_state(
               .voice_seq_recorded_segments = voice_seq_status.recorded_segments,
               .voice_seq_record_progress = voice_seq_status.record_progress,
               .spec_samples = spec_samples,
+              .mic_has_sample = mic_has_sample,
               .transcribe_state = transcribe_state,
               .stem_split_state = stem_split_state,
               .stem_split_error = stem_split_error,

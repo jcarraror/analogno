@@ -61,6 +61,7 @@ Json sample_banks_json(const std::vector<WebSampleBank> &banks) {
         {"waveform", bank.waveform},
         {"rootNote", bank.root_note},
         {"sliceCount", bank.slice_count},
+        {"transcribeCached", bank.transcribe_cached},
     });
   }
 
@@ -167,6 +168,7 @@ std::string runtime_json_string(const WebRuntimeState &state) {
                state.audio.voice_seq_recorded_segments},
               {"voiceSeqRecordProgress", state.audio.voice_seq_record_progress},
               {"specSamples", state.audio.spec_samples},
+              {"micHasSample", state.audio.mic_has_sample},
               {"transcribeState", state.audio.transcribe_state},
               {"stemSplitState", state.audio.stem_split_state},
               {"stemSplitError", state.audio.stem_split_error},
@@ -936,6 +938,13 @@ private:
         const auto bank = json.value("bank", -1);
         if (bank >= 0 && bank < 8) {
           enqueue_command(WebSocketServer::TranscribeBankToSeq{.bank = bank});
+        }
+      } else if (json.value("type", "") == "transcribeMicToSeq") {
+        enqueue_command(WebSocketServer::TranscribeMicToSeq{});
+      } else if (json.value("type", "") == "revertToTranscribed") {
+        const auto bank = json.value("bank", -1);
+        if (bank >= 0 && bank < 8) {
+          enqueue_command(WebSocketServer::RevertToTranscribed{.bank = bank});
         }
       }
     } catch (const std::exception &exception) {

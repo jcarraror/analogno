@@ -138,6 +138,10 @@ public:
   struct TranscribeBankToSeq final {
     int bank{};
   };
+  struct TranscribeMicToSeq final {};
+  struct RevertToTranscribed final {
+    int bank{};
+  };
   struct SetBankSliceCount final {
     int bank{};
     int count{0};
@@ -196,6 +200,7 @@ public:
                                SetTrackVelocityScale, SetTrackSolo,
                                SetSignalsVolume, SetBankRootNote,
                                SetBankSliceCount, TranscribeBankToSeq,
+                               TranscribeMicToSeq, RevertToTranscribed,
                                SplitAudioFile,
                                StreamPlayBank, StreamStopBank,
                                StemPlay, StemStop, SetStemFolder, SetActiveStem,
