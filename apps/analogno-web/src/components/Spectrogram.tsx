@@ -104,15 +104,11 @@ function specMidiFreq(n: number): number {
 export function Spectrogram({
   specSamples,
   activeNotes,
-  blowActive,
-  blowLevel,
   expression,
   filterCutoff,
 }: {
   specSamples: number[];
   activeNotes: number[];
-  blowActive: boolean;
-  blowLevel: number;
   expression: number;
   filterCutoff: number;
 }) {
@@ -195,12 +191,6 @@ export function Spectrogram({
       ctx.fillText(midiNoteName(n), SPEC_CANVAS_W - 29, y + 3);
     }
 
-    // Blow glow
-    if (blowActive) {
-      ctx.fillStyle = 'rgba(100,200,255,0.35)';
-      ctx.fillRect(SPEC_CANVAS_W - 3, 0, 3, SPEC_CANVAS_H);
-    }
-
     // ── Controller strip ──────────────────────────────────────────────────
     if (!stripHistRef.current) stripHistRef.current = sctx.createImageData(SPEC_CANVAS_W, STRIP_H);
     const sh = stripHistRef.current;
@@ -211,11 +201,10 @@ export function Spectrogram({
       sd.copyWithin(row, row + 4, row + SPEC_CANVAS_W * 4);
     }
 
-    const LANE_H = Math.floor(STRIP_H / 3);
+    const LANE_H = Math.floor(STRIP_H / 2);
     const lanes = [
-      { value: expression,               max: 1, r: 80,  g: 210, b: 80  }, // expr — green
-      { value: filterCutoff,             max: 1, r: 80,  g: 140, b: 220 }, // cut  — blue
-      { value: Math.min(blowLevel, 2),   max: 2, r: blowActive ? 255 : 80, g: 220, b: blowActive ? 80 : 220 }, // blow
+      { value: expression,   max: 1, r: 80, g: 210, b: 80  }, // expr — green
+      { value: filterCutoff, max: 1, r: 80, g: 140, b: 220 }, // cut  — blue
     ];
 
     for (let lane = 0; lane < lanes.length; lane++) {
@@ -239,14 +228,14 @@ export function Spectrogram({
 
     // Lane labels
     sctx.font = '9px monospace'; sctx.textAlign = 'right';
-    (['expr', 'cut', 'blow'] as const).forEach((label, i) => {
+    (['expr', 'cut'] as const).forEach((label, i) => {
       sctx.fillStyle = 'rgba(0,0,0,0.6)';
       sctx.fillRect(0, i * LANE_H, 34, LANE_H - 1);
-      sctx.fillStyle = i === 0 ? '#4ade80' : i === 1 ? '#60a5fa' : '#22d3ee';
+      sctx.fillStyle = i === 0 ? '#4ade80' : '#60a5fa';
       sctx.fillText(label, 33, i * LANE_H + LANE_H - 4);
     });
 
-  }, [specSamples, activeNotes, blowActive, blowLevel, expression, filterCutoff]);
+  }, [specSamples, activeNotes, expression, filterCutoff]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>

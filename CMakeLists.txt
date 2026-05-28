@@ -87,6 +87,12 @@ add_executable(analogno
   src/stem_splitter.cpp
   src/stem_transcriber.cpp
   src/wav_stream.cpp
+  src/transcribe_manager.cpp
+  src/stem_pipeline.cpp
+  src/command_handler.cpp
+  src/touchpad_handler.cpp
+  src/live_router.cpp
+  src/event_loop.cpp
 )
 
 target_include_directories(analogno

@@ -2,6 +2,22 @@ import React, { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, us
 import type { ConnectionState, RuntimeState, SoundfontPreset } from "../types/runtime";
 import { midiNoteName, patchName } from "../lib/music";
 
+export type VoiceSeqState = {
+  available: boolean;
+  enabled: boolean;
+  recording: boolean;
+  mode: "percussion" | "harmonic" | "hybrid";
+  snap: boolean;
+  sensitivity: number;
+  timingOffsetMs: number;
+  lastNote: number;
+  lastVelocity: number;
+  compiled: boolean;
+  acceptedNotes: number;
+  rejectedNotes: number;
+  recordedSegments: number;
+};
+
 // --- Sequencer ---
 
 export type SeqStepEdit = { active: boolean; tie: boolean; degree: number; velocity: number; midiNote: number };
@@ -40,6 +56,8 @@ export function SequencerPanel({
   onTrackPan,
   onTrackVelocityScale,
   onTrackSolo,
+  voiceSeq,
+  onVoiceSeq,
 }: {
   seq: RuntimeState['seq'] | undefined;
   presets: SoundfontPreset[];
@@ -58,6 +76,8 @@ export function SequencerPanel({
   onTrackPan: (track: number, pan: number) => void;
   onTrackVelocityScale: (track: number, scale: number) => void;
   onTrackSolo: (track: number, solo: boolean) => void;
+  voiceSeq?: VoiceSeqState;
+  onVoiceSeq?: (next: Partial<{ enabled: boolean; recording: boolean; mode: "percussion" | "harmonic" | "hybrid"; snapToScale: boolean; sensitivity: number; timingOffsetMs: number }>) => void;
 }) {
   const initialized = useRef(false);
   const tracksSignature = useRef('');
@@ -721,6 +741,135 @@ export function SequencerPanel({
         onClick={onAddTrack}>
         + Track
       </button>
+
+      {voiceSeq && onVoiceSeq && (
+        <VoiceSection vs={voiceSeq} onChange={onVoiceSeq} disabled={disabled} />
+      )}
+    </div>
+  );
+}
+
+function VoiceSection({
+  vs,
+  onChange,
+  disabled,
+}: {
+  vs: VoiceSeqState;
+  onChange: (next: Partial<{ enabled: boolean; recording: boolean; mode: "percussion" | "harmonic" | "hybrid"; snapToScale: boolean; sensitivity: number; timingOffsetMs: number }>) => void;
+  disabled: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const statusDot = vs.recording ? "seq-voice-dot-rec" : vs.enabled ? "seq-voice-dot-on" : "seq-voice-dot-off";
+  const statusText = !vs.available
+    ? (disabled ? "offline" : vs.compiled ? "init failed" : "no aubio")
+    : vs.recording
+      ? vs.lastNote >= 0 ? `${midiNoteName(vs.lastNote)} vel ${vs.lastVelocity}` : "listening…"
+      : vs.enabled
+        ? vs.lastNote >= 0 ? `${midiNoteName(vs.lastNote)} vel ${vs.lastVelocity}` : "ready"
+        : "off";
+
+  return (
+    <div className="seq-voice">
+      <div className="seq-voice-header">
+        <span className="seq-voice-title">Voice input</span>
+        <button
+          type="button"
+          className="seq-voice-expand"
+          onClick={() => setExpanded(e => !e)}
+          title={expanded ? "Collapse settings" : "Expand settings"}
+        >
+          {expanded ? "▴" : "▾"}
+        </button>
+      </div>
+
+      <div className="seq-voice-bar">
+        <button
+          type="button"
+          className={`seq-voice-btn${vs.enabled ? " seq-voice-btn-on" : ""}`}
+          disabled={disabled || !vs.available}
+          onClick={() => onChange({ enabled: !vs.enabled, recording: !vs.enabled ? vs.recording : false })}
+        >
+          {vs.enabled ? "Voice ON" : "Voice OFF"}
+        </button>
+
+        <button
+          type="button"
+          className={`seq-voice-btn seq-voice-rec${vs.recording ? " seq-voice-rec-active" : ""}`}
+          disabled={disabled || !vs.available}
+          onClick={() => onChange({ enabled: true, recording: !vs.recording })}
+        >
+          {vs.recording ? "■ Stop" : "● Rec"}
+        </button>
+
+        <span className="seq-voice-status">
+          <span className={`seq-voice-dot ${statusDot}`} />
+          {statusText}
+        </span>
+
+        {vs.available && (
+          <span className="seq-voice-counters">
+            {vs.acceptedNotes > 0 && <span className="seq-voice-count seq-voice-count-ok">{vs.acceptedNotes}</span>}
+            {vs.rejectedNotes > 0 && <span className="seq-voice-count seq-voice-count-rej">−{vs.rejectedNotes}</span>}
+            {vs.recordedSegments > 0 && <span className="seq-voice-count seq-voice-count-seg">{vs.recordedSegments}seg</span>}
+          </span>
+        )}
+      </div>
+
+      {expanded && (
+        <div className="seq-voice-settings">
+          <label className="seq-voice-select-field">
+            <span>Input</span>
+            <select
+              value={vs.mode}
+              disabled={disabled || !vs.available}
+              onChange={e => onChange({ mode: e.target.value as "percussion" | "harmonic" | "hybrid" })}
+            >
+              <option value="percussion">Percussion</option>
+              <option value="harmonic">Harmonic</option>
+              <option value="hybrid">Hybrid</option>
+            </select>
+          </label>
+
+          <label className="seq-voice-select-field">
+            <span>Snap</span>
+            <select
+              value={vs.snap ? "scale" : "chromatic"}
+              disabled={disabled || !vs.available}
+              onChange={e => onChange({ snapToScale: e.target.value === "scale" })}
+            >
+              <option value="scale">Scale</option>
+              <option value="chromatic">Chromatic</option>
+            </select>
+          </label>
+
+          <div className="seq-voice-slider-field">
+            <div className="seq-voice-slider-head">
+              <span>Sensitivity</span>
+              <strong>{Math.round(vs.sensitivity * 100)}%</strong>
+            </div>
+            <input
+              type="range" min={0} max={100}
+              value={Math.round(vs.sensitivity * 100)}
+              disabled={disabled || !vs.available}
+              onChange={e => onChange({ sensitivity: Number(e.target.value) / 100 })}
+            />
+          </div>
+
+          <div className="seq-voice-slider-field">
+            <div className="seq-voice-slider-head">
+              <span>Timing offset</span>
+              <strong>{Math.round(vs.timingOffsetMs)} ms</strong>
+            </div>
+            <input
+              type="range" min={-120} max={120}
+              value={Math.round(vs.timingOffsetMs)}
+              disabled={disabled || !vs.available}
+              onChange={e => onChange({ timingOffsetMs: Number(e.target.value) })}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

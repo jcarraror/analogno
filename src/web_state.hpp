@@ -83,13 +83,9 @@ struct WebAudioState final {
   bool touchpad_drawing{false};
   std::vector<std::array<float, 2>> touchpad_raw_points{}; // raw finger path [[x,y],...]
   float signals_volume{1.0F};
-  bool blow_mode{};              // breath/wind controller mode active
   float wavetable_morph{};
   float wavetable_noise{};
   float wavetable_unison{};
-  float blow_sensitivity{0.5F};  // 0..1 user-adjustable threshold
-  bool blow_active{};            // note currently held by breath
-  float blow_level{};            // 0..2: envelope relative to on_threshold (1.0 = at gate)
   bool voice_seq_available{};    // aubio-backed voice-to-sequencer is compiled and ready
   bool voice_seq_compiled{};      // app binary was built with aubio support
   bool voice_seq_enabled{};      // mic notes are being written into sequencer steps

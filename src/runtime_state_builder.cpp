@@ -163,26 +163,9 @@ build_wavetable(const std::vector<std::pair<float, float>> &points,
   return result;
 }
 
-WebRuntimeState make_web_state(
-    const ControllerState &controller, const MusicalIntent &intent,
-    const std::vector<int> &active_notes, const AudioCapture &audio_capture,
-    const AudioSampler &audio_sampler, const AudioFeatures &audio_features,
-    int midi_program, int midi_bank, const WaveformSketch &sketch,
-    const Sequencer &seq, bool piano_roll_visible, bool spectrogram_visible,
-    bool blow_mode, float wavetable_morph, float wavetable_noise,
-    float wavetable_unison, float blow_sensitivity, bool blow_active,
-    float blow_level, const VoiceSequencerStatus &voice_seq_status,
-    const std::vector<float> &spec_samples, float signals_volume,
-    const std::string &stem_split_state, const std::string &stem_split_error,
-    float stem_split_progress, const std::string &stem_split_detail,
-    const std::vector<std::string> &stem_split_log,
-    const std::string &stems_folder,
-    const std::string &transcribe_state,
-    bool mic_has_sample,
-    const std::array<bool, AudioSampler::bank_count> &transcribe_cached) {
+WebRuntimeState make_web_state(const WebStateParams& p) {
   std::vector<WebCaptureDevice> capture_devices{};
-
-  for (const auto &device : audio_capture.devices()) {
+  for (const auto &device : p.audio_capture.devices()) {
     capture_devices.push_back(WebCaptureDevice{
         .index = device.index,
         .name = device.name,
@@ -192,157 +175,151 @@ WebRuntimeState make_web_state(
 
   std::vector<WebSampleBank> sample_banks{};
   sample_banks.reserve(AudioSampler::bank_count);
-
   for (std::size_t i = 0; i < AudioSampler::bank_count; ++i) {
     sample_banks.push_back(WebSampleBank{
-        .has_sample = audio_sampler.bank_has_sample(i),
-        .frames = static_cast<std::uint32_t>(audio_sampler.bank_frames(i)),
-        .trim_start = audio_sampler.bank_trim_start(i),
-        .trim_end = audio_sampler.bank_trim_end(i),
-        .is_wavetable = audio_sampler.bank_is_wavetable(i),
-        .is_stream = audio_sampler.bank_is_stream(i),
-        .waveform = audio_sampler.bank_waveform(i, 256U),
-        .root_note = audio_sampler.bank_root_note(i),
-        .slice_count = audio_sampler.bank_slice_count(i),
-        .transcribe_cached = transcribe_cached[i],
+        .has_sample = p.audio_sampler.bank_has_sample(i),
+        .frames = static_cast<std::uint32_t>(p.audio_sampler.bank_frames(i)),
+        .trim_start = p.audio_sampler.bank_trim_start(i),
+        .trim_end = p.audio_sampler.bank_trim_end(i),
+        .is_wavetable = p.audio_sampler.bank_is_wavetable(i),
+        .is_stream = p.audio_sampler.bank_is_stream(i),
+        .waveform = p.audio_sampler.bank_waveform(i, 256U),
+        .root_note = p.audio_sampler.bank_root_note(i),
+        .slice_count = p.audio_sampler.bank_slice_count(i),
+        .transcribe_cached = p.transcribe_cached[i],
     });
   }
 
   return WebRuntimeState{
       .controller =
           WebControllerState{
-              .left_x = controller.left_x(),
-              .left_y = controller.left_y(),
-              .right_x = controller.right_x(),
-              .right_y = controller.right_y(),
-              .left_trigger = controller.left_trigger(),
-              .right_trigger = controller.right_trigger(),
-              .has_gyro = controller.has_gyro(),
-              .has_accel = controller.has_accel(),
-              .gyro = WebVec3{.x = controller.gyro().x,
-                              .y = controller.gyro().y,
-                              .z = controller.gyro().z},
-              .accel = WebVec3{.x = controller.accel().x,
-                                .y = controller.accel().y,
-                                .z = controller.accel().z},
+              .left_x = p.controller.left_x(),
+              .left_y = p.controller.left_y(),
+              .right_x = p.controller.right_x(),
+              .right_y = p.controller.right_y(),
+              .left_trigger = p.controller.left_trigger(),
+              .right_trigger = p.controller.right_trigger(),
+              .has_gyro = p.controller.has_gyro(),
+              .has_accel = p.controller.has_accel(),
+              .gyro = WebVec3{.x = p.controller.gyro().x,
+                              .y = p.controller.gyro().y,
+                              .z = p.controller.gyro().z},
+              .accel = WebVec3{.x = p.controller.accel().x,
+                               .y = p.controller.accel().y,
+                               .z = p.controller.accel().z},
           },
       .music =
           [&] {
-            const auto sc = scale_for(intent.scale);
+            const auto sc = scale_for(p.intent.scale);
             std::vector<int> btn_notes(8);
             for (int i = 0; i < 8; ++i) {
               const int wrapped = i % sc.size;
-              const int extra = i / sc.size;
+              const int extra   = i / sc.size;
               btn_notes[static_cast<std::size_t>(i)] = std::clamp(
-                  intent.root_midi_note +
+                  p.intent.root_midi_note +
                       sc.semitones[static_cast<std::size_t>(wrapped)] +
-                      (intent.octave_offset + extra) * 12,
+                      (p.intent.octave_offset + extra) * 12,
                   0, 127);
             }
             return WebMusicState{
-                .root_midi_note = intent.root_midi_note,
-                .octave_offset = intent.octave_offset,
-                .scale = std::string{scale_name(intent.scale)},
-                .pitch_bend = intent.controls.pitch_bend,
-                .expression = intent.controls.expression,
-                .filter_cutoff = intent.controls.filter_cutoff,
-                .filter_resonance = intent.controls.filter_resonance,
-                .modulation = intent.controls.modulation,
-                .vibrato = intent.controls.vibrato,
-                .active_notes = active_notes,
-                .midi_program = static_cast<int>(midi_program),
-                .midi_bank = static_cast<int>(midi_bank),
+                .root_midi_note = p.intent.root_midi_note,
+                .octave_offset = p.intent.octave_offset,
+                .scale = std::string{scale_name(p.intent.scale)},
+                .pitch_bend = p.intent.controls.pitch_bend,
+                .expression = p.intent.controls.expression,
+                .filter_cutoff = p.intent.controls.filter_cutoff,
+                .filter_resonance = p.intent.controls.filter_resonance,
+                .modulation = p.intent.controls.modulation,
+                .vibrato = p.intent.controls.vibrato,
+                .active_notes = p.active_notes,
+                .midi_program = p.midi_program,
+                .midi_bank = p.midi_bank,
                 .button_midi_notes = std::move(btn_notes),
             };
           }(),
       .audio =
           WebAudioState{
               .devices = std::move(capture_devices),
-              .selected_device_index = audio_capture.selected_device_index(),
-              .capture_running = audio_capture.is_running(),
-              .sample_recording = audio_capture.is_sample_recording(),
-              .capture_device = audio_capture.selected_device_name(),
-              .mic_level = audio_capture.level(),
-              .envelope = audio_features.envelope,
-              .gate_open = audio_features.gate_open,
-              .onset = audio_features.onset,
-              .velocity = audio_features.velocity,
-              .waveform = audio_capture.waveform(),
-              .sample_ready = audio_sampler.has_sample(),
+              .selected_device_index = p.audio_capture.selected_device_index(),
+              .capture_running = p.audio_capture.is_running(),
+              .sample_recording = p.audio_capture.is_sample_recording(),
+              .capture_device = p.audio_capture.selected_device_name(),
+              .mic_level = p.audio_capture.level(),
+              .envelope = p.audio_features.envelope,
+              .gate_open = p.audio_features.gate_open,
+              .onset = p.audio_features.onset,
+              .velocity = p.audio_features.velocity,
+              .waveform = p.audio_capture.waveform(),
+              .sample_ready = p.audio_sampler.has_sample(),
               .sample_frames =
-                  static_cast<std::uint32_t>(audio_sampler.sample_frames()),
-              .sample_trim_start = audio_sampler.trim_start(),
-              .sample_trim_end = audio_sampler.trim_end(),
-              .sample_waveform = audio_sampler.sample_waveform(),
-              .wavetable_cycle = audio_sampler.bank_wavetable_cycle(audio_sampler.active_bank(), 128U),
+                  static_cast<std::uint32_t>(p.audio_sampler.sample_frames()),
+              .sample_trim_start = p.audio_sampler.trim_start(),
+              .sample_trim_end = p.audio_sampler.trim_end(),
+              .sample_waveform = p.audio_sampler.sample_waveform(),
+              .wavetable_cycle = p.audio_sampler.bank_wavetable_cycle(
+                  p.audio_sampler.active_bank(), 128U),
               .banks = std::move(sample_banks),
-              .active_bank = audio_sampler.active_bank(),
-              .touchpad_sketch = sketch.active
-                                      ? build_wavetable(sketch.points, 128)
-                                      : sketch.committed,
-              .touchpad_drawing = sketch.active,
+              .active_bank = p.audio_sampler.active_bank(),
+              .touchpad_sketch = p.sketch.active
+                                     ? build_wavetable(p.sketch.points, 128)
+                                     : p.sketch.committed,
+              .touchpad_drawing = p.sketch.active,
               .touchpad_raw_points =
                   [&] {
-                    const auto &src =
-                        sketch.active ? sketch.points : sketch.committed_points;
+                    const auto &src = p.sketch.active
+                                          ? p.sketch.points
+                                          : p.sketch.committed_points;
                     std::vector<std::array<float, 2>> out;
                     out.reserve(src.size());
-                    for (auto [x, y] : src) {
-                      out.push_back({x, y});
-                    }
+                    for (auto [x, y] : src) out.push_back({x, y});
                     return out;
                   }(),
-              .signals_volume = signals_volume,
-              .blow_mode = blow_mode,
-              .wavetable_morph = wavetable_morph,
-              .wavetable_noise = wavetable_noise,
-              .wavetable_unison = wavetable_unison,
-              .blow_sensitivity = blow_sensitivity,
-              .blow_active = blow_active,
-              .blow_level = blow_level,
-              .voice_seq_available = voice_seq_status.available,
-              .voice_seq_compiled = voice_seq_status.compiled,
-              .voice_seq_enabled = voice_seq_status.enabled,
-              .voice_seq_recording = voice_seq_status.recording,
+              .signals_volume = p.signals_volume,
+              .wavetable_morph = p.wavetable_morph,
+              .wavetable_noise = p.wavetable_noise,
+              .wavetable_unison = p.wavetable_unison,
+              .voice_seq_available = p.voice_seq_status.available,
+              .voice_seq_compiled = p.voice_seq_status.compiled,
+              .voice_seq_enabled = p.voice_seq_status.enabled,
+              .voice_seq_recording = p.voice_seq_status.recording,
               .voice_seq_mode =
-                  std::string{voice_mode_name(voice_seq_status.mode)},
-              .voice_seq_snap = voice_seq_status.snap_to_scale,
-              .voice_seq_sensitivity = voice_seq_status.sensitivity,
-              .voice_seq_timing_offset_ms =
-                  voice_seq_status.timing_offset_ms,
-              .voice_seq_last_note = voice_seq_status.last_midi_note,
-              .voice_seq_last_velocity = voice_seq_status.last_velocity,
-              .voice_seq_accepted_notes = voice_seq_status.accepted_notes,
-              .voice_seq_rejected_notes = voice_seq_status.rejected_notes,
-              .voice_seq_recorded_segments = voice_seq_status.recorded_segments,
-              .voice_seq_record_progress = voice_seq_status.record_progress,
-              .spec_samples = spec_samples,
-              .mic_has_sample = mic_has_sample,
-              .transcribe_state = transcribe_state,
-              .stem_split_state = stem_split_state,
-              .stem_split_error = stem_split_error,
-              .stem_split_progress = stem_split_progress,
-              .stem_split_detail = stem_split_detail,
-              .stem_split_log = stem_split_log,
+                  std::string{voice_mode_name(p.voice_seq_status.mode)},
+              .voice_seq_snap = p.voice_seq_status.snap_to_scale,
+              .voice_seq_sensitivity = p.voice_seq_status.sensitivity,
+              .voice_seq_timing_offset_ms = p.voice_seq_status.timing_offset_ms,
+              .voice_seq_last_note = p.voice_seq_status.last_midi_note,
+              .voice_seq_last_velocity = p.voice_seq_status.last_velocity,
+              .voice_seq_accepted_notes = p.voice_seq_status.accepted_notes,
+              .voice_seq_rejected_notes = p.voice_seq_status.rejected_notes,
+              .voice_seq_recorded_segments = p.voice_seq_status.recorded_segments,
+              .voice_seq_record_progress = p.voice_seq_status.record_progress,
+              .spec_samples = p.spec_samples,
+              .mic_has_sample = p.mic_has_sample,
+              .transcribe_state = p.transcribe_state,
+              .stem_split_state = p.stem_state,
+              .stem_split_error = p.stem_error,
+              .stem_split_progress = p.stem_progress,
+              .stem_split_detail = p.stem_detail,
+              .stem_split_log = p.stem_log,
               .stems = [&] {
                 std::vector<WebStemSlot> slots{};
-                const auto n = audio_sampler.loaded_stem_count();
+                const auto n = p.audio_sampler.loaded_stem_count();
                 slots.reserve(n);
                 for (std::size_t i = 0; i < n; ++i) {
                   slots.push_back(WebStemSlot{
-                      .name = audio_sampler.stem_name(i),
-                      .frames = audio_sampler.stem_frame_count(i),
-                      .is_active = audio_sampler.stem_is_active(i),
-                      .waveform = audio_sampler.stem_waveform(i, 256U),
+                      .name = p.audio_sampler.stem_name(i),
+                      .frames = p.audio_sampler.stem_frame_count(i),
+                      .is_active = p.audio_sampler.stem_is_active(i),
+                      .waveform = p.audio_sampler.stem_waveform(i, 256U),
                   });
                 }
                 return slots;
               }(),
-              .stems_folder = stems_folder,
+              .stems_folder = p.stems_folder,
           },
-      .seq = seq_web_state(seq),
-      .piano_roll_visible = piano_roll_visible,
-      .spectrogram_visible = spectrogram_visible,
+      .seq = seq_web_state(p.seq),
+      .piano_roll_visible = p.piano_roll_visible,
+      .spectrogram_visible = p.spectrogram_visible,
   };
 }
 

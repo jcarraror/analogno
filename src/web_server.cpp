@@ -144,13 +144,9 @@ std::string runtime_json_string(const WebRuntimeState &state) {
               {"touchpadSketch", state.audio.touchpad_sketch},
               {"touchpadRawPoints", state.audio.touchpad_raw_points},
               {"signalsVolume", state.audio.signals_volume},
-              {"blowMode", state.audio.blow_mode},
               {"wavetableMorph", state.audio.wavetable_morph},
               {"wavetableNoise", state.audio.wavetable_noise},
               {"wavetableUnison", state.audio.wavetable_unison},
-              {"blowSensitivity", state.audio.blow_sensitivity},
-              {"blowActive", state.audio.blow_active},
-              {"blowLevel", state.audio.blow_level},
               {"voiceSeqAvailable", state.audio.voice_seq_available},
               {"voiceSeqCompiled", state.audio.voice_seq_compiled},
               {"voiceSeqEnabled", state.audio.voice_seq_enabled},
@@ -714,13 +710,6 @@ private:
           enqueue_command(WebSocketServer::SetSoundfont{
               .path = json["path"].get<std::string>()});
         }
-      } else if (json.value("type", "") == "setBlowMode") {
-        enqueue_command(WebSocketServer::SetBlowMode{
-            .enabled = json.value("enabled", false)});
-      } else if (json.value("type", "") == "setBlowSensitivity") {
-        const auto v = std::clamp(json.value("sensitivity", 50), 0, 100);
-        enqueue_command(WebSocketServer::SetBlowSensitivity{
-            .sensitivity = static_cast<float>(v) / 100.0F});
       } else if (json.value("type", "") == "setVoiceSeq") {
         enqueue_command(WebSocketServer::SetVoiceSeq{
             .config = WebSocketServer::VoiceSeqConfig{

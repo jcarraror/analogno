@@ -8,8 +8,10 @@
 #include "voice_sequencer.hpp"
 #include "web_state.hpp"
 
+#include <array>
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -26,23 +28,37 @@ struct WaveformSketch final {
 build_wavetable(const std::vector<std::pair<float, float>> &points,
                 std::size_t n);
 
-[[nodiscard]] WebRuntimeState make_web_state(
-    const ControllerState &controller, const MusicalIntent &intent,
-    const std::vector<int> &active_notes, const AudioCapture &audio_capture,
-    const AudioSampler &audio_sampler, const AudioFeatures &audio_features,
-    int midi_program, int midi_bank, const WaveformSketch &sketch,
-    const Sequencer &seq, bool piano_roll_visible, bool spectrogram_visible,
-    bool blow_mode, float wavetable_morph, float wavetable_noise,
-    float wavetable_unison, float blow_sensitivity, bool blow_active,
-    float blow_level, const VoiceSequencerStatus &voice_seq_status,
-    const std::vector<float> &spec_samples, float signals_volume,
-    const std::string &stem_split_state, const std::string &stem_split_error,
-    float stem_split_progress, const std::string &stem_split_detail,
-    const std::vector<std::string> &stem_split_log,
-    const std::string &stems_folder,
-    const std::string &transcribe_state,
-    bool mic_has_sample,
-    const std::array<bool, AudioSampler::bank_count> &transcribe_cached);
+struct WebStateParams {
+  const ControllerState& controller;
+  const MusicalIntent& intent;
+  const std::vector<int>& active_notes;
+  const AudioCapture& audio_capture;
+  const AudioSampler& audio_sampler;
+  const AudioFeatures& audio_features;
+  int midi_program{};
+  int midi_bank{};
+  const WaveformSketch& sketch;
+  const Sequencer& seq;
+  bool piano_roll_visible{};
+  bool spectrogram_visible{};
+  float wavetable_morph{};
+  float wavetable_noise{};
+  float wavetable_unison{};
+  const VoiceSequencerStatus& voice_seq_status;
+  const std::vector<float>& spec_samples;
+  float signals_volume{};
+  const std::string& stem_state;
+  const std::string& stem_error;
+  float stem_progress{};
+  const std::string& stem_detail;
+  const std::vector<std::string>& stem_log;
+  const std::string& stems_folder;
+  const std::string& transcribe_state;
+  bool mic_has_sample{};
+  std::array<bool, AudioSampler::bank_count> transcribe_cached{};
+};
+
+[[nodiscard]] WebRuntimeState make_web_state(const WebStateParams& params);
 
 [[nodiscard]] WebLibraryState make_web_library_state(
     const std::vector<WebPreset> &presets,

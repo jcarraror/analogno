@@ -149,12 +149,6 @@ public:
   struct SetSignalsVolume final {
     float volume{1.0F};
   };
-  struct SetBlowMode final {
-    bool enabled{};
-  };
-  struct SetBlowSensitivity final {
-    float sensitivity{};
-  };
   struct SetVoiceSeq final {
     VoiceSeqConfig config{};
   };
@@ -195,8 +189,7 @@ public:
                                SetWavetable, SetWavetableControls, SeqPlay,
                                SeqStop, SeqAddTrack, SeqRemoveTrack,
                                SeqSelectStep, SeqSelectTrack, SetSeq,
-                               SetSoundfont, SetBlowMode, SetBlowSensitivity,
-                               SetVoiceSeq, SetTrackVolume, SetTrackPan,
+                               SetSoundfont, SetVoiceSeq, SetTrackVolume, SetTrackPan,
                                SetTrackVelocityScale, SetTrackSolo,
                                SetSignalsVolume, SetBankRootNote,
                                SetBankSliceCount, TranscribeBankToSeq,

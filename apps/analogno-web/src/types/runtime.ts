@@ -77,13 +77,9 @@ export type RuntimeState = {
     touchpadSketch: number[];
     touchpadDrawing: boolean;
     touchpadRawPoints: [number, number][];
-    blowMode: boolean;
     wavetableMorph: number;
     wavetableNoise: number;
     wavetableUnison: number;
-    blowSensitivity: number;
-    blowActive: boolean;
-    blowLevel: number;
     voiceSeqAvailable: boolean;
     voiceSeqCompiled: boolean;
     voiceSeqEnabled: boolean;
