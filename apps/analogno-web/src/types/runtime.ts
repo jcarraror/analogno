@@ -72,6 +72,8 @@ export type RuntimeState = {
       rootNote: number;
       sliceCount: number;
       transcribeCached: boolean;
+      seqStored: boolean;
+      generatedTrackCount: number;
     }>;
     activeBank: number;
     touchpadSketch: number[];

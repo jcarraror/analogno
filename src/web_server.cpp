@@ -62,6 +62,8 @@ Json sample_banks_json(const std::vector<WebSampleBank> &banks) {
         {"rootNote", bank.root_note},
         {"sliceCount", bank.slice_count},
         {"transcribeCached", bank.transcribe_cached},
+        {"seqStored", bank.seq_stored},
+        {"generatedTrackCount", bank.generated_track_count},
     });
   }
 
@@ -934,6 +936,16 @@ private:
         const auto bank = json.value("bank", -1);
         if (bank >= 0 && bank < 8) {
           enqueue_command(WebSocketServer::RevertToTranscribed{.bank = bank});
+        }
+      } else if (json.value("type", "") == "loadBankSeq") {
+        const auto bank = json.value("bank", -1);
+        if (bank >= 0 && bank < 8) {
+          enqueue_command(WebSocketServer::LoadBankSeq{.bank = bank});
+        }
+      } else if (json.value("type", "") == "arrangeBankToSeq") {
+        const auto bank = json.value("bank", -1);
+        if (bank >= 0 && bank < 8) {
+          enqueue_command(WebSocketServer::ArrangeBankToSeq{.bank = bank});
         }
       }
     } catch (const std::exception &exception) {

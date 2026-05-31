@@ -439,6 +439,7 @@ void dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
                 static_cast<std::size_t>(cmd.bank),
                 path.string(), cmd.trim_start, cmd.trim_end);
             ctx.transcribe.invalidate_cache(static_cast<std::size_t>(cmd.bank));
+            ctx.transcribe.invalidate_bank_seq(static_cast<std::size_t>(cmd.bank));
             ctx.audio_sampler.set_active_bank(static_cast<std::size_t>(cmd.bank));
             ctx.sampler_mode = true;
             if (ctx.seq.active_track >= 0 &&
@@ -468,14 +469,21 @@ void dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
         // ── Transcription ─────────────────────────────────────────────────
         [&](const WebSocketServer::TranscribeBankToSeq& cmd) {
             if (cmd.bank < 0 || cmd.bank >= 8) return;
+            if (ctx.transcribe.is_running()) return;
             if (ctx.seq.active_track < 0 ||
                 static_cast<std::size_t>(ctx.seq.active_track) >= ctx.seq.tracks.size())
                 return;
-            ctx.transcribe.kick_bank(
-                ctx.audio_sampler,
-                static_cast<std::size_t>(cmd.bank),
-                static_cast<std::size_t>(ctx.seq.active_track),
-                seq_params(ctx.seq));
+            const auto bidx       = static_cast<std::size_t>(cmd.bank);
+            const auto first_track = static_cast<std::size_t>(ctx.seq.active_track);
+            // Re-use the cached result when available — no need to re-analyse.
+            if (const auto& cached = ctx.transcribe.cached(bidx)) {
+                auto snap = apply_transcription(*cached, bidx, first_track,
+                                                ctx.audio_sampler, ctx.seq, false);
+                ctx.transcribe.store_bank_seq(bidx, std::move(snap));
+                return;
+            }
+            ctx.transcribe.kick_bank(ctx.audio_sampler, bidx, first_track,
+                                     seq_params(ctx.seq));
         },
 
         [&](const WebSocketServer::TranscribeMicToSeq&) {
@@ -496,12 +504,29 @@ void dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
             if (ctx.transcribe.is_running()) return;
             const auto bidx = static_cast<std::size_t>(cmd.bank);
             if (const auto& cached = ctx.transcribe.cached(bidx)) {
-                apply_transcription(*cached, bidx,
+                auto snap = apply_transcription(*cached, bidx,
                     static_cast<std::size_t>(ctx.seq.active_track),
-                    ctx.audio_sampler, ctx.seq);
+                    ctx.audio_sampler, ctx.seq, false);
+                ctx.transcribe.store_bank_seq(bidx, std::move(snap));
             } else {
                 std::cout << "[transcribe] no cache for bank " << cmd.bank << '\n';
             }
+        },
+
+        [&](const WebSocketServer::LoadBankSeq& cmd) {
+            if (cmd.bank < 0 || cmd.bank >= 8) return;
+            const auto bidx = static_cast<std::size_t>(cmd.bank);
+            if (!ctx.transcribe.has_bank_seq(bidx)) return;
+            apply_bank_seq(ctx.transcribe.bank_seq(bidx), bidx, ctx.seq);
+        },
+
+        [&](const WebSocketServer::ArrangeBankToSeq& cmd) {
+            if (cmd.bank < 0 || cmd.bank >= 8) return;
+            if (ctx.transcribe.is_running()) return;
+            const auto bidx        = static_cast<std::size_t>(cmd.bank);
+            const auto first_track = ctx.transcribe.arrangement_first_track(bidx);
+            ctx.transcribe.kick_bank(ctx.audio_sampler, bidx, first_track,
+                                     seq_params(ctx.seq), true);
         },
 
         // ── File dialog ───────────────────────────────────────────────────

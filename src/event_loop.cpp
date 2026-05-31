@@ -175,6 +175,7 @@ void handle_mic_recording(AppContext& ctx, bool& was_active) {
         const auto frame_count = sample->size();
         ctx.transcribe.set_mic_capture(*sample);
         ctx.transcribe.invalidate_cache(ctx.audio_sampler.active_bank());
+        ctx.transcribe.invalidate_bank_seq(ctx.audio_sampler.active_bank());
         ctx.audio_sampler.set_sample(std::move(*sample));
         ctx.sampler_mode = true;
         MusicalIntent panic{};
@@ -316,7 +317,10 @@ void publish_state(AppContext& ctx, bool piano_roll_visible, bool spectrogram_vi
         .stems_folder        = ctx.stems_folder,
         .transcribe_state    = transcribe_state,
         .mic_has_sample      = ctx.transcribe.has_mic_capture(),
-        .transcribe_cached   = ctx.transcribe.cache_mask(),
+        .transcribe_cached      = ctx.transcribe.cache_mask(),
+        .bank_seq_mask          = ctx.transcribe.bank_seq_mask(),
+        .bank_seq_track_counts  = ctx.transcribe.bank_seq_track_counts(),
+        .cached_track_counts    = ctx.transcribe.cached_track_counts(),
     }));
     last_publish = now;
 }
@@ -531,9 +535,27 @@ void run_event_loop(Gamepad& gamepad, std::vector<WebPreset> sf2_presets,
 
         if (auto job = transcribe.poll()) {
             if (!job->result.tracks.empty() && !job->result.onset_frames.empty()) {
+                // If re-transcribing a bank that previously owned more tracks,
+                // clear the now-orphaned excess so they don't ghost in the arrangement.
+                if (transcribe.has_bank_seq(job->bank_idx)) {
+                    const auto& old = transcribe.bank_seq(job->bank_idx);
+                    const auto old_end = old.first_track + old.track_steps.size();
+                    const auto new_end = job->first_track + job->result.tracks.size();
+                    for (auto t = new_end; t < old_end && t < seq.tracks.size(); ++t) {
+                        for (auto& step : seq.tracks[t].steps) step = {};
+                        seq.tracks[t].sample_bank = -1;
+                    }
+                }
                 transcribe.store_cache(job->bank_idx, job->result);
-                apply_transcription(job->result, job->bank_idx, job->first_track,
-                                    audio_sampler, seq);
+                auto snap = apply_transcription(job->result, job->bank_idx,
+                                                job->first_track, audio_sampler, seq,
+                                                job->arrange);
+                transcribe.store_bank_seq(job->bank_idx, std::move(snap));
+                if (seq.playing) {
+                    seq.current_step  = -1;
+                    seq.playhead_step = -1;
+                    seq.step_start    = std::chrono::steady_clock::now();
+                }
             } else {
                 std::cout << "[transcribe] no onsets detected\n";
             }

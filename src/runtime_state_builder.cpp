@@ -187,6 +187,8 @@ WebRuntimeState make_web_state(const WebStateParams& p) {
         .root_note = p.audio_sampler.bank_root_note(i),
         .slice_count = p.audio_sampler.bank_slice_count(i),
         .transcribe_cached = p.transcribe_cached[i],
+        .seq_stored = p.bank_seq_mask[i],
+        .generated_track_count = p.cached_track_counts[i],
     });
   }
 

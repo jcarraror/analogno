@@ -183,6 +183,12 @@ public:
   struct DownloadAudio final {
     std::string source{};
   };
+  struct LoadBankSeq final {
+    int bank{};
+  };
+  struct ArrangeBankToSeq final {
+    int bank{};
+  };
 
   using Command = std::variant<Panic, SetCaptureDevice, SetSampleTrim,
                                SetActiveBank, SaveSample, SetPatch,
@@ -198,7 +204,7 @@ public:
                                StreamPlayBank, StreamStopBank,
                                StemPlay, StemStop, SetStemFolder, SetActiveStem,
                                OpenStemFolderDialog, LoadStemToBank,
-                               DownloadAudio>;
+                               DownloadAudio, LoadBankSeq, ArrangeBankToSeq>;
 
   explicit WebSocketServer(std::uint16_t port = 8765);
   ~WebSocketServer();

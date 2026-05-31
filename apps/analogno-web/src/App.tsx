@@ -742,8 +742,8 @@ export function App() {
     socket?.send(JSON.stringify({ type: "transcribeBankToSeq", bank }));
   }
 
-  function revertToTranscribed(bank: number) {
-    socket?.send(JSON.stringify({ type: "revertToTranscribed", bank }));
+  function arrangeBankToSeq(bank: number) {
+    socket?.send(JSON.stringify({ type: "arrangeBankToSeq", bank }));
   }
 
   function transcribeMicToSeq() {
@@ -1147,31 +1147,36 @@ export function App() {
                   <div className="bank-param-row">
                     {(() => {
                       const ts = audio?.transcribeState ?? "idle";
+                      const activeBank = audio?.activeBank ?? 0;
                       const cached = activeBankData?.transcribeCached ?? false;
+                      const trackCount = activeBankData?.generatedTrackCount ?? 0;
+                      const trackBadge = trackCount > 0 ? ` · ${trackCount}ch` : "";
                       return (
                         <>
                           <button
                             type="button"
                             className={`transcribe-btn${ts === "running" ? " transcribe-btn--running" : ""}`}
                             disabled={connection !== "online" || ts === "running"}
-                            title="Detect onsets and pitches in this sample and write them as sequencer steps on the active track"
-                            onClick={() => transcribeBankToSeq(audio?.activeBank ?? 0)}
+                            title={cached
+                              ? "Re-apply the cached transcription to the active track (capped to existing tracks)"
+                              : "Analyse this bank and write the result to the active track"}
+                            onClick={() => transcribeBankToSeq(activeBank)}
                           >
-                            {ts === "running" ? (
-                              <><span className="transcribe-spinner" /> Analyzing…</>
-                            ) : "Transcribe to seq"}
+                            {ts === "running"
+                              ? <><span className="transcribe-spinner" /> Analyzing…</>
+                              : `Transcribe${cached ? trackBadge : ""}`}
                           </button>
-                          {cached && (
-                            <button
-                              type="button"
-                              className="transcribe-btn"
-                              disabled={connection !== "online" || ts === "running"}
-                              title="Revert sequencer tracks to the last transcription result for this bank"
-                              onClick={() => revertToTranscribed(audio?.activeBank ?? 0)}
-                            >
-                              Revert
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            className={`transcribe-btn${ts === "running" ? " transcribe-btn--running" : ""}`}
+                            disabled={connection !== "online" || ts === "running"}
+                            title="Add this bank to the arrangement — each bank gets its own dedicated track block so all stems play simultaneously"
+                            onClick={() => arrangeBankToSeq(activeBank)}
+                          >
+                            {ts === "running"
+                              ? <><span className="transcribe-spinner" /> Analyzing…</>
+                              : `Arrange${trackCount > 0 ? trackBadge : ""}`}
+                          </button>
                         </>
                       );
                     })()}

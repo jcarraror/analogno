@@ -57,6 +57,8 @@ struct WebSampleBank final {
   int root_note{48};
   int slice_count{0};
   bool transcribe_cached{};
+  bool seq_stored{};
+  int generated_track_count{};
 };
 
 struct WebAudioState final {

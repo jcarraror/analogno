@@ -226,12 +226,18 @@ TranscriptionResult transcribe_to_seq(
   const double step_dur_sec =
       60.0 / static_cast<double>(bpm) * 4.0 / static_cast<double>(step_division);
 
+  // Normalise to the first onset so the pattern always starts at step 0
+  // regardless of leading silence in the stem.
+  const double first_onset_sec = static_cast<double>(detections.front().onset_frame)
+                                  / static_cast<double>(sample_rate);
+
   struct StepEntry { int onset_idx; int velocity; };
   std::map<int, std::vector<StepEntry>> by_step;
 
   for (int i = 0; i < static_cast<int>(detections.size()); ++i) {
     const auto &d = detections[static_cast<std::size_t>(i)];
-    const double sec = static_cast<double>(d.onset_frame) / static_cast<double>(sample_rate);
+    const double sec = static_cast<double>(d.onset_frame) / static_cast<double>(sample_rate)
+                       - first_onset_sec;
     const auto raw_step = static_cast<int>(std::round(sec / step_dur_sec));
     const auto step = ((raw_step % step_count) + step_count) % step_count;
     by_step[step].push_back({i, d.velocity});

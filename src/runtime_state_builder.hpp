@@ -56,6 +56,9 @@ struct WebStateParams {
   const std::string& transcribe_state;
   bool mic_has_sample{};
   std::array<bool, AudioSampler::bank_count> transcribe_cached{};
+  std::array<bool, AudioSampler::bank_count> bank_seq_mask{};
+  std::array<int, AudioSampler::bank_count> bank_seq_track_counts{};
+  std::array<int, AudioSampler::bank_count> cached_track_counts{};
 };
 
 [[nodiscard]] WebRuntimeState make_web_state(const WebStateParams& params);
