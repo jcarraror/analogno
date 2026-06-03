@@ -189,6 +189,11 @@ public:
   struct ArrangeBankToSeq final {
     int bank{};
   };
+  struct ClearSeqTrack final {
+    int track{};
+  };
+  struct ClearAllSeqTracks final {};
+  struct RemoveAllSeqTracks final {};
 
   using Command = std::variant<Panic, SetCaptureDevice, SetSampleTrim,
                                SetActiveBank, SaveSample, SetPatch,
@@ -204,7 +209,9 @@ public:
                                StreamPlayBank, StreamStopBank,
                                StemPlay, StemStop, SetStemFolder, SetActiveStem,
                                OpenStemFolderDialog, LoadStemToBank,
-                               DownloadAudio, LoadBankSeq, ArrangeBankToSeq>;
+                               DownloadAudio, LoadBankSeq, ArrangeBankToSeq,
+                               ClearSeqTrack, ClearAllSeqTracks,
+                               RemoveAllSeqTracks>;
 
   explicit WebSocketServer(std::uint16_t port = 8765);
   ~WebSocketServer();

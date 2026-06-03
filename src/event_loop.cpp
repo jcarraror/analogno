@@ -213,14 +213,16 @@ void tick_seq(AppContext& ctx) {
                 ev.note.midi_note);
     }
     for (const auto& ev : tick.sample_note_ons) {
-        const auto bank = static_cast<std::size_t>(ev.bank);
+        const auto bank     = static_cast<std::size_t>(ev.bank);
+        const auto vel_gain = static_cast<float>(ev.note.velocity) / 127.0F * ev.volume_gain;
+        const auto pan      = ev.pan;
         if (ctx.audio_sampler.bank_has_onsets(bank))
-            ctx.audio_sampler.trigger_bank_onset(bank, ev.note.degree);
+            ctx.audio_sampler.trigger_bank_onset(bank, ev.note.degree, vel_gain, pan);
         else
             ctx.audio_sampler.trigger_bank(bank,
                 std::pow(2.0F, static_cast<float>(
                     ev.note.midi_note - ctx.audio_sampler.bank_root_note(bank)) / 12.0F),
-                ev.note.midi_note);
+                ev.note.midi_note, vel_gain, pan);
     }
 
     if (!tick.note_ons.empty()) {

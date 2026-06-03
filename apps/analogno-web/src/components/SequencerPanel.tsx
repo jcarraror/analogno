@@ -1,4 +1,14 @@
 import React, { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+function EraserIcon() {
+  return (
+    <svg width="11" height="9" viewBox="0 0 11 9" fill="none" aria-hidden="true">
+      <rect x="0.5" y="1.5" width="10" height="6" rx="1.5" fill="currentColor" opacity="0.22"/>
+      <rect x="0.5" y="1.5" width="4" height="6" rx="1.5" fill="currentColor" opacity="0.75"/>
+      <line x1="4.5" y1="7.5" x2="10.5" y2="7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  );
+}
 import type { ConnectionState, RuntimeState, SoundfontPreset } from "../types/runtime";
 import { midiNoteName, patchName } from "../lib/music";
 
@@ -191,6 +201,9 @@ export function SequencerPanel({
   onTrackPan,
   onTrackVelocityScale,
   onTrackSolo,
+  onClearTrack,
+  onClearAll,
+  onRemoveAll,
   voiceSeq,
   onVoiceSeq,
 }: {
@@ -211,6 +224,9 @@ export function SequencerPanel({
   onTrackPan: (track: number, pan: number) => void;
   onTrackVelocityScale: (track: number, scale: number) => void;
   onTrackSolo: (track: number, solo: boolean) => void;
+  onClearTrack: (track: number) => void;
+  onClearAll: () => void;
+  onRemoveAll: () => void;
   voiceSeq?: VoiceSeqState;
   onVoiceSeq?: (next: Partial<{ enabled: boolean; recording: boolean; mode: "percussion" | "harmonic" | "hybrid"; snapToScale: boolean; sensitivity: number; timingOffsetMs: number }>) => void;
 }) {
@@ -222,6 +238,8 @@ export function SequencerPanel({
   const [stepDivision, setStepDivision] = useState(16);
   const [stepPage, setStepPage] = useState(0);
   const [showMixer, setShowMixer] = useState(false);
+  const [showActionsMenu, setShowActionsMenu] = useState(false);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [lastAnchor, setLastAnchor] = useState<{ ti: number; si: number } | null>(null);
   const mouseDownRef = useRef<{ ti: number; si: number; dragged: boolean } | null>(null);
@@ -403,6 +421,16 @@ export function SequencerPanel({
     window.addEventListener('mouseup', stop);
     return () => window.removeEventListener('mouseup', stop);
   }, []);
+
+  useEffect(() => {
+    if (!showActionsMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (actionsMenuRef.current && !actionsMenuRef.current.contains(e.target as Node))
+        setShowActionsMenu(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showActionsMenu]);
 
   function send(t: SeqTrackEdit[], b: number, g: number, count = stepCount, division = stepDivision) {
     onChange({ bpm: b, gatePct: g, stepCount: count, stepDivision: division, tracks: t });
@@ -595,111 +623,155 @@ export function SequencerPanel({
 
   return (
     <div className="sequencer">
-      <div className="seq-controls">
-        <div className="seq-control-group">
-          <span className="seq-group-label">Clock</span>
-          <div className="seq-group-body">
-            <button type="button" className={`seq-playstop${playing ? ' seq-playing' : ''}`}
-              disabled={disabled} onClick={playing ? onStop : onPlay}>
-              {playing ? '\u25a0 Stop' : '\u25b6 Play'}
-            </button>
-            <label className="seq-label">
-              BPM
-              <BpmField value={bpm} disabled={disabled} onChange={handleBpm} />
-            </label>
-            <button type="button"
-              className={`seq-mixer-toggle${showMixer ? ' seq-mixer-toggle-active' : ''}`}
-              disabled={disabled}
-              onClick={() => setShowMixer(v => !v)}>
-              Mix
-            </button>
+      <div className="seq-transport">
+
+        {/* Play / Stop */}
+        <button type="button"
+          className={`seq-play-btn${playing ? ' seq-play-btn-stop' : ''}`}
+          disabled={disabled}
+          onClick={playing ? onStop : onPlay}
+          title={playing ? 'Stop' : 'Play'}>
+          {playing ? '\u25a0' : '\u25b6'}
+        </button>
+
+        <span className="seq-tsep" />
+
+        {/* Tempo */}
+        <div className="seq-tgroup">
+          <span className="seq-tgroup-label">Tempo</span>
+          <div className="seq-tgroup-row">
+            <BpmField value={bpm} disabled={disabled} onChange={handleBpm} />
+            <span className="seq-tunit">bpm</span>
           </div>
         </div>
 
-        <div className="seq-control-group seq-step-group">
-          <span className="seq-group-label">Step</span>
-          <div className="seq-group-body">
-            <div className="seq-chip-group">
-              {SEQ_STEP_DIVISIONS.map(n => (
-                <button key={n} type="button"
-                  className={stepDivision === n ? 'seq-chip-active' : ''}
-                  disabled={disabled}
-                  onClick={() => handleStepDivision(n)}>
-                  1/{n}
-                </button>
-              ))}
-            </div>
-            <div className="seq-gate-field">
-              <div className="seq-gate-head">
-                <span>Gate</span>
-                <span>{gate}%</span>
-              </div>
-              <span className={`seq-gate-control${disabled ? ' seq-gate-disabled' : ''}`}
-                role="slider"
-                tabIndex={disabled ? -1 : 0}
-                aria-label="Gate"
-                aria-valuemin={5}
-                aria-valuemax={100}
-                aria-valuenow={gate}
-                aria-valuetext={`${gate}%`}
-                onKeyDown={handleGateKey}
-                onPointerDown={e => {
-                  if (disabled) return;
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                  handleGatePointer(e);
-                }}
-                onPointerMove={e => {
-                  if (e.currentTarget.hasPointerCapture(e.pointerId)) handleGatePointer(e);
-                }}
-                onPointerUp={e => {
-                  if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-                }}>
-                <span className="seq-gate-fill" style={{ width: `${gate}%` }} />
-                <span className="seq-gate-handle" style={{ left: `${gate}%` }} />
-              </span>
-            </div>
+        <span className="seq-tsep" />
+
+        {/* Division */}
+        <div className="seq-tgroup">
+          <span className="seq-tgroup-label">Division</span>
+          <div className="seq-tgroup-row">
+            {SEQ_STEP_DIVISIONS.map(n => (
+              <button key={n} type="button"
+                className={`seq-tchip${stepDivision === n ? ' seq-tchip-on' : ''}`}
+                disabled={disabled}
+                onClick={() => handleStepDivision(n)}>
+                1/{n}
+              </button>
+            ))}
           </div>
         </div>
 
-        <div className="seq-control-group">
-          <span className="seq-group-label">Loop</span>
-          <div className="seq-group-body">
-            <div className="seq-chip-group">
-              {SEQ_STEP_COUNTS.map(n => (
-                <button key={n} type="button"
-                  className={stepCount === n ? 'seq-chip-active' : ''}
-                  disabled={disabled}
-                  onClick={() => handleStepCount(n)}>
-                  {n}
-                </button>
-              ))}
-            </div>
-            <div className="seq-len-stepper">
-              <span>T{activeTrack + 1}</span>
-              <button type="button" disabled={disabled || activeLoopLength <= 1}
-                onClick={() => handleActiveLoopLength(activeLoopLength - 1)}
-                aria-label="Shorten active track loop">-</button>
-              <input type="number" min={1} max={stepCount}
-                value={activeLoopLength} disabled={disabled}
-                onChange={e => handleActiveLoopLength(Number(e.target.value))} />
-              <button type="button" disabled={disabled || activeLoopLength >= stepCount}
-                onClick={() => handleActiveLoopLength(activeLoopLength + 1)}
-                aria-label="Lengthen active track loop">+</button>
-            </div>
+        <span className="seq-tsep" />
+
+        {/* Steps */}
+        <div className="seq-tgroup">
+          <span className="seq-tgroup-label">Steps</span>
+          <div className="seq-tgroup-row">
+            {SEQ_STEP_COUNTS.map(n => (
+              <button key={n} type="button"
+                className={`seq-tchip${stepCount === n ? ' seq-tchip-on' : ''}`}
+                disabled={disabled}
+                onClick={() => handleStepCount(n)}>
+                {n}
+              </button>
+            ))}
           </div>
         </div>
 
-        {selectedStep >= 0 && (
-          <span className="seq-armed-info">
-            T{activeTrack + 1} &middot; step {selectedStep + 1}
-            {armedStep && armedStep.midiNote >= 0
-              ? ` \u00b7 ${midiNoteName(armedStep.midiNote)}`
-              : armedStep?.active
-                ? ` \u00b7 scale deg ${armedStep.degree}`
-                : ' \u00b7 empty \u2014 press a face button'}
+        <span className="seq-tsep" />
+
+        {/* Gate */}
+        <div className="seq-tgroup">
+          <span className="seq-tgroup-label">Gate <span className="seq-tgroup-val">{gate}%</span></span>
+          <span className={`seq-gate-control${disabled ? ' seq-gate-disabled' : ''}`}
+            role="slider"
+            tabIndex={disabled ? -1 : 0}
+            aria-label="Gate"
+            aria-valuemin={5}
+            aria-valuemax={100}
+            aria-valuenow={gate}
+            aria-valuetext={`${gate}%`}
+            onKeyDown={handleGateKey}
+            onPointerDown={e => {
+              if (disabled) return;
+              e.currentTarget.setPointerCapture(e.pointerId);
+              handleGatePointer(e);
+            }}
+            onPointerMove={e => {
+              if (e.currentTarget.hasPointerCapture(e.pointerId)) handleGatePointer(e);
+            }}
+            onPointerUp={e => {
+              if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+            }}>
+            <span className="seq-gate-fill" style={{ width: `${gate}%` }} />
+            <span className="seq-gate-handle" style={{ left: `${gate}%` }} />
           </span>
-        )}
+        </div>
+
+        <span className="seq-tsep" />
+
+        {/* Track loop length */}
+        <div className="seq-tgroup">
+          <span className="seq-tgroup-label">T{activeTrack + 1} Loop</span>
+          <div className="seq-tgroup-row">
+            <button type="button" className="seq-loop-btn"
+              disabled={disabled || activeLoopLength <= 1}
+              onClick={() => handleActiveLoopLength(activeLoopLength - 1)}
+              aria-label="Shorten active track loop">−</button>
+            <input type="number" className="seq-loop-input"
+              min={1} max={stepCount}
+              value={activeLoopLength} disabled={disabled}
+              onChange={e => handleActiveLoopLength(Number(e.target.value))} />
+            <button type="button" className="seq-loop-btn"
+              disabled={disabled || activeLoopLength >= stepCount}
+              onClick={() => handleActiveLoopLength(activeLoopLength + 1)}
+              aria-label="Lengthen active track loop">+</button>
+          </div>
+        </div>
+
+        <span className="seq-transport-spacer" />
+
+        {/* Mix + actions */}
+        <button type="button"
+          className={`seq-mixer-toggle${showMixer ? ' seq-mixer-toggle-active' : ''}`}
+          disabled={disabled}
+          onClick={() => setShowMixer(v => !v)}>
+          Mix
+        </button>
+        <div className="seq-actions-menu" ref={actionsMenuRef}>
+          <button type="button"
+            className={`seq-actions-trigger${showActionsMenu ? ' seq-actions-trigger-open' : ''}`}
+            disabled={disabled}
+            title="Sequencer actions"
+            onClick={() => setShowActionsMenu(v => !v)}>
+            &#x22EE;
+          </button>
+          {showActionsMenu && (
+            <div className="seq-actions-dropdown">
+              <button type="button" className="seq-actions-item seq-actions-item-danger"
+                onClick={() => { onClearAll(); setShowActionsMenu(false); }}>
+                <EraserIcon /> Clear all tracks
+              </button>
+              <button type="button" className="seq-actions-item seq-actions-item-danger"
+                onClick={() => { onRemoveAll(); setShowActionsMenu(false); }}>
+                &#x2715; Remove all tracks
+              </button>
+            </div>
+          )}
+        </div>
       </div>
+
+      {selectedStep >= 0 && (
+        <div className="seq-status">
+          T{activeTrack + 1} \u00b7 step {selectedStep + 1}
+          {armedStep && armedStep.midiNote >= 0
+            ? ` \u00b7 ${midiNoteName(armedStep.midiNote)}`
+            : armedStep?.active
+              ? ` \u00b7 scale deg ${armedStep.degree}`
+              : ' \u00b7 empty \u2014 press a face button'}
+        </div>
+      )}
 
       {pageCount > 1 && (
         <div className="seq-page-tabs">
@@ -758,6 +830,12 @@ export function SequencerPanel({
                     onTrackSolo(ti, !track.solo);
                   }}>
                   S
+                </button>
+                <button type="button" className="seq-track-clear-btn"
+                  disabled={disabled}
+                  title="Clear steps"
+                  onClick={e => { e.stopPropagation(); onClearTrack(ti); }}>
+                  <EraserIcon />
                 </button>
                 <button type="button" className="seq-track-remove-btn"
                   disabled={disabled || tracks.length <= 1}
@@ -819,6 +897,7 @@ export function SequencerPanel({
       {showMixer && (
         <div className="seq-mixer">
           <div className="seq-mixer-header">
+            <span />
             <span className="seq-mixer-col-label">Vol</span>
             <span className="seq-mixer-col-label">Pan</span>
             <span className="seq-mixer-col-label">Accent</span>

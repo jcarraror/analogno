@@ -63,6 +63,8 @@ struct SeqTick final {
   struct SampleEvent final {
     int bank{};
     Note note{};
+    float volume_gain{1.0F};
+    float pan{0.0F};
   };
   std::vector<SampleEvent> sample_note_ons{};
   std::vector<SampleEvent> sample_note_offs{};

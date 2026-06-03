@@ -798,6 +798,18 @@ export function App() {
     socket?.send(JSON.stringify({ type: "setTrackSolo", track, solo }));
   }
 
+  function seqClearTrack(track: number) {
+    socket?.send(JSON.stringify({ type: "clearSeqTrack", track }));
+  }
+
+  function seqClearAll() {
+    socket?.send(JSON.stringify({ type: "clearAllSeqTracks" }));
+  }
+
+  function seqRemoveAll() {
+    socket?.send(JSON.stringify({ type: "removeAllSeqTracks" }));
+  }
+
   function setSignalsVolume(volume: number) {
     socket?.send(JSON.stringify({ type: "setSignalsVolume", volume: Math.round(volume * 100) }));
   }
@@ -1311,6 +1323,9 @@ export function App() {
             onTrackPan={seqTrackPan}
             onTrackVelocityScale={seqTrackVelocityScale}
             onTrackSolo={seqTrackSolo}
+            onClearTrack={seqClearTrack}
+            onClearAll={seqClearAll}
+            onRemoveAll={seqRemoveAll}
             voiceSeq={{
               available: audio?.voiceSeqAvailable ?? false,
               enabled: audio?.voiceSeqEnabled ?? false,

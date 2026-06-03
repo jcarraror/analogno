@@ -297,9 +297,12 @@ void dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
                         ctx.seq.tracks[t].velocity_scale = std::clamp(src.velocity_scale, 50, 200);
                         ctx.seq.tracks[t].solo           = src.solo;
                     }
-                    const auto ch = effective_midi_channel(ctx.seq.tracks[t]);
-                    ctx.midi.set_channel_volume(ch, ctx.seq.tracks[t].volume);
-                    ctx.midi.set_channel_pan(ch, ctx.seq.tracks[t].pan);
+                    auto& track = ctx.seq.tracks[t];
+                    if (track.sample_bank < 0) {
+                        const auto ch = effective_midi_channel(track);
+                        ctx.midi.set_channel_volume(ch, track.volume);
+                        ctx.midi.set_channel_pan(ch, track.pan);
+                    }
                 }
             }
         },
@@ -308,20 +311,22 @@ void dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
         [&](const WebSocketServer::SetTrackVolume& cmd) {
             const auto idx = static_cast<std::size_t>(cmd.track);
             if (idx < ctx.seq.tracks.size()) {
-                ctx.seq.tracks[idx].volume = std::clamp(cmd.volume, 0, 127);
-                ctx.midi.set_channel_volume(
-                    effective_midi_channel(ctx.seq.tracks[idx]),
-                    ctx.seq.tracks[idx].volume);
+                auto& track = ctx.seq.tracks[idx];
+                track.volume = std::clamp(cmd.volume, 0, 127);
+                if (track.sample_bank < 0)
+                    ctx.midi.set_channel_volume(
+                        effective_midi_channel(track), track.volume);
             }
         },
 
         [&](const WebSocketServer::SetTrackPan& cmd) {
             const auto idx = static_cast<std::size_t>(cmd.track);
             if (idx < ctx.seq.tracks.size()) {
-                ctx.seq.tracks[idx].pan = std::clamp(cmd.pan, 0, 127);
-                ctx.midi.set_channel_pan(
-                    effective_midi_channel(ctx.seq.tracks[idx]),
-                    ctx.seq.tracks[idx].pan);
+                auto& track = ctx.seq.tracks[idx];
+                track.pan = std::clamp(cmd.pan, 0, 127);
+                if (track.sample_bank < 0)
+                    ctx.midi.set_channel_pan(
+                        effective_midi_channel(track), track.pan);
             }
         },
 
@@ -527,6 +532,34 @@ void dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
             const auto first_track = ctx.transcribe.arrangement_first_track(bidx);
             ctx.transcribe.kick_bank(ctx.audio_sampler, bidx, first_track,
                                      seq_params(ctx.seq), true);
+        },
+
+        [&](const WebSocketServer::ClearSeqTrack& cmd) {
+            const auto idx = static_cast<std::size_t>(cmd.track);
+            if (idx < ctx.seq.tracks.size()) {
+                for (auto& step : ctx.seq.tracks[idx].steps) step = {};
+                ctx.seq.tracks[idx].pending_note_off.reset();
+            }
+        },
+
+        [&](const WebSocketServer::ClearAllSeqTracks&) {
+            for (auto& track : ctx.seq.tracks) {
+                for (auto& step : track.steps) step = {};
+                track.pending_note_off.reset();
+            }
+        },
+
+        [&](const WebSocketServer::RemoveAllSeqTracks&) {
+            for (auto& track : ctx.seq.tracks)
+                if (track.pending_note_off)
+                    ctx.midi.apply_notes_only({*track.pending_note_off}, {});
+            SeqTrack default_track{};
+            default_track.midi_channel = 0;
+            default_track.loop_length  = ctx.seq.step_count;
+            default_track.steps.resize(static_cast<std::size_t>(ctx.seq.step_count));
+            ctx.seq.tracks = {std::move(default_track)};
+            ctx.seq.active_track  = 0;
+            ctx.seq.selected_step = -1;
         },
 
         // ── File dialog ───────────────────────────────────────────────────

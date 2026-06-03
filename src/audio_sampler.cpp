@@ -399,7 +399,7 @@ void AudioSampler::trigger(float rate, int midi_note) {
   trigger_bank(active_bank_.load(), rate, midi_note);
 }
 
-void AudioSampler::trigger_bank(std::size_t bank, float rate, int midi_note) {
+void AudioSampler::trigger_bank(std::size_t bank, float rate, int midi_note, float velocity_gain, float pan) {
   if (bank >= bank_count) {
     return;
   }
@@ -439,6 +439,8 @@ void AudioSampler::trigger_bank(std::size_t bank, float rate, int midi_note) {
         voice.position = start_pos;
         voice.trim_end_override = end_override;
         voice.envelope = 0.0F;
+        voice.velocity_gain = std::clamp(velocity_gain, 0.0F, 1.0F);
+        voice.pan = std::clamp(pan, -1.0F, 1.0F);
         voice_generation_.fetch_add(1, std::memory_order_relaxed);
         return;
       }
@@ -456,6 +458,8 @@ void AudioSampler::trigger_bank(std::size_t bank, float rate, int midi_note) {
         voice.trim_end_override = -1.0;
         voice.slice_idx = -1;
         voice.envelope = 0.0F;
+        voice.velocity_gain = std::clamp(velocity_gain, 0.0F, 1.0F);
+        voice.pan = std::clamp(pan, -1.0F, 1.0F);
         voice_generation_.fetch_add(1, std::memory_order_relaxed);
         return;
       }
@@ -486,6 +490,8 @@ void AudioSampler::trigger_bank(std::size_t bank, float rate, int midi_note) {
       .trim_end_override = end_override,
       .slice_idx = voice_slice_idx,
       .envelope = 0.0F,
+      .velocity_gain = std::clamp(velocity_gain, 0.0F, 1.0F),
+      .pan = std::clamp(pan, -1.0F, 1.0F),
       .bank_index = bank,
       .noise_state = static_cast<std::uint32_t>(
           0x9E3779B9U ^ ((bank + 1U) * 0x85EBCA6BU) ^
@@ -570,7 +576,7 @@ bool AudioSampler::bank_has_onsets(std::size_t bank) const {
   return !bank_onset_frames_[bank].empty();
 }
 
-void AudioSampler::trigger_bank_onset(std::size_t bank, int onset_idx) {
+void AudioSampler::trigger_bank_onset(std::size_t bank, int onset_idx, float velocity_gain, float pan) {
   if (bank >= bank_count) return;
 
   const auto lock = std::scoped_lock{mutex_};
@@ -594,6 +600,8 @@ void AudioSampler::trigger_bank_onset(std::size_t bank, int onset_idx) {
       voice.position = start_pos;
       voice.trim_end_override = end_pos;
       voice.envelope = 0.0F;
+      voice.velocity_gain = std::clamp(velocity_gain, 0.0F, 1.0F);
+      voice.pan           = std::clamp(pan, -1.0F, 1.0F);
       voice_generation_.fetch_add(1, std::memory_order_relaxed);
       return;
     }
@@ -623,6 +631,8 @@ void AudioSampler::trigger_bank_onset(std::size_t bank, int onset_idx) {
       .trim_end_override = end_pos,
       .slice_idx = sidx,
       .envelope = 0.0F,
+      .velocity_gain = std::clamp(velocity_gain, 0.0F, 1.0F),
+      .pan = std::clamp(pan, -1.0F, 1.0F),
       .bank_index = bank,
       .noise_state = static_cast<std::uint32_t>(
           0x9E3779B9U ^ ((bank + 1U) * 0x85EBCA6BU) ^
@@ -1192,8 +1202,10 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
         voice.position += voice.rate * static_cast<double>(pitch_rate);
       }
 
-      mixed_left += voice_left * voice.envelope * gain;
-      mixed_right += voice_right * voice.envelope * gain;
+      const auto vl = (voice.pan <= 0.0F ? 1.0F : 1.0F - voice.pan) * voice.velocity_gain;
+      const auto vr = (voice.pan >= 0.0F ? 1.0F : 1.0F + voice.pan) * voice.velocity_gain;
+      mixed_left  += voice_left  * voice.envelope * gain * vl;
+      mixed_right += voice_right * voice.envelope * gain * vr;
     }
 
     self->vibrato_phase_ +=

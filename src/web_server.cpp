@@ -949,6 +949,14 @@ private:
         if (bank >= 0 && bank < 8) {
           enqueue_command(WebSocketServer::ArrangeBankToSeq{.bank = bank});
         }
+      } else if (json.value("type", "") == "clearSeqTrack") {
+        const auto track = json.value("track", -1);
+        if (track >= 0)
+          enqueue_command(WebSocketServer::ClearSeqTrack{.track = track});
+      } else if (json.value("type", "") == "clearAllSeqTracks") {
+        enqueue_command(WebSocketServer::ClearAllSeqTracks{});
+      } else if (json.value("type", "") == "removeAllSeqTracks") {
+        enqueue_command(WebSocketServer::RemoveAllSeqTracks{});
       }
     } catch (const std::exception &exception) {
       std::cerr << "invalid websocket JSON: " << exception.what() << '\n';

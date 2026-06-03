@@ -67,8 +67,8 @@ public:
   void set_wavetable_controls(float morph, float noise, float unison);
   void set_pitch_controls(float pitch_bend, float vibrato_depth);
   void trigger(float rate = 1.0F, int midi_note = -1);
-  void trigger_bank(std::size_t bank, float rate = 1.0F, int midi_note = -1);
-  void trigger_bank_onset(std::size_t bank, int onset_idx);
+  void trigger_bank(std::size_t bank, float rate = 1.0F, int midi_note = -1, float velocity_gain = 1.0F, float pan = 0.0F);
+  void trigger_bank_onset(std::size_t bank, int onset_idx, float velocity_gain = 1.0F, float pan = 0.0F);
   void release(float rate = 1.0F, int midi_note = -1);
   void release_bank(std::size_t bank, float rate = 1.0F, int midi_note = -1);
   void release_bank_onset(std::size_t bank, int onset_idx);
@@ -138,6 +138,8 @@ private:
     double trim_end_override{-1.0};
     int slice_idx{-1};
     float envelope{};
+    float velocity_gain{1.0F};
+    float pan{0.0F};
     std::size_t bank_index{};
     std::uint32_t noise_state{1};
   };

@@ -169,8 +169,12 @@ SeqTick tick_sequencer(Sequencer &seq, const MusicalIntent &ctx) {
       if (!tie_continues && step.active && !step.tie && !effective_muted &&
           step_note.has_value()) {
         if (track.sample_bank >= 0) {
-          result.sample_note_ons.push_back(
-              {.bank = track.sample_bank, .note = *step_note});
+          result.sample_note_ons.push_back({
+              .bank        = track.sample_bank,
+              .note        = *step_note,
+              .volume_gain = static_cast<float>(track.volume) / 127.0F,
+              .pan         = (static_cast<float>(track.pan) - 64.0F) / 64.0F,
+          });
         } else {
           result.note_ons.push_back(*step_note);
         }
