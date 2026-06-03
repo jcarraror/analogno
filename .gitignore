@@ -3,3 +3,4 @@ soundfonts/*.sf2
 apps/analogno-web/node_modules/
 apps/analogno-web/dist/
 /.venv
+/CLAUDE.md

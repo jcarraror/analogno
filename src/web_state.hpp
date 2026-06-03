@@ -43,7 +43,8 @@ struct WebStemSlot final {
   std::string name{};
   std::uint64_t frames{};
   bool is_active{};
-  std::vector<float> waveform{};
+  std::uint32_t waveform_version{};
+  std::vector<float> waveform{};  // empty when unchanged since last publish
 };
 
 struct WebSampleBank final {
@@ -53,7 +54,8 @@ struct WebSampleBank final {
   float trim_end{1.0F};
   bool is_wavetable{};
   bool is_stream{};
-  std::vector<float> waveform{};
+  std::uint32_t waveform_version{};
+  std::vector<float> waveform{};  // empty when unchanged since last publish
   int root_note{48};
   int slice_count{0};
   bool transcribe_cached{};

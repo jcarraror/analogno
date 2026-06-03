@@ -176,6 +176,9 @@ WebRuntimeState make_web_state(const WebStateParams& p) {
   std::vector<WebSampleBank> sample_banks{};
   sample_banks.reserve(AudioSampler::bank_count);
   for (std::size_t i = 0; i < AudioSampler::bank_count; ++i) {
+    const auto wfm_ver = p.audio_sampler.bank_waveform_version(i);
+    const bool wfm_changed = wfm_ver != p.bank_waveform_versions_sent[i];
+    if (wfm_changed) p.bank_waveform_versions_sent[i] = wfm_ver;
     sample_banks.push_back(WebSampleBank{
         .has_sample = p.audio_sampler.bank_has_sample(i),
         .frames = static_cast<std::uint32_t>(p.audio_sampler.bank_frames(i)),
@@ -183,7 +186,8 @@ WebRuntimeState make_web_state(const WebStateParams& p) {
         .trim_end = p.audio_sampler.bank_trim_end(i),
         .is_wavetable = p.audio_sampler.bank_is_wavetable(i),
         .is_stream = p.audio_sampler.bank_is_stream(i),
-        .waveform = p.audio_sampler.bank_waveform(i, 256U),
+        .waveform_version = wfm_ver,
+        .waveform = wfm_changed ? p.audio_sampler.bank_waveform(i, 256U) : std::vector<float>{},
         .root_note = p.audio_sampler.bank_root_note(i),
         .slice_count = p.audio_sampler.bank_slice_count(i),
         .transcribe_cached = p.transcribe_cached[i],
@@ -308,11 +312,15 @@ WebRuntimeState make_web_state(const WebStateParams& p) {
                 const auto n = p.audio_sampler.loaded_stem_count();
                 slots.reserve(n);
                 for (std::size_t i = 0; i < n; ++i) {
+                  const auto swv = p.audio_sampler.stem_waveform_version(i);
+                  const bool swv_changed = swv != p.stem_waveform_versions_sent[i];
+                  if (swv_changed) p.stem_waveform_versions_sent[i] = swv;
                   slots.push_back(WebStemSlot{
                       .name = p.audio_sampler.stem_name(i),
                       .frames = p.audio_sampler.stem_frame_count(i),
                       .is_active = p.audio_sampler.stem_is_active(i),
-                      .waveform = p.audio_sampler.stem_waveform(i, 256U),
+                      .waveform_version = swv,
+                      .waveform = swv_changed ? p.audio_sampler.stem_waveform(i, 256U) : std::vector<float>{},
                   });
                 }
                 return slots;

@@ -68,6 +68,7 @@ export type RuntimeState = {
       trimEnd: number;
       isWavetable: boolean;
       isStream: boolean;
+      waveformVersion: number;
       waveform: number[];
       rootNote: number;
       sliceCount: number;
@@ -105,7 +106,7 @@ export type RuntimeState = {
     stemSplitProgress: number;
     stemSplitDetail: string;
     stemSplitLog: string[];
-    stems: Array<{ name: string; frames: number; isActive: boolean; waveform: number[] }>;
+    stems: Array<{ name: string; frames: number; isActive: boolean; waveformVersion: number; waveform: number[] }>;
     stemsFolder: string;
   };
   seq: {

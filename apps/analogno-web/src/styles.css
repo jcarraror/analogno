@@ -572,9 +572,51 @@ h1 {
   color: #9ca3af;
 }
 
-.seq-bpm-input,
+.seq-bpm-input {
+  width: 54px;
+  padding: 3px 6px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: 0.82rem;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.seq-bpm-drag {
+  display: inline-block;
+  line-height: 1.6;
+  cursor: ns-resize;
+  user-select: none;
+  touch-action: none;
+  font-variant-numeric: tabular-nums;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.seq-bpm-drag:hover {
+  border-color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.seq-bpm-drag:focus {
+  outline: none;
+  border-color: #6ea8fe;
+  background: rgba(110, 168, 254, 0.08);
+}
+
+.seq-bpm-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.seq-bpm-editing {
+  cursor: text;
+}
+
 .seq-select {
-  width: 64px;
+  width: auto;
   padding: 3px 6px;
   background: rgba(255, 255, 255, 0.07);
   border: 1px solid rgba(255, 255, 255, 0.15);

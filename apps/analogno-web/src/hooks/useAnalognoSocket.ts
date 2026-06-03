@@ -20,6 +20,10 @@ export function useAnalognoSocket() {
   const [runtime, setRuntime] = useState<RuntimeState | null>(null);
   const [library, setLibrary] = useState<LibraryState | null>(null);
   const runtimeRef = useRef<RuntimeState | null>(null);
+  // Persistent waveform caches — updated when server sends non-empty data.
+  // Refs are read on every render without causing extra re-renders.
+  const bankWaveforms = useRef<number[][]>(Array(8).fill([]));
+  const stemWaveforms = useRef<number[][]>(Array(8).fill([]));
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -70,6 +74,14 @@ export function useAnalognoSocket() {
         if (stopped || ws !== nextWs) return;
         const parsed = JSON.parse(event.data) as ServerMessage;
         if (parsed.type === "runtime") {
+          parsed.audio.banks.forEach((bank, i) => {
+            if (!bank.hasData) bankWaveforms.current[i] = [];
+            else if (bank.waveform.length > 0) bankWaveforms.current[i] = bank.waveform;
+          });
+          parsed.audio.stems.forEach((stem, i) => {
+            if (!stem.frames) stemWaveforms.current[i] = [];
+            else if (stem.waveform.length > 0) stemWaveforms.current[i] = stem.waveform;
+          });
           runtimeRef.current = parsed;
           setRuntime(parsed);
         } else if (parsed.type === "library") {
@@ -101,5 +113,5 @@ export function useAnalognoSocket() {
     };
   }, []);
 
-  return { connection, socket, runtime, runtimeRef, library };
+  return { connection, socket, runtime, runtimeRef, library, bankWaveforms, stemWaveforms };
 }

@@ -1,4 +1,4 @@
-import React, { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import React, { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConnectionState, RuntimeState, SoundfontPreset } from "../types/runtime";
 import { midiNoteName, patchName } from "../lib/music";
 
@@ -37,6 +37,141 @@ const seqTracksSignature = (tracks: RuntimeState['seq']['tracks']): string =>
     t.steps.length,
     t.steps.map(s => `${s.active ? 1 : 0}${s.tie ? 1 : 0}:${s.degree}:${s.velocity}:${s.midiNote}`).join(',')
   ].join('|')).join(';');
+
+type SeqStepCellProps = {
+  si: number; ti: number;
+  step: SeqStepEdit;
+  label: string;
+  isArmed: boolean; isSelected: boolean; isInLoop: boolean; isCurrent: boolean;
+  disabled: boolean;
+  onClick: (ti: number, si: number, e: React.MouseEvent) => void;
+  onContextMenu: (ti: number, si: number, e: React.MouseEvent) => void;
+  onMouseDown: (ti: number, si: number) => void;
+  onMouseEnter: (ti: number, si: number, e: React.MouseEvent) => void;
+};
+
+const SeqStepCell = React.memo(function SeqStepCell({
+  si, ti, step, label, isArmed, isSelected, isInLoop, isCurrent, disabled,
+  onClick, onContextMenu, onMouseDown, onMouseEnter,
+}: SeqStepCellProps) {
+  return (
+    <button
+      type="button"
+      className={[
+        'seq-step-btn',
+        !isInLoop ? 'seq-step-out' : '',
+        si % 16 === 0 ? 'seq-step-page' : '',
+        si % 4 === 0 ? 'seq-step-beat' : '',
+        step.active ? 'seq-step-on' : '',
+        isCurrent ? 'seq-step-current' : '',
+        isArmed ? 'seq-step-armed' : '',
+        isSelected ? 'seq-step-selected' : '',
+      ].filter(Boolean).join(' ')}
+      disabled={disabled || !isInLoop}
+      onClick={(e) => onClick(ti, si, e)}
+      onContextMenu={(e) => { if (!disabled) onContextMenu(ti, si, e); }}
+      onMouseDown={() => onMouseDown(ti, si)}
+      onMouseEnter={(e) => onMouseEnter(ti, si, e)}
+      title={`T${ti + 1} step ${si + 1}${isInLoop ? '' : ' out of loop'}${step.active ? ` — ${step.tie ? 'tie' : (label || 'scale')} vel ${step.velocity}` : ''}`}>
+      <span className="seq-step-num">{si + 1}</span>
+      {step.active && <span className="seq-step-note">{step.tie ? '–' : label}</span>}
+      {step.active && <span className="seq-step-vel-dot" style={{ width: `${Math.round(step.velocity / 127 * 100)}%` }} />}
+    </button>
+  );
+});
+
+function BpmField({ value, disabled, onChange }: { value: number; disabled: boolean; onChange: (v: number) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dragRef = useRef<{ startY: number; startVal: number } | null>(null);
+
+  const clamp = useCallback((v: number) => Math.max(20, Math.min(300, Math.round(v))), []);
+
+  function commit(raw: string) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n)) onChange(clamp(n));
+    setEditing(false);
+  }
+
+  function startEdit() {
+    if (disabled) return;
+    setDraft(String(value));
+    setEditing(true);
+    requestAnimationFrame(() => inputRef.current?.select());
+  }
+
+  function onPointerDown(e: React.PointerEvent<HTMLSpanElement>) {
+    if (disabled || editing) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragRef.current = { startY: e.clientY, startVal: value };
+  }
+
+  function onPointerMove(e: React.PointerEvent<HTMLSpanElement>) {
+    if (!dragRef.current) return;
+    const delta = dragRef.current.startY - e.clientY;
+    if (Math.abs(delta) > 2) {
+      onChange(clamp(dragRef.current.startVal + Math.round(delta * 0.5)));
+    }
+  }
+
+  function onPointerUp(e: React.PointerEvent<HTMLSpanElement>) {
+    const wasDrag = dragRef.current && Math.abs(dragRef.current.startY - e.clientY) > 4;
+    dragRef.current = null;
+    if (!wasDrag) startEdit();
+  }
+
+  function onWheel(e: React.WheelEvent<HTMLSpanElement>) {
+    if (disabled) return;
+    e.preventDefault();
+    onChange(clamp(value + (e.deltaY < 0 ? 1 : -1)));
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLSpanElement>) {
+    if (disabled) return;
+    if (e.key === 'ArrowUp') { e.preventDefault(); onChange(clamp(value + 1)); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); onChange(clamp(value - 1)); }
+    else if (e.key === 'Enter' || e.key === ' ') startEdit();
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        className="seq-bpm-input seq-bpm-editing"
+        type="text"
+        inputMode="numeric"
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={() => commit(draft)}
+        onKeyDown={e => {
+          if (e.key === 'Enter') commit(draft);
+          else if (e.key === 'Escape') setEditing(false);
+        }}
+      />
+    );
+  }
+
+  return (
+    <span
+      className={`seq-bpm-input seq-bpm-drag${disabled ? ' seq-bpm-disabled' : ''}`}
+      role="spinbutton"
+      tabIndex={disabled ? -1 : 0}
+      aria-label="BPM"
+      aria-valuenow={value}
+      aria-valuemin={20}
+      aria-valuemax={300}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onWheel={onWheel}
+      onKeyDown={onKeyDown}
+    >
+      {value}
+    </span>
+  );
+}
 
 export function SequencerPanel({
   seq,
@@ -351,6 +486,24 @@ export function SequencerPanel({
     if (trackIdx === activeTrack && selectedStep === stepIdx) onSelectStep(-1);
   }
 
+  const stepClickRef = useRef(handleStepClick);
+  stepClickRef.current = handleStepClick;
+  const stepRightClickRef = useRef(handleStepRightClick);
+  stepRightClickRef.current = handleStepRightClick;
+  const stepMouseDownRef = useRef(handleStepMouseDown);
+  stepMouseDownRef.current = handleStepMouseDown;
+  const stepMouseEnterRef = useRef(handleStepMouseEnter);
+  stepMouseEnterRef.current = handleStepMouseEnter;
+
+  const onStepClick = useCallback((ti: number, si: number, e: React.MouseEvent) =>
+    stepClickRef.current(ti, si, e), []);
+  const onStepRightClick = useCallback((ti: number, si: number, e: React.MouseEvent) =>
+    stepRightClickRef.current(ti, si, e), []);
+  const onStepMouseDown = useCallback((ti: number, si: number) =>
+    stepMouseDownRef.current(ti, si), []);
+  const onStepMouseEnter = useCallback((ti: number, si: number, e: React.MouseEvent) =>
+    stepMouseEnterRef.current(ti, si, e), []);
+
   function handleBpm(v: number) {
     const c = Math.max(20, Math.min(300, v));
     setBpm(c); send(tracks, c, gate);
@@ -452,9 +605,7 @@ export function SequencerPanel({
             </button>
             <label className="seq-label">
               BPM
-              <input type="number" className="seq-bpm-input" min={20} max={300}
-                value={bpm} disabled={disabled}
-                onChange={e => handleBpm(Number(e.target.value))} />
+              <BpmField value={bpm} disabled={disabled} onChange={handleBpm} />
             </label>
             <button type="button"
               className={`seq-mixer-toggle${showMixer ? ' seq-mixer-toggle-active' : ''}`}
@@ -643,32 +794,21 @@ export function SequencerPanel({
                 const isInLoop = si < loopLength;
                 const isCurrent = isInLoop && playheadStep >= 0 && playheadStep % loopLength === si && playing;
                 return (
-                  <button key={si} type="button"
-                    className={[
-                      'seq-step-btn',
-                      !isInLoop ? 'seq-step-out' : '',
-                      si % 16 === 0 ? 'seq-step-page' : '',
-                      si % 4 === 0 ? 'seq-step-beat' : '',
-                      step.active ? 'seq-step-on' : '',
-                      isCurrent ? 'seq-step-current' : '',
-                      isArmed ? 'seq-step-armed' : '',
-                      isSelected ? 'seq-step-selected' : '',
-                    ].filter(Boolean).join(' ')}
-                    disabled={disabled || !isInLoop}
-                    onClick={(e) => handleStepClick(ti, si, e)}
-                    onContextMenu={(e) => { if (!disabled) handleStepRightClick(ti, si, e); }}
-                    onMouseDown={() => handleStepMouseDown(ti, si)}
-                    onMouseEnter={(e) => handleStepMouseEnter(ti, si, e)}
-                    title={`T${ti + 1} step ${si + 1}${isInLoop ? '' : ' out of loop'}${step.active ? ` \u2014 ${step.tie ? 'tie' : (label || 'scale')} vel ${step.velocity}` : ''}`}>
-                    <span className="seq-step-num">{si + 1}</span>
-                    {step.active && (
-                      <span className="seq-step-note">{step.tie ? '–' : label}</span>
-                    )}
-                    {step.active && (
-                      <span className="seq-step-vel-dot"
-                        style={{ width: `${Math.round(step.velocity / 127 * 100)}%` }} />
-                    )}
-                  </button>
+                  <SeqStepCell
+                    key={si}
+                    si={si} ti={ti}
+                    step={step}
+                    label={label}
+                    isArmed={isArmed}
+                    isSelected={isSelected}
+                    isInLoop={isInLoop}
+                    isCurrent={isCurrent}
+                    disabled={disabled}
+                    onClick={onStepClick}
+                    onContextMenu={onStepRightClick}
+                    onMouseDown={onStepMouseDown}
+                    onMouseEnter={onStepMouseEnter}
+                  />
                 );
               })}
             </div>

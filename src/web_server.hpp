@@ -219,6 +219,7 @@ public:
   void stop();
   void set_stems_folder(const std::string &path);
   void publish_runtime(WebRuntimeState state);
+  [[nodiscard]] std::uint32_t client_generation() const;
   void publish_library(const WebLibraryState &state);
 
   [[nodiscard]] std::vector<Command> consume_commands();

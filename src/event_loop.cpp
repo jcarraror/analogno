@@ -279,6 +279,18 @@ void publish_state(AppContext& ctx, bool piano_roll_visible, bool spectrogram_vi
     const auto now = std::chrono::steady_clock::now();
     if (now - last_publish < std::chrono::milliseconds{100}) return;
 
+    // Track last-sent waveform versions; reset immediately when a new client
+    // connects so the very next publish includes all waveforms.
+    static std::array<std::uint32_t, AudioSampler::bank_count> bank_wfm_sent{};
+    static std::array<std::uint32_t, AudioSampler::stem_count> stem_wfm_sent{};
+    static std::uint32_t last_client_generation = 0;
+    const auto cur_gen = ctx.web.client_generation();
+    if (cur_gen != last_client_generation) {
+        last_client_generation = cur_gen;
+        bank_wfm_sent.fill(0U);
+        stem_wfm_sent.fill(0U);
+    }
+
     const auto spec_data =
         (spectrogram_visible && (++spec_counter % 3 == 0))
         ? ctx.audio_capture.spec_samples()
@@ -321,6 +333,8 @@ void publish_state(AppContext& ctx, bool piano_roll_visible, bool spectrogram_vi
         .bank_seq_mask          = ctx.transcribe.bank_seq_mask(),
         .bank_seq_track_counts  = ctx.transcribe.bank_seq_track_counts(),
         .cached_track_counts    = ctx.transcribe.cached_track_counts(),
+        .bank_waveform_versions_sent = bank_wfm_sent,
+        .stem_waveform_versions_sent = stem_wfm_sent,
     }));
     last_publish = now;
 }

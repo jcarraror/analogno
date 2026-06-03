@@ -279,6 +279,7 @@ public:
   std::optional<std::string> last_library_message{};
   std::mutex stems_folder_mutex{};
   std::string stems_folder{};
+  std::atomic<std::uint32_t> client_generation{0};
 };
 
 class Session final : public std::enable_shared_from_this<Session> {
@@ -358,6 +359,7 @@ private:
     }
 
     shared_->sessions.push_back(shared_from_this());
+    shared_->client_generation.fetch_add(1, std::memory_order_relaxed);
 
     {
       const auto lock = std::scoped_lock{shared_->library_message_mutex};
@@ -1135,6 +1137,10 @@ public:
     return std::exchange(shared_->commands, {});
   }
 
+  [[nodiscard]] std::uint32_t client_generation() const {
+    return shared_->client_generation.load(std::memory_order_relaxed);
+  }
+
 private:
   std::shared_ptr<SharedState> shared_;
   std::thread thread_{};
@@ -1156,6 +1162,10 @@ void WebSocketServer::set_stems_folder(const std::string &path) {
 
 void WebSocketServer::publish_runtime(WebRuntimeState state) {
   impl_->publish_runtime(std::move(state));
+}
+
+std::uint32_t WebSocketServer::client_generation() const {
+  return impl_->client_generation();
 }
 
 void WebSocketServer::publish_library(const WebLibraryState &state) {

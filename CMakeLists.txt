@@ -152,3 +152,25 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     -Wimplicit-fallthrough
   )
 endif()
+
+# ── Sampler stress benchmark (no SDL / rtmidi / boost dependency) ─────────────
+add_executable(stress_sampler
+  src/stress_sampler.cpp
+  src/audio_sampler.cpp
+  src/wav_stream.cpp
+  src/miniaudio_impl.cpp
+)
+
+target_include_directories(stress_sampler PRIVATE src)
+target_include_directories(stress_sampler SYSTEM PRIVATE ${miniaudio_SOURCE_DIR})
+
+target_link_libraries(stress_sampler PRIVATE pthread)
+target_compile_features(stress_sampler PRIVATE cxx_std_23)
+
+# miniaudio_impl.cpp has many sign-conversion issues in the library itself;
+# suppress warnings only for that translation unit.
+set_source_files_properties(src/miniaudio_impl.cpp PROPERTIES COMPILE_FLAGS "-w")
+
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+  target_compile_options(stress_sampler PRIVATE -Wall -Wextra -Wpedantic)
+endif()

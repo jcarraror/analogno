@@ -17,7 +17,8 @@ namespace analogno {
 
 class AudioSampler final {
 public:
-  static constexpr auto bank_count = std::size_t{8};
+  static constexpr auto bank_count  = std::size_t{8};
+  static constexpr auto voice_count = std::size_t{32};
   static constexpr auto stem_count = std::size_t{8};
 
   explicit AudioSampler(ma_context *shared_ctx = nullptr);
@@ -114,6 +115,19 @@ public:
 
   [[nodiscard]] bool is_running() const;
 
+  [[nodiscard]] std::uint32_t bank_waveform_version(std::size_t bank) const;
+  [[nodiscard]] std::uint32_t stem_waveform_version(std::size_t stem) const;
+
+  struct PerfSnapshot final {
+    std::uint64_t callback_count{};
+    double avg_callback_us{};
+    double max_callback_us{};
+    std::uint64_t voice_steals{};
+    std::uint32_t peak_voices{};
+  };
+  [[nodiscard]] PerfSnapshot perf_snapshot() const;
+  void perf_reset();
+
 private:
   struct Voice final {
     bool active{};
@@ -128,7 +142,6 @@ private:
     std::uint32_t noise_state{1};
   };
 
-  static constexpr auto voice_count = std::size_t{8};
   static constexpr auto sample_rate = ma_uint32{48000};
   static constexpr auto channels = ma_uint32{2};
   static constexpr auto attack_frames = float{192.0F};
@@ -174,6 +187,17 @@ private:
   bool device_ready_{};
   bool running_{};
   std::size_t next_voice_{};
+
+  std::array<std::atomic<std::uint32_t>, bank_count> bank_waveform_ver_{};
+  std::array<std::atomic<std::uint32_t>, stem_count> stem_waveform_ver_{};
+
+  struct PerfCounters final {
+    std::atomic<std::uint64_t> callback_count{};
+    std::atomic<std::uint64_t> ns_sum{};
+    std::atomic<std::uint64_t> ns_max{};
+    std::atomic<std::uint64_t> voice_steals{};
+    std::atomic<std::uint32_t> peak_voices{};
+  } perf_{};
 
   static void playback_callback(ma_device *device, void *output,
                                 const void *input, ma_uint32 frame_count);

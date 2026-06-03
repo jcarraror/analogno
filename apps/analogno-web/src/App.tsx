@@ -688,7 +688,7 @@ function Vec3Readout({ label, value }: { label: string; value: Vec3 }) {
 }
 
 export function App() {
-  const { connection, socket, runtime, runtimeRef, library } = useAnalognoSocket();
+  const { connection, socket, runtime, runtimeRef, library, bankWaveforms, stemWaveforms } = useAnalognoSocket();
 
   const activeNoteText = useMemo(() => {
     const notes = runtime?.music.activeNotes ?? [];
@@ -830,13 +830,17 @@ export function App() {
   const sampleMode = audio?.sampleReady ?? false;
   const activePatch = music?.midiProgram ?? 0;
   const activeBank = music?.midiBank ?? 0;
-  const activeSeqTrack = runtime?.seq.tracks[runtime.seq.activeTrack];
+  const activeSeqTrack = runtime?.seq.tracks[runtime?.seq.activeTrack ?? 0];
   const activeSeqTrackSampleBank = activeSeqTrack?.sampleBank ?? -1;
   const activeBankData = audio?.banks[audio?.activeBank ?? 0];
   const activeBankHasSample = !!(activeBankData?.hasData && !activeBankData?.isWavetable);
   const activeBankHasMicSample = activeBankHasSample && !(activeBankData?.isStream ?? false);
-  const activeStem = (audio?.stems ?? [])[audio?.stems?.findIndex(s => s.isActive) ?? -1] ?? (audio?.stems ?? [])[0];
+  const activeStemIdx = audio?.stems?.findIndex(s => s.isActive) ?? -1;
+  const activeStem = (audio?.stems ?? [])[activeStemIdx] ?? (audio?.stems ?? [])[0];
   const showStemWaveform = !activeBankHasSample && !(activeBankData?.isWavetable ?? false) && (audio?.stems ?? []).length > 0 && audio?.stemSplitState !== "done";
+
+  const activeBankWaveform = bankWaveforms.current[audio?.activeBank ?? 0] ?? [];
+  const activeStemWaveform = stemWaveforms.current[activeStemIdx >= 0 ? activeStemIdx : 0] ?? [];
 
   return (
     <main className="app">
@@ -1215,7 +1219,7 @@ export function App() {
               {activeBankHasSample ? (
                 <div className="trim">
                   <TrimWaveform
-                    waveform={activeBankData?.waveform ?? []}
+                    waveform={activeBankWaveform}
                     trimStart={audio?.sampleTrimStart ?? 0}
                     trimEnd={audio?.sampleTrimEnd ?? 1}
                     totalFrames={activeBankData?.frames ?? 0}
@@ -1226,7 +1230,7 @@ export function App() {
               ) : showStemWaveform ? (
                 <div className="trim">
                   <TrimWaveform
-                    waveform={activeStem?.waveform ?? []}
+                    waveform={activeStemWaveform}
                     trimStart={0}
                     trimEnd={1}
                     totalFrames={activeStem?.frames ?? 0}
@@ -1278,7 +1282,10 @@ export function App() {
               sampleWaveform={audio?.sampleWaveform ?? []}
               sampleTrimStart={audio?.sampleTrimStart ?? 0}
               sampleTrimEnd={audio?.sampleTrimEnd ?? 1}
-              stems={audio?.stems ?? []}
+              stems={(audio?.stems ?? []).map((stem, i) => ({
+                ...stem,
+                waveform: stemWaveforms.current[i]?.length > 0 ? stemWaveforms.current[i] : stem.waveform,
+              }))}
               activeBank={audio?.activeBank ?? 0}
               send={msg => socket?.send(JSON.stringify(msg))}
             />

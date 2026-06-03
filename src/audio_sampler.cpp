@@ -114,6 +114,12 @@ AudioSampler::AudioSampler(ma_context *shared_ctx) {
   for (auto &r : bank_playback_rate_) {
     r.store(1.0F);
   }
+  for (auto &v : bank_waveform_ver_) {
+    v.store(1U);
+  }
+  for (auto &v : stem_waveform_ver_) {
+    v.store(1U);
+  }
   ma_device_config config = ma_device_config_init(ma_device_type_playback);
   config.playback.format = ma_format_f32;
   config.playback.channels = channels;
@@ -191,6 +197,7 @@ void AudioSampler::set_bank_file(std::size_t bank, std::string path) {
   }).detach();
 
   bank_file_backed_[bank].store(true, std::memory_order_release);
+  bank_waveform_ver_[bank].fetch_add(1U, std::memory_order_relaxed);
 }
 
 void AudioSampler::set_sample_for_bank(std::size_t bank, std::vector<float> sample,
@@ -223,6 +230,7 @@ void AudioSampler::set_sample_for_bank(std::size_t bank, std::vector<float> samp
   stream_pos_[bank].store(0, std::memory_order_relaxed);
 
   bank_onset_frames_[bank].clear();
+  bank_waveform_ver_[bank].fetch_add(1U, std::memory_order_relaxed);
 
   for (auto &voice : voices_) {
     if (voice.bank_index == bank) {
@@ -257,6 +265,7 @@ void AudioSampler::set_wavetable(std::vector<float> samples,
   bank_stream_[bank].store(false);
   stream_active_[bank].store(false, std::memory_order_release);
   stream_pos_[bank].store(0, std::memory_order_relaxed);
+  bank_waveform_ver_[bank].fetch_add(1U, std::memory_order_relaxed);
 
   for (auto &voice : voices_) {
     if (voice.bank_index == bank) {
@@ -283,6 +292,7 @@ void AudioSampler::clear_sample() {
   bank_stream_[bank].store(false);
   stream_active_[bank].store(false, std::memory_order_release);
   stream_pos_[bank].store(0, std::memory_order_relaxed);
+  bank_waveform_ver_[bank].fetch_add(1U, std::memory_order_relaxed);
 
   for (auto &voice : voices_) {
     if (voice.bank_index == bank) {
@@ -452,9 +462,22 @@ void AudioSampler::trigger_bank(std::size_t bank, float rate, int midi_note) {
     }
   }
 
-  auto &voice = voices_[next_voice_];
-  const auto voice_index = next_voice_;
-  voice = Voice{
+  std::size_t best_idx = SIZE_MAX;
+  float lowest_env = 2.0F;
+  for (std::size_t i = 0; i < voices_.size(); ++i) {
+    if (!voices_[i].active) { best_idx = i; break; }
+    if (voices_[i].releasing && voices_[i].envelope < lowest_env) {
+      lowest_env = voices_[i].envelope;
+      best_idx = i;
+    }
+  }
+  if (best_idx == SIZE_MAX) {
+    best_idx = next_voice_;
+    next_voice_ = (next_voice_ + 1) % voices_.size();
+    perf_.voice_steals.fetch_add(1U, std::memory_order_relaxed);
+  }
+  const auto voice_index = best_idx;
+  voices_[best_idx] = Voice{
       .active = true,
       .releasing = false,
       .loop = is_wavetable,
@@ -468,8 +491,6 @@ void AudioSampler::trigger_bank(std::size_t bank, float rate, int midi_note) {
           0x9E3779B9U ^ ((bank + 1U) * 0x85EBCA6BU) ^
           ((voice_index + 1U) * 0xC2B2AE35U)),
   };
-
-  next_voice_ = (next_voice_ + 1) % voices_.size();
   voice_generation_.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -578,8 +599,22 @@ void AudioSampler::trigger_bank_onset(std::size_t bank, int onset_idx) {
     }
   }
 
-  const auto voice_index = next_voice_;
-  voices_[voice_index] = Voice{
+  std::size_t best_idx_o = SIZE_MAX;
+  float lowest_env_o = 2.0F;
+  for (std::size_t i = 0; i < voices_.size(); ++i) {
+    if (!voices_[i].active) { best_idx_o = i; break; }
+    if (voices_[i].releasing && voices_[i].envelope < lowest_env_o) {
+      lowest_env_o = voices_[i].envelope;
+      best_idx_o = i;
+    }
+  }
+  if (best_idx_o == SIZE_MAX) {
+    best_idx_o = next_voice_;
+    next_voice_ = (next_voice_ + 1) % voices_.size();
+    perf_.voice_steals.fetch_add(1U, std::memory_order_relaxed);
+  }
+  const auto voice_index = best_idx_o;
+  voices_[best_idx_o] = Voice{
       .active = true,
       .releasing = false,
       .loop = false,
@@ -593,7 +628,6 @@ void AudioSampler::trigger_bank_onset(std::size_t bank, int onset_idx) {
           0x9E3779B9U ^ ((bank + 1U) * 0x85EBCA6BU) ^
           ((voice_index + 1U) * 0xC2B2AE35U)),
   };
-  next_voice_ = (next_voice_ + 1) % voices_.size();
   voice_generation_.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -782,6 +816,38 @@ bool AudioSampler::bank_is_stream(std::size_t bank) const {
 
 bool AudioSampler::is_running() const { return running_; }
 
+std::uint32_t AudioSampler::bank_waveform_version(std::size_t bank) const {
+  if (bank >= bank_count) return 0U;
+  return bank_waveform_ver_[bank].load(std::memory_order_relaxed);
+}
+
+std::uint32_t AudioSampler::stem_waveform_version(std::size_t stem) const {
+  if (stem >= stem_count) return 0U;
+  return stem_waveform_ver_[stem].load(std::memory_order_relaxed);
+}
+
+AudioSampler::PerfSnapshot AudioSampler::perf_snapshot() const {
+  PerfSnapshot s{};
+  s.callback_count = perf_.callback_count.load(std::memory_order_relaxed);
+  const auto ns_sum = perf_.ns_sum.load(std::memory_order_relaxed);
+  s.avg_callback_us = s.callback_count > 0U
+      ? static_cast<double>(ns_sum) / static_cast<double>(s.callback_count) / 1000.0
+      : 0.0;
+  s.max_callback_us =
+      static_cast<double>(perf_.ns_max.load(std::memory_order_relaxed)) / 1000.0;
+  s.voice_steals = perf_.voice_steals.load(std::memory_order_relaxed);
+  s.peak_voices = perf_.peak_voices.load(std::memory_order_relaxed);
+  return s;
+}
+
+void AudioSampler::perf_reset() {
+  perf_.callback_count.store(0U, std::memory_order_relaxed);
+  perf_.ns_sum.store(0U, std::memory_order_relaxed);
+  perf_.ns_max.store(0U, std::memory_order_relaxed);
+  perf_.voice_steals.store(0U, std::memory_order_relaxed);
+  perf_.peak_voices.store(0U, std::memory_order_relaxed);
+}
+
 void AudioSampler::stream_play(std::size_t bank) {
   if (bank >= bank_count) return;
   if (bank_file_backed_[bank].load()) {
@@ -850,12 +916,14 @@ void AudioSampler::set_stem(std::size_t idx, std::string name, std::string path)
   const auto new_count = std::max(loaded_stem_count_.load(), idx + 1);
   loaded_stem_count_.store(new_count);
 
+  stem_waveform_ver_[idx].fetch_add(1U, std::memory_order_relaxed);
   const auto bpath = stem_paths_[idx];
   std::thread([this, idx, bpath] {
     auto wf = compute_file_waveform(bpath, 256U);
     const auto lock = std::scoped_lock{mutex_};
     stem_cached_waveforms_[idx] =
         std::make_shared<const std::vector<float>>(std::move(wf));
+    stem_waveform_ver_[idx].fetch_add(1U, std::memory_order_relaxed);
   }).detach();
 }
 
@@ -873,6 +941,9 @@ void AudioSampler::clear_stems() {
   }
   loaded_stem_count_.store(0);
   active_stem_.store(0);
+  for (auto &v : stem_waveform_ver_) {
+    v.fetch_add(1U, std::memory_order_relaxed);
+  }
 }
 
 void AudioSampler::stem_play(std::size_t idx) {
@@ -952,6 +1023,8 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
   if (self == nullptr) {
     return;
   }
+
+  const auto _cb_t0 = std::chrono::steady_clock::now();
 
   std::array<std::shared_ptr<const std::vector<float>>, bank_count> banks{};
   std::array<std::shared_ptr<const std::vector<float>>, bank_count> bank_morph_banks{};
@@ -1207,6 +1280,26 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
         self->stream_pos_[b].store(stream_positions[b], std::memory_order_relaxed);
       }
     }
+  }
+
+  // Perf counters
+  {
+    const auto cb_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - _cb_t0).count());
+    self->perf_.callback_count.fetch_add(1U, std::memory_order_relaxed);
+    self->perf_.ns_sum.fetch_add(cb_ns, std::memory_order_relaxed);
+    auto cur_max = self->perf_.ns_max.load(std::memory_order_relaxed);
+    while (cb_ns > cur_max &&
+           !self->perf_.ns_max.compare_exchange_weak(
+               cur_max, cb_ns, std::memory_order_relaxed)) {}
+
+    std::uint32_t n_active = 0U;
+    for (const auto& v : voices) n_active += v.active ? 1U : 0U;
+    auto cur_peak = self->perf_.peak_voices.load(std::memory_order_relaxed);
+    while (n_active > cur_peak &&
+           !self->perf_.peak_voices.compare_exchange_weak(
+               cur_peak, n_active, std::memory_order_relaxed)) {}
   }
 }
 
