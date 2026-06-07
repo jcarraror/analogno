@@ -79,6 +79,7 @@ add_executable(analogno
   src/sequencer.cpp
   src/session.cpp
   src/web_server.cpp
+  src/ws_codec.cpp
   src/audio_capture.cpp
   src/audio_downloader.cpp
   src/audio_sampler.cpp
