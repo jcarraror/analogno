@@ -2117,6 +2117,36 @@ h1 {
   cursor: default;
 }
 
+.bank-import-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(100, 180, 255, 0.35);
+  border-radius: 5px;
+  background: rgba(100, 180, 255, 0.07);
+  color: #7bbfff;
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.bank-import-btn:hover {
+  background: rgba(100, 180, 255, 0.18);
+  border-color: rgba(100, 180, 255, 0.55);
+}
+
+.bank-import-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.bank-import-btn.bank-import-busy {
+  color: #aad4ff;
+}
+
 .bank-params {
   display: flex;
   flex-direction: column;

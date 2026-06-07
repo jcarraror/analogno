@@ -42,11 +42,12 @@ void route_live_notes(AppContext& ctx, const AudioFeatures& audio_features) {
         }
         if (ctx.audio_sampler.bank_is_stream(asb)) {
             if (l2_gate && !intent.note_ons.empty()) {
-                if (ctx.audio_sampler.stream_is_active(asb))
-                    ctx.audio_sampler.stream_stop(asb);
-                else
-                    ctx.audio_sampler.stream_play(asb);
+                const auto root = ctx.audio_sampler.bank_root_note(asb);
+                const auto semitones = intent.note_ons[0].midi_note - root;
+                ctx.audio_sampler.stream_play(asb, std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
             }
+            if (!intent.note_offs.empty())
+                ctx.audio_sampler.stream_stop(asb);
         } else {
             for (const auto& note : intent.note_offs) {
                 const auto root      = ctx.audio_sampler.bank_root_note(asb);

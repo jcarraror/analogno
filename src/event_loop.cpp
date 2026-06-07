@@ -77,11 +77,9 @@ void update_sampler_controls(const ContinuousControls& controls, AudioSampler& s
                      : -1;
     return (tsb >= 0 &&
             ctx.audio_sampler.bank_has_sample(static_cast<std::size_t>(tsb)) &&
-            !ctx.audio_sampler.bank_is_wavetable(static_cast<std::size_t>(tsb)) &&
-            !ctx.audio_sampler.bank_is_stream(static_cast<std::size_t>(tsb))) ||
+            !ctx.audio_sampler.bank_is_wavetable(static_cast<std::size_t>(tsb))) ||
            (ctx.sampler_mode && ctx.audio_sampler.has_sample() &&
-            !ctx.audio_sampler.bank_is_wavetable(asb) &&
-            !ctx.audio_sampler.bank_is_stream(asb));
+            !ctx.audio_sampler.bank_is_wavetable(asb));
 }
 
 

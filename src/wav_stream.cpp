@@ -22,6 +22,7 @@ void WavStream::start(std::string path, float trim_start, float trim_end) {
   read_pos_.store(0, std::memory_order_relaxed);
   eof_.store(false, std::memory_order_relaxed);
   stop_flag_.store(false, std::memory_order_relaxed);
+  frac_pos_ = 0.0;
 
   active_.store(true, std::memory_order_release);
   reader_ = std::thread(&WavStream::reader_func, this,
@@ -36,15 +37,13 @@ void WavStream::stop() {
   active_.store(false, std::memory_order_release);
 }
 
-bool WavStream::read_frame(float &l, float &r) {
-  if (!active_.load(std::memory_order_acquire)) {
-    return false;
-  }
+bool WavStream::read_frame(float &l, float &r, float rate) {
+  if (!active_.load(std::memory_order_acquire)) return false;
 
   const auto w = write_pos_.load(std::memory_order_acquire);
   const auto rd = read_pos_.load(std::memory_order_relaxed);
 
-  if (rd >= w) {
+  if (rd + 1 >= w) {
     if (eof_.load(std::memory_order_acquire)) {
       active_.store(false, std::memory_order_release);
       return false;
@@ -53,10 +52,16 @@ bool WavStream::read_frame(float &l, float &r) {
     return true;
   }
 
-  const auto pos = rd % ring_frames;
-  l = ring_[pos * 2];
-  r = ring_[pos * 2 + 1];
-  read_pos_.store(rd + 1, std::memory_order_release);
+  const auto pos0 = rd % ring_frames;
+  const auto pos1 = (rd + 1) % ring_frames;
+  const auto frac = static_cast<float>(frac_pos_);
+  l = ring_[pos0 * 2]     + (ring_[pos1 * 2]     - ring_[pos0 * 2])     * frac;
+  r = ring_[pos0 * 2 + 1] + (ring_[pos1 * 2 + 1] - ring_[pos0 * 2 + 1]) * frac;
+
+  frac_pos_ += static_cast<double>(rate);
+  const auto step = static_cast<std::uint64_t>(frac_pos_);
+  frac_pos_ -= static_cast<double>(step);
+  read_pos_.store(rd + step, std::memory_order_release);
   return true;
 }
 

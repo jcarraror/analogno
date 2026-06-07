@@ -459,6 +459,22 @@ bool dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
                       << " → bank " << cmd.bank << '\n';
         },
 
+        [&](const WebSocketServer::LoadFileToBank& cmd) {
+            if (cmd.bank >= 8) return;
+            if (!std::filesystem::exists(cmd.path)) return;
+            ctx.audio_sampler.load_stem_to_bank(cmd.bank, cmd.path, 0.0F, 1.0F);
+            ctx.transcribe.invalidate_cache(cmd.bank);
+            ctx.transcribe.invalidate_bank_seq(cmd.bank);
+            ctx.audio_sampler.set_active_bank(cmd.bank);
+            ctx.sampler_mode = true;
+            if (ctx.seq.active_track >= 0 &&
+                static_cast<std::size_t>(ctx.seq.active_track) < ctx.seq.tracks.size()) {
+                ctx.seq.tracks[static_cast<std::size_t>(ctx.seq.active_track)].sample_bank =
+                    static_cast<int>(cmd.bank);
+            }
+            std::cout << "[bank] file : bank " << cmd.bank << '\n';
+        },
+
         [&](const WebSocketServer::SetStemFolder& cmd) {
             ctx.stems_folder = cmd.path;
             ctx.web.set_stems_folder(ctx.stems_folder);

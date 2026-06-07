@@ -834,6 +834,32 @@ export function App() {
   }, [socket, runtimeRef]);
 
   const [configOpen, setConfigOpen] = useState(false);
+  const [importingBank, setImportingBank] = useState<number | null>(null);
+  const bankImportTargetRef = useRef<number>(0);
+  const bankFileInputRef = useRef<HTMLInputElement>(null);
+
+  const triggerBankImport = useCallback((bank: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    bankImportTargetRef.current = bank;
+    bankFileInputRef.current?.click();
+  }, []);
+
+  const onBankFileSelected = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const bank = bankImportTargetRef.current;
+    setImportingBank(bank);
+    try {
+      await fetch(`http://127.0.0.1:8765/api/load-bank?bank=${bank}`, {
+        method: "POST",
+        headers: { "Content-Type": file.type || "audio/wav" },
+        body: file,
+      });
+    } finally {
+      setImportingBank(null);
+    }
+  }, []);
 
   const controller = runtime?.controller;
   const music = runtime?.music;
@@ -856,6 +882,13 @@ export function App() {
   return (
     <TickContext.Provider value={tick}>
     <main className="app">
+      <input
+        ref={bankFileInputRef}
+        type="file"
+        accept=".wav,.mp3,.flac,.ogg,.aiff,.aif,audio/*"
+        style={{ display: "none" }}
+        onChange={onBankFileSelected}
+      />
       <header className="hero">
         <div>
           <p className="eyebrow">DualSense MIDI workstation</p>
@@ -1097,6 +1130,19 @@ export function App() {
                       <span className="bank-num">B{i + 1}</span>
                       {isStream && <span className="bank-type-tag">STR</span>}
                       <span className="bank-dur">{trimmedSecs != null ? `${trimmedSecs}s` : "—"}</span>
+                      <button
+                        className={`bank-import-btn${importingBank === i ? " bank-import-busy" : ""}`}
+                        type="button"
+                        title="Load audio file into this bank"
+                        onClick={(e) => triggerBankImport(i, e)}
+                        disabled={connection !== "online" || importingBank !== null}
+                      >
+                        {importingBank === i ? "…" : (
+                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                            <path d="M5 1v5M2.5 4l2.5 2.5L7.5 4M1.5 8.5h7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                        )}
+                      </button>
                       {hasData && !isStream && (
                         <button
                           className="bank-save-btn"

@@ -28,7 +28,8 @@ public:
 
   // Real-time safe — called from audio callback only.
   // Returns false when the stream ends; sets is_active() to false.
-  bool read_frame(float &left, float &right);
+  // rate > 1 = higher pitch (faster read), rate < 1 = lower pitch (slower read).
+  bool read_frame(float &left, float &right, float rate = 1.0F);
 
 private:
   static constexpr std::uint32_t device_rate = 48000;
@@ -40,6 +41,7 @@ private:
   std::atomic<bool> stop_flag_{false};
   std::atomic<bool> active_{false};
   std::thread reader_;
+  double frac_pos_{0.0}; // fractional sub-frame position; only touched in audio callback
 
   void reader_func(std::string path, float trim_start, float trim_end);
 };

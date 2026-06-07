@@ -140,6 +140,9 @@ private:
     } else if (req.method() == beast::http::verb::post &&
                req.target() == "/api/split-audio") {
       handle_audio_upload(std::move(req));
+    } else if (req.method() == beast::http::verb::post &&
+               req.target().starts_with("/api/load-bank")) {
+      handle_load_bank_upload(std::move(req));
     } else if (req.method() == beast::http::verb::get &&
                req.target().starts_with("/api/stems/")) {
       handle_stem_request(std::move(req));
@@ -227,6 +230,67 @@ private:
     res.set(beast::http::field::content_type, "application/json");
     res.set(beast::http::field::access_control_allow_origin, "*");
     res.body() = ok ? R"({"ok":true})" : R"({"ok":false})";
+    res.prepare_payload();
+
+    auto res_ptr = std::make_shared<beast::http::response<beast::http::string_body>>(
+        std::move(res));
+    beast::http::async_write(
+        stream_, *res_ptr,
+        [self = shared_from_this(), res_ptr](beast::error_code, std::size_t) {});
+  }
+
+  void handle_load_bank_upload(beast::http::request<beast::http::string_body> req) {
+    const auto target = std::string_view{req.target()};
+    const auto q = target.find('?');
+    std::size_t bank = 0;
+    bool bank_valid = false;
+    if (q != std::string_view::npos) {
+      auto query = target.substr(q + 1);
+      constexpr auto key = std::string_view{"bank="};
+      if (query.starts_with(key)) {
+        query = query.substr(key.size());
+        for (const char c : query) {
+          if (c < '0' || c > '9') break;
+          bank = bank * 10 + static_cast<std::size_t>(c - '0');
+          bank_valid = true;
+        }
+      }
+    }
+    if (!bank_valid || bank >= 8) {
+      send_http_error(beast::http::status::bad_request, req.version());
+      return;
+    }
+
+    const auto ct  = std::string_view{req[beast::http::field::content_type]};
+    const auto ext = extension_for_content_type(ct);
+
+    std::string tmp_path = std::string{"/tmp/analogno-bank-XXXXXX"} + std::string{ext};
+    const int fd = mkstemps(tmp_path.data(), static_cast<int>(ext.size()));
+    if (fd == -1) {
+      std::cerr << "[bank-upload] failed to create temp file\n";
+      send_http_error(beast::http::status::internal_server_error, req.version());
+      return;
+    }
+
+    const auto& body  = req.body();
+    const bool  wrote = write(fd, body.data(), body.size()) == static_cast<ssize_t>(body.size());
+    close(fd);
+
+    if (wrote) {
+      enqueue_command(WebSocketServer::LoadFileToBank{.bank = bank, .path = tmp_path});
+    } else {
+      std::cerr << "[bank-upload] failed to write " << tmp_path << '\n';
+    }
+
+    const unsigned version = req.version();
+    beast::http::response<beast::http::string_body> res{
+        wrote ? beast::http::status::accepted
+              : beast::http::status::internal_server_error,
+        version};
+    res.set(beast::http::field::server, "Analogno");
+    res.set(beast::http::field::content_type, "application/json");
+    res.set(beast::http::field::access_control_allow_origin, "*");
+    res.body() = wrote ? R"({"ok":true})" : R"({"ok":false})";
     res.prepare_payload();
 
     auto res_ptr = std::make_shared<beast::http::response<beast::http::string_body>>(

@@ -858,8 +858,9 @@ void AudioSampler::perf_reset() {
   perf_.peak_voices.store(0U, std::memory_order_relaxed);
 }
 
-void AudioSampler::stream_play(std::size_t bank) {
+void AudioSampler::stream_play(std::size_t bank, float rate) {
   if (bank >= bank_count) return;
+  bank_playback_rate_[bank].store(rate, std::memory_order_relaxed);
   if (bank_file_backed_[bank].load()) {
     wav_streams_[bank]->start(bank_wav_file_[bank],
                               bank_trim_start_[bank].load(),
@@ -876,6 +877,7 @@ void AudioSampler::stream_play(std::size_t bank) {
     start_pos = std::min(start_pos, frames > 0 ? frames - 1 : 0);
   }
   stream_active_[bank].store(false, std::memory_order_release);
+  stream_frac_pos_[bank].store(0.0F, std::memory_order_relaxed);
   stream_pos_[bank].store(start_pos, std::memory_order_relaxed);
   stream_active_[bank].store(true, std::memory_order_release);
 }
@@ -1043,6 +1045,9 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
   std::array<std::uint64_t, bank_count> initial_stream_positions{};
   std::array<bool, bank_count> stream_active{};
   std::array<bool, bank_count> initial_stream_active{};
+  std::array<float, bank_count> bank_playback_rates{};
+  std::array<float, bank_count> stream_frac_pos{};
+  std::array<float, bank_count> initial_stream_frac_pos{};
   std::array<Voice, voice_count> voices{};
   std::uint64_t voice_generation{};
 
@@ -1056,6 +1061,9 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
       initial_stream_positions[b] = stream_positions[b];
       stream_active[b] = self->stream_active_[b].load(std::memory_order_relaxed);
       initial_stream_active[b] = stream_active[b];
+      bank_playback_rates[b] = self->bank_playback_rate_[b].load(std::memory_order_relaxed);
+      stream_frac_pos[b] = self->stream_frac_pos_[b].load(std::memory_order_relaxed);
+      initial_stream_frac_pos[b] = stream_frac_pos[b];
     }
     voices = self->voices_;
     voice_generation =
@@ -1233,7 +1241,7 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
       if (self->bank_file_backed_[b].load(std::memory_order_relaxed)) {
         float l = 0.0F;
         float r = 0.0F;
-        if (!self->wav_streams_[b]->read_frame(l, r)) continue;
+        if (!self->wav_streams_[b]->read_frame(l, r, bank_playback_rates[b] * pitch_rate)) continue;
         mixed_left += l * gain * stream_gain_scale * tremolo;
         mixed_right += r * gain * stream_gain_scale * tremolo;
         continue;
@@ -1249,15 +1257,26 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
       const auto trim_end_frame = static_cast<std::uint64_t>(
           self->bank_trim_end_[b].load() * static_cast<float>(stream_frames));
       const auto end_frame = std::min(trim_end_frame, static_cast<std::uint64_t>(stream_frames));
-      const auto pos = stream_positions[b]++;
-      if (pos >= end_frame) {
+      const auto pos0 = stream_positions[b];
+      if (pos0 >= end_frame) {
         stream_active[b] = false;
         continue;
       }
-      const auto left = (*sample)[pos * ch];
-      const auto right = ch > 1U ? (*sample)[pos * ch + 1U] : left;
-      mixed_left += left * gain * stream_gain_scale;
-      mixed_right += right * gain * stream_gain_scale;
+      const auto pos1 = std::min(pos0 + 1, end_frame - 1);
+      const auto frac = stream_frac_pos[b];
+      const auto sl = (*sample)[pos0 * ch];
+      const auto sl1 = (*sample)[pos1 * ch];
+      const auto left = sl + (sl1 - sl) * frac;
+      const auto sr = ch > 1U ? (*sample)[pos0 * ch + 1U] : sl;
+      const auto sr1 = ch > 1U ? (*sample)[pos1 * ch + 1U] : sl1;
+      const auto right = sr + (sr1 - sr) * frac;
+      mixed_left += left * gain * stream_gain_scale * tremolo;
+      mixed_right += right * gain * stream_gain_scale * tremolo;
+      const auto eff_rate = static_cast<double>(bank_playback_rates[b] * pitch_rate);
+      stream_frac_pos[b] += static_cast<float>(eff_rate);
+      const auto step = static_cast<std::uint64_t>(stream_frac_pos[b]);
+      stream_frac_pos[b] -= static_cast<float>(step);
+      stream_positions[b] += step;
     }
 
     const auto peak = std::max(std::abs(mixed_left), std::abs(mixed_right));
@@ -1286,10 +1305,12 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
           current_pos == initial_stream_positions[b]) {
         self->stream_active_[b].store(stream_active[b], std::memory_order_relaxed);
         self->stream_pos_[b].store(stream_positions[b], std::memory_order_relaxed);
+        self->stream_frac_pos_[b].store(stream_frac_pos[b], std::memory_order_relaxed);
       } else if (initial_stream_active[b] && !stream_active[b] &&
                  current_active == initial_stream_active[b]) {
         self->stream_active_[b].store(false, std::memory_order_relaxed);
         self->stream_pos_[b].store(stream_positions[b], std::memory_order_relaxed);
+        self->stream_frac_pos_[b].store(stream_frac_pos[b], std::memory_order_relaxed);
       }
     }
   }

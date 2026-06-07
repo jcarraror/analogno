@@ -182,6 +182,10 @@ public:
     float trim_start{0.0F};
     float trim_end{1.0F};
   };
+  struct LoadFileToBank final {
+    std::size_t bank{};
+    std::string path{};
+  };
   struct DownloadAudio final {
     std::string source{};
   };
@@ -216,6 +220,7 @@ public:
                                StreamPlayBank, StreamStopBank,
                                StemPlay, StemStop, SetStemFolder, SetActiveStem,
                                OpenStemFolderDialog, LoadStemToBank,
+                               LoadFileToBank,
                                DownloadAudio, LoadBankSeq, ArrangeBankToSeq,
                                ClearSeqTrack, ClearAllSeqTracks,
                                RemoveAllSeqTracks,

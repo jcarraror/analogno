@@ -39,7 +39,7 @@ public:
   void set_bank_file(std::size_t bank, std::string path);
 
   // Raw stream playback
-  void stream_play(std::size_t bank);
+  void stream_play(std::size_t bank, float rate = 1.0F);
   void stream_stop(std::size_t bank);
   void stream_stop_all();
   [[nodiscard]] bool stream_is_active(std::size_t bank) const;
@@ -185,6 +185,7 @@ private:
   std::atomic<std::uint64_t> voice_generation_{};
   std::array<std::atomic<std::uint64_t>, bank_count> stream_pos_{};
   std::array<std::atomic<bool>, bank_count> stream_active_{};
+  std::array<std::atomic<float>, bank_count> stream_frac_pos_{};
   float vibrato_phase_{};
   bool device_ready_{};
   bool running_{};
