@@ -10,6 +10,34 @@ export type SoundfontPreset = {
   name: string;
 };
 
+export type TickState = {
+  type: "tick";
+  controller: {
+    leftX: number; leftY: number; rightX: number; rightY: number;
+    l2: number; r2: number;
+    hasGyro: boolean; hasAccel: boolean;
+    gyro: Vec3; accel: Vec3;
+  };
+  music: {
+    pitchBend: number; expression: number;
+    filterCutoff: number; filterResonance: number;
+    modulation: number; vibrato: number;
+    activeNotes: number[];
+  };
+  audio: {
+    micLevel: number; envelope: number; gateOpen: boolean; onset: boolean; velocity: number;
+    waveform: number[];
+    specSamples: number[];
+    touchpadRawPoints: [number, number][];
+    voiceSeqRecording: boolean; voiceSeqRecordProgress: number;
+    voiceSeqLastNote: number; voiceSeqLastVelocity: number;
+    voiceSeqAcceptedNotes: number; voiceSeqRejectedNotes: number; voiceSeqRecordedSegments: number;
+    stemSplitState: "idle" | "running" | "done" | "error";
+    stemSplitProgress: number; stemSplitDetail: string;
+  };
+  seq: { playing: boolean; playheadStep: number; currentStep: number };
+};
+
 export type RuntimeState = {
   type: "runtime";
   controller: {

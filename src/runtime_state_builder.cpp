@@ -333,6 +333,63 @@ WebRuntimeState make_web_state(const WebStateParams& p) {
   };
 }
 
+WebTickState make_tick_state(const WebStateParams& p) {
+  return WebTickState{
+      .controller = WebControllerState{
+          .left_x        = p.controller.left_x(),
+          .left_y        = p.controller.left_y(),
+          .right_x       = p.controller.right_x(),
+          .right_y       = p.controller.right_y(),
+          .left_trigger  = p.controller.left_trigger(),
+          .right_trigger = p.controller.right_trigger(),
+          .has_gyro      = p.controller.has_gyro(),
+          .has_accel     = p.controller.has_accel(),
+          .gyro  = WebVec3{.x = p.controller.gyro().x,  .y = p.controller.gyro().y,  .z = p.controller.gyro().z},
+          .accel = WebVec3{.x = p.controller.accel().x, .y = p.controller.accel().y, .z = p.controller.accel().z},
+      },
+      .music = WebTickMusicState{
+          .pitch_bend       = p.intent.controls.pitch_bend,
+          .expression       = p.intent.controls.expression,
+          .filter_cutoff    = p.intent.controls.filter_cutoff,
+          .filter_resonance = p.intent.controls.filter_resonance,
+          .modulation       = p.intent.controls.modulation,
+          .vibrato          = p.intent.controls.vibrato,
+          .active_notes     = p.active_notes,
+      },
+      .audio = WebTickAudioState{
+          .mic_level   = p.audio_capture.level(),
+          .envelope    = p.audio_features.envelope,
+          .gate_open   = p.audio_features.gate_open,
+          .onset       = p.audio_features.onset,
+          .velocity    = p.audio_features.velocity,
+          .waveform    = p.audio_capture.waveform(),
+          .spec_samples = p.spec_samples,
+          .touchpad_raw_points = [&] {
+              const auto& src = p.sketch.active ? p.sketch.points : p.sketch.committed_points;
+              std::vector<std::array<float, 2>> out;
+              out.reserve(src.size());
+              for (auto [x, y] : src) out.push_back({x, y});
+              return out;
+          }(),
+          .voice_seq_recording         = p.voice_seq_status.recording,
+          .voice_seq_record_progress   = p.voice_seq_status.record_progress,
+          .voice_seq_last_note         = p.voice_seq_status.last_midi_note,
+          .voice_seq_last_velocity     = p.voice_seq_status.last_velocity,
+          .voice_seq_accepted_notes    = p.voice_seq_status.accepted_notes,
+          .voice_seq_rejected_notes    = p.voice_seq_status.rejected_notes,
+          .voice_seq_recorded_segments = p.voice_seq_status.recorded_segments,
+          .stem_split_state    = p.stem_state,
+          .stem_split_progress = p.stem_progress,
+          .stem_split_detail   = p.stem_detail,
+      },
+      .seq = WebTickSeqState{
+          .playing      = p.seq.playing,
+          .playhead_step = p.seq.playhead_step,
+          .current_step  = p.seq.current_step,
+      },
+  };
+}
+
 WebLibraryState make_web_library_state(
     const std::vector<WebPreset> &presets,
     const std::vector<std::string> &soundfonts,

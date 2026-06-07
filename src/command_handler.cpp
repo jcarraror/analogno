@@ -54,10 +54,12 @@ std::vector<float> resample_wavetable(const std::vector<float>& src,
 
 } // namespace
 
-void dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
+bool dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
     constexpr std::size_t wavetable_length = 367;
 
-    for (auto& command : ctx.web.consume_commands()) {
+    auto commands = ctx.web.consume_commands();
+    const bool any = !commands.empty();
+    for (auto& command : commands) {
         std::visit(Overloaded{
 
         // ── Panic ─────────────────────────────────────────────────────────
@@ -630,6 +632,7 @@ void dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
 
         }, command); // end std::visit
     }
+    return any;
 }
 
 } // namespace analogno

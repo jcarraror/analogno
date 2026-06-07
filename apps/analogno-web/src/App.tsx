@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { PianoRoll } from "./components/PianoRoll";
 import { SequencerPanel, type SeqTrackEdit, type VoiceSeqState } from "./components/SequencerPanel";
 import { Spectrogram } from "./components/Spectrogram";
 import { StemSplitter } from "./components/StemSplitter";
 import { useAnalognoSocket } from "./hooks/useAnalognoSocket";
 import { GM_PROGRAMS, bankLabel, bankRole, formatNumber, midiNoteName, patchName, pluralize, soundfontFormat, soundfontName } from "./lib/music";
-import type { ConnectionState, Vec3 } from "./types/runtime";
+import type { ConnectionState, TickState, Vec3 } from "./types/runtime";
+
+export const TickContext = createContext<TickState | null>(null);
+export function useTickState() { return useContext(TickContext); }
 
 function StatusPill({ state }: { state: ConnectionState }) {
   return <div className={`pill pill-${state}`}>{state}</div>;
@@ -688,75 +691,67 @@ function Vec3Readout({ label, value }: { label: string; value: Vec3 }) {
 }
 
 export function App() {
-  const { connection, socket, runtime, runtimeRef, library, bankWaveforms, stemWaveforms } = useAnalognoSocket();
+  const { connection, socket, runtime, tick, runtimeRef, library, bankWaveforms, stemWaveforms } = useAnalognoSocket();
 
   const activeNoteText = useMemo(() => {
-    const notes = runtime?.music.activeNotes ?? [];
-
-    if (notes.length === 0) {
-      return "none";
-    }
-
+    const notes = tick?.music.activeNotes ?? runtime?.music.activeNotes ?? [];
+    if (notes.length === 0) return "none";
     return notes.map((note) => `${midiNoteName(note)} / ${note}`).join(", ");
-  }, [runtime]);
+  }, [tick, runtime]);
 
-  function panic() {
+  const panic = useCallback(() => {
     socket?.send(JSON.stringify({ type: "panic" }));
-  }
+  }, [socket]);
 
-  function selectCaptureDevice(value: string) {
+  const selectCaptureDevice = useCallback((value: string) => {
     socket?.send(JSON.stringify({
       type: "setCaptureDevice",
       deviceIndex: value === "default" ? null : Number(value)
     }));
-  }
+  }, [socket]);
 
-  function setSampleTrim(next: { start?: number; end?: number }) {
-    const start = next.start ?? audio?.sampleTrimStart ?? 0;
-    const end = next.end ?? audio?.sampleTrimEnd ?? 1;
+  const setSampleTrim = useCallback((next: { start?: number; end?: number }) => {
+    const current = runtimeRef.current?.audio;
+    const start = next.start ?? current?.sampleTrimStart ?? 0;
+    const end = next.end ?? current?.sampleTrimEnd ?? 1;
+    socket?.send(JSON.stringify({ type: "setSampleTrim", start, end }));
+  }, [socket, runtimeRef]);
 
-    socket?.send(JSON.stringify({
-      type: "setSampleTrim",
-      start,
-      end
-    }));
-  }
-
-  function setActiveBank(bank: number) {
+  const setActiveBank = useCallback((bank: number) => {
     socket?.send(JSON.stringify({ type: "setActiveBank", bank }));
-  }
+  }, [socket]);
 
-  function saveSample(bank: number) {
+  const saveSample = useCallback((bank: number) => {
     socket?.send(JSON.stringify({ type: "saveSample", bank }));
-  }
+  }, [socket]);
 
-  function setBankRootNote(bank: number, note: number) {
+  const setBankRootNote = useCallback((bank: number, note: number) => {
     socket?.send(JSON.stringify({ type: "setBankRootNote", bank, note }));
-  }
+  }, [socket]);
 
-  function setBankSliceCount(bank: number, count: number) {
+  const setBankSliceCount = useCallback((bank: number, count: number) => {
     socket?.send(JSON.stringify({ type: "setBankSliceCount", bank, count }));
-  }
+  }, [socket]);
 
-  function transcribeBankToSeq(bank: number) {
+  const transcribeBankToSeq = useCallback((bank: number) => {
     socket?.send(JSON.stringify({ type: "transcribeBankToSeq", bank }));
-  }
+  }, [socket]);
 
-  function arrangeBankToSeq(bank: number) {
+  const arrangeBankToSeq = useCallback((bank: number) => {
     socket?.send(JSON.stringify({ type: "arrangeBankToSeq", bank }));
-  }
+  }, [socket]);
 
-  function transcribeMicToSeq() {
+  const transcribeMicToSeq = useCallback(() => {
     socket?.send(JSON.stringify({ type: "transcribeMicToSeq" }));
-  }
+  }, [socket]);
 
-  function setPatch(bank: number, program: number) {
+  const setPatch = useCallback((bank: number, program: number) => {
     socket?.send(JSON.stringify({ type: "setPatch", bank, program }));
-  }
+  }, [socket]);
 
-  function setSoundfont(path: string) {
+  const setSoundfont = useCallback((path: string) => {
     socket?.send(JSON.stringify({ type: "setSoundfont", path }));
-  }
+  }, [socket]);
 
   const sendWavetable = useCallback((samples: number[], morphSamples: number[]) => {
     socket?.send(JSON.stringify({ type: "setWavetable", data: samples, morphData: morphSamples }));
@@ -770,89 +765,73 @@ export function App() {
       noise: next.noise ?? current?.wavetableNoise ?? 0,
       unison: next.unison ?? current?.wavetableUnison ?? 0,
     }));
+  }, [socket, runtimeRef]);
+
+  const seqPlay = useCallback(() => { socket?.send(JSON.stringify({ type: "seqPlay" })); }, [socket]);
+  const seqStop = useCallback(() => { socket?.send(JSON.stringify({ type: "seqStop" })); }, [socket]);
+  const seqSelectStep = useCallback((step: number) => { socket?.send(JSON.stringify({ type: "selectSeqStep", step })); }, [socket]);
+  const seqSelectTrack = useCallback((track: number) => { socket?.send(JSON.stringify({ type: "selectSeqTrack", track })); }, [socket]);
+  const seqAddTrack = useCallback(() => { socket?.send(JSON.stringify({ type: "seqAddTrack" })); }, [socket]);
+  const seqRemoveTrack = useCallback((track: number) => { socket?.send(JSON.stringify({ type: "seqRemoveTrack", track })); }, [socket]);
+  const seqChange = useCallback((cfg: { bpm: number; gatePct: number; stepCount: number; stepDivision: number; tracks: SeqTrackEdit[] }) => {
+    socket?.send(JSON.stringify({ type: "setSeq", ...cfg }));
+  }, [socket]);
+  const seqTrackVolume = useCallback((track: number, volume: number) => {
+    socket?.send(JSON.stringify({ type: "setTrackVolume", track, volume }));
+  }, [socket]);
+  const seqTrackPan = useCallback((track: number, pan: number) => {
+    socket?.send(JSON.stringify({ type: "setTrackPan", track, pan }));
+  }, [socket]);
+  const seqTrackVelocityScale = useCallback((track: number, scale: number) => {
+    socket?.send(JSON.stringify({ type: "setTrackVelocityScale", track, scale }));
+  }, [socket]);
+  const seqTrackSolo = useCallback((track: number, solo: boolean) => {
+    socket?.send(JSON.stringify({ type: "setTrackSolo", track, solo }));
+  }, [socket]);
+  const seqClearTrack = useCallback((track: number) => {
+    socket?.send(JSON.stringify({ type: "clearSeqTrack", track }));
+  }, [socket]);
+  const seqClearAll = useCallback(() => { socket?.send(JSON.stringify({ type: "clearAllSeqTracks" })); }, [socket]);
+  const seqRemoveAll = useCallback(() => { socket?.send(JSON.stringify({ type: "removeAllSeqTracks" })); }, [socket]);
+  const seqSetTrackName = useCallback((track: number, name: string) => {
+    socket?.send(JSON.stringify({ type: "setSeqTrackName", track, name }));
+  }, [socket]);
+  const seqSetSwing = useCallback((swing: number) => {
+    socket?.send(JSON.stringify({ type: "setSeqSwing", swing }));
+  }, [socket]);
+  const seqSetStepProbability = useCallback((track: number, step: number, probability: number) => {
+    socket?.send(JSON.stringify({ type: "setStepProbability", track, step, probability }));
+  }, [socket]);
+  const seqCopyTrack = useCallback((track: number) => {
+    socket?.send(JSON.stringify({ type: "copySeqTrack", track }));
+  }, [socket]);
+  const seqPasteTrack = useCallback((track: number) => {
+    socket?.send(JSON.stringify({ type: "pasteSeqTrack", track }));
   }, [socket]);
 
-  function seqPlay() { socket?.send(JSON.stringify({ type: "seqPlay" })); }
-  function seqStop() { socket?.send(JSON.stringify({ type: "seqStop" })); }
-  function seqSelectStep(step: number) { socket?.send(JSON.stringify({ type: "selectSeqStep", step })); }
-  function seqSelectTrack(track: number) { socket?.send(JSON.stringify({ type: "selectSeqTrack", track })); }
-  function seqAddTrack() { socket?.send(JSON.stringify({ type: "seqAddTrack" })); }
-  function seqRemoveTrack(track: number) { socket?.send(JSON.stringify({ type: "seqRemoveTrack", track })); }
-  function seqChange(cfg: { bpm: number; gatePct: number; stepCount: number; stepDivision: number; tracks: SeqTrackEdit[] }) {
-    socket?.send(JSON.stringify({ type: "setSeq", ...cfg }));
-  }
-
-  function seqTrackVolume(track: number, volume: number) {
-    socket?.send(JSON.stringify({ type: "setTrackVolume", track, volume }));
-  }
-
-  function seqTrackPan(track: number, pan: number) {
-    socket?.send(JSON.stringify({ type: "setTrackPan", track, pan }));
-  }
-
-  function seqTrackVelocityScale(track: number, scale: number) {
-    socket?.send(JSON.stringify({ type: "setTrackVelocityScale", track, scale }));
-  }
-
-  function seqTrackSolo(track: number, solo: boolean) {
-    socket?.send(JSON.stringify({ type: "setTrackSolo", track, solo }));
-  }
-
-  function seqClearTrack(track: number) {
-    socket?.send(JSON.stringify({ type: "clearSeqTrack", track }));
-  }
-
-  function seqClearAll() {
-    socket?.send(JSON.stringify({ type: "clearAllSeqTracks" }));
-  }
-
-  function seqRemoveAll() {
-    socket?.send(JSON.stringify({ type: "removeAllSeqTracks" }));
-  }
-
-  function seqSetTrackName(track: number, name: string) {
-    socket?.send(JSON.stringify({ type: "setSeqTrackName", track, name }));
-  }
-
-  function seqSetSwing(swing: number) {
-    socket?.send(JSON.stringify({ type: "setSeqSwing", swing }));
-  }
-
-  function seqSetStepProbability(track: number, step: number, probability: number) {
-    socket?.send(JSON.stringify({ type: "setStepProbability", track, step, probability }));
-  }
-
-  function seqCopyTrack(track: number) {
-    socket?.send(JSON.stringify({ type: "copySeqTrack", track }));
-  }
-
-  function seqPasteTrack(track: number) {
-    socket?.send(JSON.stringify({ type: "pasteSeqTrack", track }));
-  }
-
-  function setSignalsVolume(volume: number) {
+  const setSignalsVolume = useCallback((volume: number) => {
     socket?.send(JSON.stringify({ type: "setSignalsVolume", volume: Math.round(volume * 100) }));
-  }
+  }, [socket]);
 
-
-  function setVoiceSeq(next: {
+  const setVoiceSeq = useCallback((next: {
     enabled?: boolean;
     recording?: boolean;
     mode?: "percussion" | "harmonic" | "hybrid";
     snapToScale?: boolean;
     sensitivity?: number;
     timingOffsetMs?: number;
-  }) {
+  }) => {
+    const current = runtimeRef.current?.audio;
     socket?.send(JSON.stringify({
       type: "setVoiceSeq",
-      enabled: next.enabled ?? audio?.voiceSeqEnabled ?? false,
-      recording: next.recording ?? audio?.voiceSeqRecording ?? false,
-      mode: next.mode ?? audio?.voiceSeqMode ?? "percussion",
-      snapToScale: next.snapToScale ?? audio?.voiceSeqSnap ?? true,
-      sensitivity: Math.round((next.sensitivity ?? audio?.voiceSeqSensitivity ?? 0.65) * 100),
-      timingOffsetMs: next.timingOffsetMs ?? audio?.voiceSeqTimingOffsetMs ?? 0,
+      enabled: next.enabled ?? current?.voiceSeqEnabled ?? false,
+      recording: next.recording ?? current?.voiceSeqRecording ?? false,
+      mode: next.mode ?? current?.voiceSeqMode ?? "percussion",
+      snapToScale: next.snapToScale ?? current?.voiceSeqSnap ?? true,
+      sensitivity: Math.round((next.sensitivity ?? current?.voiceSeqSensitivity ?? 0.65) * 100),
+      timingOffsetMs: next.timingOffsetMs ?? current?.voiceSeqTimingOffsetMs ?? 0,
     }));
-  }
+  }, [socket, runtimeRef]);
 
   const [configOpen, setConfigOpen] = useState(false);
 
@@ -875,6 +854,7 @@ export function App() {
   const activeStemWaveform = stemWaveforms.current[activeStemIdx >= 0 ? activeStemIdx : 0] ?? [];
 
   return (
+    <TickContext.Provider value={tick}>
     <main className="app">
       <header className="hero">
         <div>
@@ -969,7 +949,7 @@ export function App() {
         {(runtime?.pianoRollVisible ?? true) && (
         <Panel title="Notes" wide>
           <PianoRoll
-            activeNotes={music?.activeNotes ?? []}
+            activeNotes={tick?.music.activeNotes ?? music?.activeNotes ?? []}
             buttonMidiNotes={music?.buttonMidiNotes ?? []}
             rootMidiNote={music?.rootMidiNote ?? 48}
           />
@@ -977,8 +957,8 @@ export function App() {
             <span>Root: <strong style={{color:"#eee"}}>{music ? midiNoteName(music.rootMidiNote) : "—"}</strong></span>
             <span>Scale: <strong style={{color:"#eee"}}>{music?.scale ?? "—"}</strong></span>
             <span>Oct: <strong style={{color:"#eee"}}>{music?.octaveOffset ?? 0}</strong></span>
-            {(music?.activeNotes?.length ?? 0) > 0 && (
-              <span>Playing: <strong style={{color:"#4a9eff"}}>{(music?.activeNotes ?? []).map(n => midiNoteName(n)).join(", ")}</strong></span>
+            {(tick?.music.activeNotes?.length ?? music?.activeNotes?.length ?? 0) > 0 && (
+              <span>Playing: <strong style={{color:"#4a9eff"}}>{(tick?.music.activeNotes ?? music?.activeNotes ?? []).map(n => midiNoteName(n)).join(", ")}</strong></span>
             )}
           </div>
         </Panel>
@@ -1308,8 +1288,8 @@ export function App() {
             <StemSplitter
               stemSplitState={audio?.stemSplitState ?? "idle"}
               stemSplitError={audio?.stemSplitError ?? ""}
-              stemSplitProgress={audio?.stemSplitProgress ?? 0}
-              stemSplitDetail={audio?.stemSplitDetail ?? ""}
+              stemSplitProgress={tick?.audio.stemSplitProgress ?? 0}
+              stemSplitDetail={tick?.audio.stemSplitDetail ?? ""}
               stemSplitLog={audio?.stemSplitLog ?? []}
               sampleWaveform={audio?.sampleWaveform ?? []}
               sampleTrimStart={audio?.sampleTrimStart ?? 0}
@@ -1354,36 +1334,32 @@ export function App() {
             voiceSeq={{
               available: audio?.voiceSeqAvailable ?? false,
               enabled: audio?.voiceSeqEnabled ?? false,
-              recording: audio?.voiceSeqRecording ?? false,
+              recording: tick?.audio.voiceSeqRecording ?? false,
               mode: audio?.voiceSeqMode ?? "percussion",
               snap: audio?.voiceSeqSnap ?? true,
               sensitivity: audio?.voiceSeqSensitivity ?? 0.65,
               timingOffsetMs: audio?.voiceSeqTimingOffsetMs ?? 0,
-              lastNote: audio?.voiceSeqLastNote ?? -1,
-              lastVelocity: audio?.voiceSeqLastVelocity ?? 0,
+              lastNote: tick?.audio.voiceSeqLastNote ?? -1,
+              lastVelocity: tick?.audio.voiceSeqLastVelocity ?? 0,
               compiled: audio?.voiceSeqCompiled ?? false,
-              acceptedNotes: audio?.voiceSeqAcceptedNotes ?? 0,
-              rejectedNotes: audio?.voiceSeqRejectedNotes ?? 0,
-              recordedSegments: audio?.voiceSeqRecordedSegments ?? 0,
+              acceptedNotes: tick?.audio.voiceSeqAcceptedNotes ?? 0,
+              rejectedNotes: tick?.audio.voiceSeqRejectedNotes ?? 0,
+              recordedSegments: tick?.audio.voiceSeqRecordedSegments ?? 0,
             } satisfies VoiceSeqState}
             onVoiceSeq={setVoiceSeq}
           />
         </Panel>
 
-        {(runtime?.spectrogramVisible ?? true) && (
+        {(runtime?.spectrogramVisible ?? false) && (
         <Panel
           title="Spectrogram"
           wide
         >
-          <Spectrogram
-            specSamples={audio?.specSamples ?? []}
-            activeNotes={music?.activeNotes ?? []}
-            expression={music?.expression ?? 0}
-            filterCutoff={music?.filterCutoff ?? 0}
-          />
+          <Spectrogram />
         </Panel>
         )}
       </div>
     </main>
+    </TickContext.Provider>
   );
 }

@@ -1,4 +1,5 @@
-import React, { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { TickContext } from "../App";
 
 function EraserIcon() {
   return (
@@ -335,10 +336,11 @@ export function SequencerPanel({
     }
   }, [seq]);
 
+  const tickSeq = useContext(TickContext)?.seq;
   const disabled = connection !== 'online';
-  const currentStep = seq?.currentStep ?? -1;
-  const playheadStep = seq?.playheadStep ?? currentStep;
-  const playing = seq?.playing ?? false;
+  const currentStep = tickSeq?.currentStep ?? seq?.currentStep ?? -1;
+  const playheadStep = tickSeq?.playheadStep ?? seq?.playheadStep ?? currentStep;
+  const playing = tickSeq?.playing ?? seq?.playing ?? false;
   const activeLoopLength = Math.max(1, Math.min(stepCount, tracks[activeTrack]?.loopLength ?? stepCount));
   const activeTrackCurrentStep = playing && playheadStep >= 0 ? playheadStep % activeLoopLength : -1;
   const pageCount = Math.max(1, Math.ceil(stepCount / SEQ_PAGE_SIZE));

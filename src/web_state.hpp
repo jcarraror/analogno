@@ -171,6 +171,56 @@ struct WebSeqState final {
   std::vector<WebSeqTrack> tracks{};
 };
 
+// ── Lean fast-changing state published at 10 Hz ──────────────────────────────
+// Structural state (tracks, banks, stems) is NOT included — it is published
+// separately (type:"runtime") only when something actually changes.
+
+struct WebTickMusicState final {
+  float pitch_bend{};
+  float expression{};
+  float filter_cutoff{};
+  float filter_resonance{};
+  float modulation{};
+  float vibrato{};
+  std::vector<int> active_notes{};
+};
+
+struct WebTickAudioState final {
+  float mic_level{};
+  float envelope{};
+  bool gate_open{};
+  bool onset{};
+  int velocity{};
+  std::vector<float> waveform{};
+  std::vector<float> spec_samples{};
+  std::vector<std::array<float, 2>> touchpad_raw_points{};
+  // voice-seq live feedback
+  bool voice_seq_recording{};
+  float voice_seq_record_progress{};
+  int voice_seq_last_note{-1};
+  int voice_seq_last_velocity{};
+  std::size_t voice_seq_accepted_notes{};
+  std::size_t voice_seq_rejected_notes{};
+  std::size_t voice_seq_recorded_segments{};
+  // stem-split live progress
+  std::string stem_split_state{"idle"};
+  float stem_split_progress{};
+  std::string stem_split_detail{};
+};
+
+struct WebTickSeqState final {
+  bool playing{};
+  int playhead_step{-1};
+  int current_step{-1};
+};
+
+struct WebTickState final {
+  WebControllerState controller{};
+  WebTickMusicState music{};
+  WebTickAudioState audio{};
+  WebTickSeqState seq{};
+};
+
 struct WebRuntimeState final {
   WebControllerState controller{};
   WebMusicState music{};

@@ -234,6 +234,7 @@ public:
   void start();
   void stop();
   void set_stems_folder(const std::string &path);
+  void publish_tick(WebTickState state);
   void publish_runtime(WebRuntimeState state);
   [[nodiscard]] std::uint32_t client_generation() const;
   void publish_library(const WebLibraryState &state);

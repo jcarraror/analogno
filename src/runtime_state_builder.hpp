@@ -66,6 +66,7 @@ struct WebStateParams {
 };
 
 [[nodiscard]] WebRuntimeState make_web_state(const WebStateParams& params);
+[[nodiscard]] WebTickState make_tick_state(const WebStateParams& params);
 
 [[nodiscard]] WebLibraryState make_web_library_state(
     const std::vector<WebPreset> &presets,

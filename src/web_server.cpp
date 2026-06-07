@@ -70,6 +70,59 @@ Json sample_banks_json(const std::vector<WebSampleBank> &banks) {
   return result;
 }
 
+std::string tick_json_string(const WebTickState &state) {
+  const Json json{
+      {"type", "tick"},
+      {"controller", {
+          {"leftX", state.controller.left_x},
+          {"leftY", state.controller.left_y},
+          {"rightX", state.controller.right_x},
+          {"rightY", state.controller.right_y},
+          {"l2", state.controller.left_trigger},
+          {"r2", state.controller.right_trigger},
+          {"hasGyro", state.controller.has_gyro},
+          {"hasAccel", state.controller.has_accel},
+          {"gyro",  {{"x", state.controller.gyro.x},  {"y", state.controller.gyro.y},  {"z", state.controller.gyro.z}}},
+          {"accel", {{"x", state.controller.accel.x}, {"y", state.controller.accel.y}, {"z", state.controller.accel.z}}},
+      }},
+      {"music", {
+          {"pitchBend",       state.music.pitch_bend},
+          {"expression",      state.music.expression},
+          {"filterCutoff",    state.music.filter_cutoff},
+          {"filterResonance", state.music.filter_resonance},
+          {"modulation",      state.music.modulation},
+          {"vibrato",         state.music.vibrato},
+          {"activeNotes",     state.music.active_notes},
+      }},
+      {"audio", {
+          {"micLevel",                  state.audio.mic_level},
+          {"envelope",                  state.audio.envelope},
+          {"gateOpen",                  state.audio.gate_open},
+          {"onset",                     state.audio.onset},
+          {"velocity",                  state.audio.velocity},
+          {"waveform",                  state.audio.waveform},
+          {"specSamples",               state.audio.spec_samples},
+          {"touchpadRawPoints",         state.audio.touchpad_raw_points},
+          {"voiceSeqRecording",         state.audio.voice_seq_recording},
+          {"voiceSeqRecordProgress",    state.audio.voice_seq_record_progress},
+          {"voiceSeqLastNote",          state.audio.voice_seq_last_note},
+          {"voiceSeqLastVelocity",      state.audio.voice_seq_last_velocity},
+          {"voiceSeqAcceptedNotes",     state.audio.voice_seq_accepted_notes},
+          {"voiceSeqRejectedNotes",     state.audio.voice_seq_rejected_notes},
+          {"voiceSeqRecordedSegments",  state.audio.voice_seq_recorded_segments},
+          {"stemSplitState",            state.audio.stem_split_state},
+          {"stemSplitProgress",         state.audio.stem_split_progress},
+          {"stemSplitDetail",           state.audio.stem_split_detail},
+      }},
+      {"seq", {
+          {"playing",      state.seq.playing},
+          {"playheadStep", state.seq.playhead_step},
+          {"currentStep",  state.seq.current_step},
+      }},
+  };
+  return json.dump(-1, ' ', false, Json::error_handler_t::replace);
+}
+
 std::string runtime_json_string(const WebRuntimeState &state) {
   const Json json{
       {"type", "runtime"},
@@ -1109,6 +1162,26 @@ public:
     }
   }
 
+  void publish_tick(WebTickState state) {
+    net::post(shared_->ioc, [shared = shared_, state = std::move(state)]() mutable {
+      shared->sessions.erase(
+          std::remove_if(shared->sessions.begin(), shared->sessions.end(),
+                         [](const auto &s) { return s.expired(); }),
+          shared->sessions.end());
+      if (shared->sessions.empty()) return;
+      std::string message;
+      try {
+        message = tick_json_string(state);
+      } catch (const std::exception &e) {
+        std::cerr << "[ws] tick serialization error: " << e.what() << '\n';
+        return;
+      }
+      for (const auto &weak_session : shared->sessions) {
+        if (const auto session = weak_session.lock()) session->send(message);
+      }
+    });
+  }
+
   void publish_runtime(WebRuntimeState state) {
     net::post(shared_->ioc, [shared = shared_, state = std::move(state)]() mutable {
       shared->sessions.erase(
@@ -1195,6 +1268,10 @@ void WebSocketServer::stop() { impl_->stop(); }
 
 void WebSocketServer::set_stems_folder(const std::string &path) {
   impl_->set_stems_folder(path);
+}
+
+void WebSocketServer::publish_tick(WebTickState state) {
+  impl_->publish_tick(std::move(state));
 }
 
 void WebSocketServer::publish_runtime(WebRuntimeState state) {

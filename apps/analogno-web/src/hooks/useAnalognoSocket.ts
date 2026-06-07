@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ConnectionState, LibraryState, RuntimeState } from "../types/runtime";
+import type { ConnectionState, LibraryState, RuntimeState, TickState } from "../types/runtime";
 
 function defaultWebsocketUrl(): string {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -12,16 +12,16 @@ const websocketUrl =
   import.meta.env.VITE_ANALOGNO_WS_URL ??
   defaultWebsocketUrl();
 
-type ServerMessage = RuntimeState | LibraryState;
+type ServerMessage = RuntimeState | TickState | LibraryState;
 
 export function useAnalognoSocket() {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [socket, setSocket] = useState<WebSocket | null>(null);
   const [runtime, setRuntime] = useState<RuntimeState | null>(null);
+  const [tick, setTick] = useState<TickState | null>(null);
   const [library, setLibrary] = useState<LibraryState | null>(null);
   const runtimeRef = useRef<RuntimeState | null>(null);
   // Persistent waveform caches — updated when server sends non-empty data.
-  // Refs are read on every render without causing extra re-renders.
   const bankWaveforms = useRef<number[][]>(Array(8).fill([]));
   const stemWaveforms = useRef<number[][]>(Array(8).fill([]));
 
@@ -73,7 +73,9 @@ export function useAnalognoSocket() {
       nextWs.addEventListener("message", (event: MessageEvent<string>) => {
         if (stopped || ws !== nextWs) return;
         const parsed = JSON.parse(event.data) as ServerMessage;
-        if (parsed.type === "runtime") {
+        if (parsed.type === "tick") {
+          setTick(parsed);
+        } else if (parsed.type === "runtime") {
           parsed.audio.banks.forEach((bank, i) => {
             if (!bank.hasData) bankWaveforms.current[i] = [];
             else if (bank.waveform.length > 0) bankWaveforms.current[i] = bank.waveform;
@@ -113,5 +115,5 @@ export function useAnalognoSocket() {
     };
   }, []);
 
-  return { connection, socket, runtime, runtimeRef, library, bankWaveforms, stemWaveforms };
+  return { connection, socket, runtime, tick, runtimeRef, library, bankWaveforms, stemWaveforms };
 }

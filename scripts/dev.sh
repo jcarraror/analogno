@@ -101,7 +101,13 @@ kill_old_processes() {
   pkill -f "${ANALOGNO_BIN}" 2>/dev/null || true
   pkill -f "node.*vite" 2>/dev/null || true
   pkill -f "vite.*${WEB_PORT}" 2>/dev/null || true
-  sleep 0.5
+  sleep 0.8
+  pkill -KILL -x fluidsynth 2>/dev/null || true
+  pkill -KILL -f "${ANALOGNO_BIN}" 2>/dev/null || true
+
+  pactl list sink-inputs 2>/dev/null \
+    | awk '/^Sink Input #/{id=substr($3,2)} /application\.name.*[Ff]luid/{print id}' \
+    | xargs -r -I{} pactl kill-sink-input {} 2>/dev/null || true
 }
 
 find_alsa_client() {

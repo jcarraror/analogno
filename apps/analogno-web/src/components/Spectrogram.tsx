@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useTickState } from "../App";
 import { midiNoteName } from "../lib/music";
 
 // Meter that shows a threshold line at 50% (1.0 normalised to 0..2 range)
@@ -101,17 +102,12 @@ function specMidiFreq(n: number): number {
   return 440 * Math.pow(2, (n - 69) / 12);
 }
 
-export function Spectrogram({
-  specSamples,
-  activeNotes,
-  expression,
-  filterCutoff,
-}: {
-  specSamples: number[];
-  activeNotes: number[];
-  expression: number;
-  filterCutoff: number;
-}) {
+export function Spectrogram() {
+  const tick = useTickState();
+  const specSamples = tick?.audio.specSamples ?? [];
+  const activeNotes = tick?.music.activeNotes ?? [];
+  const expression  = tick?.music.expression ?? 0;
+  const filterCutoff = tick?.music.filterCutoff ?? 0;
   const canvasRef    = useRef<HTMLCanvasElement>(null);
   const stripRef     = useRef<HTMLCanvasElement>(null);
   const histRef      = useRef<ImageData | null>(null);

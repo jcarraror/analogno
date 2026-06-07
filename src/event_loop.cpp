@@ -276,35 +276,18 @@ void update_lightbar(Gamepad& gamepad, AppContext& ctx) {
     }
 }
 
-void publish_state(AppContext& ctx, bool piano_roll_visible, bool spectrogram_visible,
-                   int& spec_counter, std::chrono::steady_clock::time_point& last_publish) {
-    const auto now = std::chrono::steady_clock::now();
-    if (now - last_publish < std::chrono::milliseconds{100}) return;
-
-    // Track last-sent waveform versions; reset immediately when a new client
-    // connects so the very next publish includes all waveforms.
-    static std::array<std::uint32_t, AudioSampler::bank_count> bank_wfm_sent{};
-    static std::array<std::uint32_t, AudioSampler::stem_count> stem_wfm_sent{};
-    static std::uint32_t last_client_generation = 0;
-    const auto cur_gen = ctx.web.client_generation();
-    if (cur_gen != last_client_generation) {
-        last_client_generation = cur_gen;
-        bank_wfm_sent.fill(0U);
-        stem_wfm_sent.fill(0U);
-    }
-
-    const auto spec_data =
-        (spectrogram_visible && (++spec_counter % 3 == 0))
-        ? ctx.audio_capture.spec_samples()
-        : std::vector<float>{};
-
-    const auto& stem_st         = ctx.stem_pipeline.status();
-    const auto active_notes_vec = ctx.active_notes.notes();
-    const auto voice_status     = ctx.voice_seq.status();
-    const std::string transcribe_state =
-        ctx.transcribe.is_running() ? "running" : "idle";
-
-    ctx.web.publish_runtime(make_web_state(WebStateParams{
+// Builds the shared WebStateParams used by both tick and runtime publish paths.
+// spec_data is passed in because tick throttles it via spec_counter.
+WebStateParams make_params(AppContext& ctx, bool piano_roll_visible,
+                           bool spectrogram_visible,
+                           const std::vector<float>& spec_data,
+                           std::array<std::uint32_t, AudioSampler::bank_count>& bank_wfm_sent,
+                           std::array<std::uint32_t, AudioSampler::stem_count>& stem_wfm_sent,
+                           const std::string& transcribe_state,
+                           const StemPipeline::Status& stem_st,
+                           const std::vector<int>& active_notes_vec,
+                           const VoiceSequencerStatus& voice_status) {
+    return WebStateParams{
         .controller          = ctx.controller,
         .intent              = ctx.last_intent,
         .active_notes        = active_notes_vec,
@@ -337,8 +320,70 @@ void publish_state(AppContext& ctx, bool piano_roll_visible, bool spectrogram_vi
         .cached_track_counts    = ctx.transcribe.cached_track_counts(),
         .bank_waveform_versions_sent = bank_wfm_sent,
         .stem_waveform_versions_sent = stem_wfm_sent,
-    }));
-    last_publish = now;
+    };
+}
+
+// Publishes the lean tick (10 Hz) and the full runtime state (on-change + 2 s floor).
+// state_dirty is cleared after a runtime publish.
+void publish_state(AppContext& ctx, bool piano_roll_visible, bool spectrogram_visible,
+                   int& spec_counter,
+                   std::chrono::steady_clock::time_point& last_tick_publish,
+                   std::chrono::steady_clock::time_point& last_state_publish,
+                   bool& state_dirty) {
+    using ms = std::chrono::milliseconds;
+    const auto now = std::chrono::steady_clock::now();
+
+    // Waveform version tracking
+    static std::array<std::uint32_t, AudioSampler::bank_count> bank_wfm_sent{};
+    static std::array<std::uint32_t, AudioSampler::stem_count> stem_wfm_sent{};
+    static std::uint32_t last_client_generation = 0;
+    const auto cur_gen = ctx.web.client_generation();
+    if (cur_gen != last_client_generation) {
+        last_client_generation = cur_gen;
+        bank_wfm_sent.fill(0U);
+        stem_wfm_sent.fill(0U);
+        state_dirty = true;
+    }
+
+    const bool tick_due  = (now - last_tick_publish  >= ms{100});
+    const bool state_due = state_dirty || (now - last_state_publish >= ms{2000});
+
+    if (!tick_due && !state_due) return;
+
+    const auto& stem_st         = ctx.stem_pipeline.status();
+    const auto active_notes_vec = ctx.active_notes.notes();
+    const auto voice_status     = ctx.voice_seq.status();
+    const std::string transcribe_state =
+        ctx.transcribe.is_running() ? "running" : "idle";
+
+    if (tick_due) {
+        const auto spec_data =
+            (spectrogram_visible && (++spec_counter % 3 == 0))
+            ? ctx.audio_capture.spec_samples()
+            : std::vector<float>{};
+
+        // Empty waveform version arrays for tick
+        static std::array<std::uint32_t, AudioSampler::bank_count> dummy_bank{};
+        static std::array<std::uint32_t, AudioSampler::stem_count> dummy_stem{};
+
+        auto params = make_params(ctx, piano_roll_visible, spectrogram_visible,
+                                  spec_data, dummy_bank, dummy_stem,
+                                  transcribe_state, stem_st,
+                                  active_notes_vec, voice_status);
+        ctx.web.publish_tick(make_tick_state(params));
+        last_tick_publish = now;
+    }
+
+    if (state_due) {
+        static const std::vector<float> no_spec{};
+        auto params = make_params(ctx, piano_roll_visible, spectrogram_visible,
+                                  no_spec, bank_wfm_sent, stem_wfm_sent,
+                                  transcribe_state, stem_st,
+                                  active_notes_vec, voice_status);
+        ctx.web.publish_runtime(make_web_state(params));
+        last_state_publish = now;
+        state_dirty = false;
+    }
 }
 
 void drain_rumble(Gamepad& gamepad, DrumPad& drum_pad) {
@@ -457,7 +502,7 @@ void run_event_loop(Gamepad& gamepad, std::vector<WebPreset> sf2_presets,
     bool running                  = true;
     bool sampler_mode             = false;
     bool piano_roll_visible       = true;
-    bool spectrogram_visible      = true;
+    bool spectrogram_visible      = false;
     float signals_volume          = 1.0F;
     float wavetable_morph         = 0.0F;
     float wavetable_noise         = 0.0F;
@@ -471,9 +516,11 @@ void run_event_loop(Gamepad& gamepad, std::vector<WebPreset> sf2_presets,
     ribbon[1].midi_channel = 13;
     TouchSwipe tp_swipe{};
     std::deque<LedFlash> led_queue{};
-    auto last_web_publish = std::chrono::steady_clock::time_point{};
-    auto clock_next       = std::chrono::steady_clock::time_point{};
-    int spec_counter      = 0;
+    auto last_tick_publish  = std::chrono::steady_clock::time_point{};
+    auto last_state_publish = std::chrono::steady_clock::time_point{};
+    bool state_dirty        = true; // force full state on first connect
+    auto clock_next         = std::chrono::steady_clock::time_point{};
+    int spec_counter        = 0;
 
     // === AppContext ===
     AppContext ctx{
@@ -541,12 +588,13 @@ void run_event_loop(Gamepad& gamepad, std::vector<WebPreset> sf2_presets,
             handle_touchpad_event(event, ctx);
         }
 
-        dispatch_web_commands(ctx, load_stems_fn);
+        if (dispatch_web_commands(ctx, load_stems_fn)) state_dirty = true;
 
         if (auto new_folder = stem_pipeline.tick(stems_base_dir)) {
             stems_folder = *new_folder;
             web.set_stems_folder(stems_folder);
             load_stems_fn(stems_folder);
+            state_dirty = true;
         }
 
         if (auto job = transcribe.poll()) {
@@ -598,9 +646,14 @@ void run_event_loop(Gamepad& gamepad, std::vector<WebPreset> sf2_presets,
             } else {
                 std::cout << "[transcribe] no onsets detected\n";
             }
+            state_dirty = true;
         }
 
+        const bool prev_piano = piano_roll_visible;
+        const bool prev_spec  = spectrogram_visible;
         handle_buttons(ctx, piano_roll_visible, spectrogram_visible, clock_next);
+        if (piano_roll_visible != prev_piano || spectrogram_visible != prev_spec)
+            state_dirty = true;
         handle_mic_recording(ctx, was_sample_record_active);
 
         const auto audio_features = audio_capture.consume_features();
@@ -619,7 +672,7 @@ void run_event_loop(Gamepad& gamepad, std::vector<WebPreset> sf2_presets,
         tick_midi_clock(seq, midi, clock_next);
         update_lightbar(gamepad, ctx);
         publish_state(ctx, piano_roll_visible, spectrogram_visible,
-                      spec_counter, last_web_publish);
+                      spec_counter, last_tick_publish, last_state_publish, state_dirty);
         drain_rumble(gamepad, drum_pad);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
