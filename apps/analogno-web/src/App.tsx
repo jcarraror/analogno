@@ -810,6 +810,26 @@ export function App() {
     socket?.send(JSON.stringify({ type: "removeAllSeqTracks" }));
   }
 
+  function seqSetTrackName(track: number, name: string) {
+    socket?.send(JSON.stringify({ type: "setSeqTrackName", track, name }));
+  }
+
+  function seqSetSwing(swing: number) {
+    socket?.send(JSON.stringify({ type: "setSeqSwing", swing }));
+  }
+
+  function seqSetStepProbability(track: number, step: number, probability: number) {
+    socket?.send(JSON.stringify({ type: "setStepProbability", track, step, probability }));
+  }
+
+  function seqCopyTrack(track: number) {
+    socket?.send(JSON.stringify({ type: "copySeqTrack", track }));
+  }
+
+  function seqPasteTrack(track: number) {
+    socket?.send(JSON.stringify({ type: "pasteSeqTrack", track }));
+  }
+
   function setSignalsVolume(volume: number) {
     socket?.send(JSON.stringify({ type: "setSignalsVolume", volume: Math.round(volume * 100) }));
   }
@@ -1326,6 +1346,11 @@ export function App() {
             onClearTrack={seqClearTrack}
             onClearAll={seqClearAll}
             onRemoveAll={seqRemoveAll}
+            onSetTrackName={seqSetTrackName}
+            onSetSwing={seqSetSwing}
+            onSetStepProbability={seqSetStepProbability}
+            onCopyTrack={seqCopyTrack}
+            onPasteTrack={seqPasteTrack}
             voiceSeq={{
               available: audio?.voiceSeqAvailable ?? false,
               enabled: audio?.voiceSeqEnabled ?? false,

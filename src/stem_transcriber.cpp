@@ -270,6 +270,12 @@ TranscriptionResult transcribe_to_seq(
     std::sort(track.begin(), track.end(),
               [](const auto &a, const auto &b) { return a.step < b.step; });
 
+  // Discard tracks that have fewer than 2 notes.
+  result.tracks.erase(
+      std::remove_if(result.tracks.begin(), result.tracks.end(),
+          [](const std::vector<TranscribedNote> &t) { return t.size() < 2; }),
+      result.tracks.end());
+
   if (!result.tracks.empty() && !result.tracks[0].empty()) {
     result.suggested_root_note =
         std::min_element(result.tracks[0].begin(), result.tracks[0].end(),

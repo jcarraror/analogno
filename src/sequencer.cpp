@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <random>
 
 namespace analogno {
 
@@ -102,6 +103,12 @@ SeqTick tick_sequencer(Sequencer &seq, const MusicalIntent &ctx) {
          static_cast<double>(seq.step_division)};
   const auto gate_dur = step_dur * (seq.gate_pct / 100.0);
   const auto elapsed = std::chrono::duration_cast<ms>(now - seq.step_start);
+  // Swing: even playhead steps precede an odd (swung-late) step → extended threshold.
+  // Odd playhead steps precede an even (on-time) step → shortened threshold to catch up.
+  const auto swing_frac = static_cast<double>(seq.swing) / 100.0;
+  const auto step_threshold = (seq.playhead_step >= 0 && seq.playhead_step % 2 == 0)
+      ? ms{step_dur.count() * (1.0 + swing_frac)}
+      : ms{step_dur.count() * (1.0 - swing_frac)};
 
   SeqTick result{};
 
@@ -132,15 +139,15 @@ SeqTick tick_sequencer(Sequencer &seq, const MusicalIntent &ctx) {
     }
   }
 
-  if (elapsed >= step_dur) {
+  if (elapsed >= step_threshold) {
     seq.playhead_step = seq.playhead_step >= 0 ? seq.playhead_step + 1 : 0;
     seq.current_step = seq.playhead_step % seq.step_count;
     const auto next_start =
         seq.step_start +
-        std::chrono::round<std::chrono::steady_clock::duration>(step_dur);
+        std::chrono::round<std::chrono::steady_clock::duration>(step_threshold);
     seq.step_start = (now - next_start >
                       std::chrono::round<std::chrono::steady_clock::duration>(
-                          step_dur))
+                          step_threshold))
                          ? now
                          : next_start;
     result.stepped = true;
@@ -168,17 +175,21 @@ SeqTick tick_sequencer(Sequencer &seq, const MusicalIntent &ctx) {
 
       if (!tie_continues && step.active && !step.tie && !effective_muted &&
           step_note.has_value()) {
-        if (track.sample_bank >= 0) {
-          result.sample_note_ons.push_back({
-              .bank        = track.sample_bank,
-              .note        = *step_note,
-              .volume_gain = static_cast<float>(track.volume) / 127.0F,
-              .pan         = (static_cast<float>(track.pan) - 64.0F) / 64.0F,
-          });
-        } else {
-          result.note_ons.push_back(*step_note);
+        const bool fires = step.probability >= 100 ||
+            std::uniform_int_distribution<int>{1, 100}(seq.rng) <= step.probability;
+        if (fires) {
+          if (track.sample_bank >= 0) {
+            result.sample_note_ons.push_back({
+                .bank        = track.sample_bank,
+                .note        = *step_note,
+                .volume_gain = static_cast<float>(track.volume) / 127.0F,
+                .pan         = (static_cast<float>(track.pan) - 64.0F) / 64.0F,
+            });
+          } else {
+            result.note_ons.push_back(*step_note);
+          }
+          track.pending_note_off = *step_note;
         }
-        track.pending_note_off = *step_note;
       }
     }
   }
@@ -197,6 +208,8 @@ WebSeqState seq_web_state(const Sequencer &seq) {
   s.gate_pct = seq.gate_pct;
   s.step_count = seq.step_count;
   s.step_division = seq.step_division;
+  s.swing = seq.swing;
+  s.clipboard_available = seq.clipboard.has_value();
   for (const auto &track : seq.tracks) {
     WebSeqTrack wt{};
     wt.midi_channel = track.midi_channel;
@@ -209,10 +222,11 @@ WebSeqState seq_web_state(const Sequencer &seq) {
     wt.velocity_scale = track.velocity_scale;
     wt.muted = track.muted;
     wt.solo = track.solo;
+    wt.name = track.name;
     wt.steps.reserve(static_cast<std::size_t>(seq.step_count));
     for (const auto &step : track.steps) {
       wt.steps.push_back({step.active, step.tie, step.degree, step.velocity,
-                          step.midi_note});
+                          step.midi_note, step.probability});
     }
     s.tracks.push_back(std::move(wt));
   }

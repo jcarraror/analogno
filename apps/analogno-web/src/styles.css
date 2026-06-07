@@ -670,6 +670,7 @@ h1 {
   font-size: 0.75rem;
   text-align: center;
   -moz-appearance: textfield;
+  appearance: textfield;
 }
 .seq-loop-input::-webkit-inner-spin-button,
 .seq-loop-input::-webkit-outer-spin-button { appearance: none; margin: 0; }
@@ -708,6 +709,109 @@ h1 {
   background: #f8fafc;
   box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.4);
   transform: translateX(-50%);
+}
+
+/* ── Swing slider ──────────────────────────────────────────────────────── */
+.seq-swing-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 72px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(100, 116, 139, 0.3);
+  outline: none;
+  cursor: pointer;
+}
+.seq-swing-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #60a5fa;
+  cursor: pointer;
+}
+.seq-swing-slider::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #60a5fa;
+  border: none;
+}
+.seq-swing-slider:disabled { opacity: 0.35; cursor: default; }
+
+/* ── Status bar (armed step info + prob) ───────────────────────────────── */
+.seq-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.06);
+  border: 1px solid rgba(245, 158, 11, 0.15);
+  border-top: none;
+  border-radius: 0 0 5px 5px;
+}
+
+/* ── Track name inline edit ────────────────────────────────────────────── */
+.seq-track-name-input {
+  width: 100%;
+  max-width: 90px;
+  padding: 1px 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(110, 168, 254, 0.45);
+  border-radius: 3px;
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: 0.65rem;
+  font-weight: 700;
+  outline: none;
+}
+
+/* ── Step probability badge ────────────────────────────────────────────── */
+.seq-step-prob {
+  font-size: 0.48rem;
+  color: #f59e0b;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+/* ── Track right-click context menu ───────────────────────────────────── */
+.seq-track-ctx-menu {
+  min-width: 160px;
+  background: #1a2030;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: 4px;
+  z-index: 300;
+}
+.seq-ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 0.76rem;
+  font-family: inherit;
+  font-weight: 500;
+  background: transparent;
+  color: #94a3b8;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s, color 0.1s;
+}
+.seq-ctx-item:hover:not(:disabled) { background: rgba(255,255,255,0.07); color: #cbd5e1; }
+.seq-ctx-item:disabled { opacity: 0.35; cursor: default; }
+.seq-ctx-item-danger:hover:not(:disabled) { background: rgba(239,68,68,0.1); color: #fca5a5; }
+.seq-ctx-divider {
+  height: 1px;
+  background: rgba(148, 163, 184, 0.1);
+  margin: 3px 4px;
 }
 
 .seq-page-tabs {
@@ -908,6 +1012,79 @@ h1 {
 .seq-track-solo-btn:disabled {
   opacity: 0.2;
   cursor: default;
+}
+
+.seq-track-prob-btn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border-radius: 3px;
+  border: none;
+  background: transparent;
+  color: #6b778f;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.seq-track-prob-btn:hover:not(:disabled) {
+  background: rgba(167, 139, 250, 0.18);
+  color: #c4b5fd;
+}
+.seq-track-prob-btn.seq-track-prob-active {
+  background: rgba(167, 139, 250, 0.25);
+  color: #a78bfa;
+}
+.seq-track-prob-btn:disabled { opacity: 0.2; cursor: default; }
+
+/* ── Steps column (wraps step grid + prob lane) ─────────────────────────── */
+.seq-steps-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* ── Probability lane ───────────────────────────────────────────────────── */
+.seq-prob-lane {
+  display: grid;
+  grid-template-columns: repeat(var(--seq-step-cols, 16), minmax(18px, 1fr));
+  gap: 2px;
+  height: 22px;
+}
+.seq-prob-cell {
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 2px;
+  overflow: hidden;
+  cursor: ns-resize;
+  touch-action: none;
+  transition: background 0.08s;
+}
+.seq-prob-cell:hover:not(.seq-prob-cell-inactive):not(.seq-step-out) {
+  background: rgba(255, 255, 255, 0.08);
+}
+.seq-prob-cell.seq-prob-cell-inactive {
+  cursor: default;
+  pointer-events: none;
+}
+.seq-prob-cell.seq-step-out {
+  opacity: 0.15;
+  pointer-events: none;
+}
+.seq-prob-bar {
+  width: 100%;
+  background: var(--seq-track-color, #6ea8fe);
+  opacity: 0.6;
+  border-radius: 1px 1px 0 0;
+  pointer-events: none;
+  min-height: 2px;
+}
+.seq-prob-cell:hover:not(.seq-prob-cell-inactive):not(.seq-step-out) .seq-prob-bar {
+  opacity: 0.85;
 }
 
 .seq-track-row.seq-track-muted .seq-track-header {

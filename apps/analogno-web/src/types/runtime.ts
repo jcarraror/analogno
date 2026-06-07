@@ -119,6 +119,8 @@ export type RuntimeState = {
     gatePct: number;
     stepCount: number;
     stepDivision: number;
+    swing: number;
+    clipboardAvailable: boolean;
     tracks: Array<{
       midiChannel: number;
       midiProgram: number;
@@ -130,12 +132,14 @@ export type RuntimeState = {
       velocityScale: number;
       muted: boolean;
       solo: boolean;
+      name: string;
       steps: Array<{
         active: boolean;
         tie: boolean;
         degree: number;
         velocity: number;
         midiNote: number;
+        probability: number;
       }>;
     }>;
   };

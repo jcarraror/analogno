@@ -32,6 +32,7 @@ void save_session(const Sequencer &seq, const std::string &stems_folder,
           {"degree", step.degree},
           {"velocity", step.velocity},
           {"midi_note", step.midi_note},
+          {"probability", step.probability},
       });
     }
     jtracks.push_back({
@@ -45,6 +46,7 @@ void save_session(const Sequencer &seq, const std::string &stems_folder,
         {"velocity_scale", track.velocity_scale},
         {"muted", track.muted},
         {"solo", track.solo},
+        {"name", track.name},
         {"steps", jsteps},
     });
   }
@@ -54,6 +56,7 @@ void save_session(const Sequencer &seq, const std::string &stems_folder,
       {"gate_pct", seq.gate_pct},
       {"step_count", seq.step_count},
       {"step_division", seq.step_division},
+      {"swing", seq.swing},
       {"tracks", jtracks},
       {"stems_folder", stems_folder},
   };
@@ -82,6 +85,7 @@ std::optional<SessionData> load_session(const std::string &path) {
     seq.gate_pct = j.value("gate_pct", 50);
     seq.step_count = sequencer_step_count(j.value("step_count", 32));
     seq.step_division = sequencer_step_division(j.value("step_division", 16));
+    seq.swing = std::clamp(j.value("swing", 0), 0, 50);
 
     if (j.contains("tracks")) {
       seq.tracks.clear();
@@ -97,6 +101,7 @@ std::optional<SessionData> load_session(const std::string &path) {
         track.velocity_scale = jt.value("velocity_scale", 100);
         track.muted = jt.value("muted", false);
         track.solo = jt.value("solo", false);
+        track.name = jt.value("name", std::string{});
         track.steps.resize(static_cast<std::size_t>(seq.step_count));
         if (jt.contains("steps")) {
           const auto &jsteps = jt.at("steps");
@@ -109,6 +114,7 @@ std::optional<SessionData> load_session(const std::string &path) {
                 js.value("degree", 0),
                 js.value("velocity", 100),
                 js.value("midi_note", -1),
+                std::clamp(js.value("probability", 100), 1, 100),
             };
           }
         }

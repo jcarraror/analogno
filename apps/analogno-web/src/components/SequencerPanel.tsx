@@ -9,6 +9,17 @@ function EraserIcon() {
     </svg>
   );
 }
+
+function ChanceIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+      <rect x="0.5" y="0.5" width="9" height="9" rx="1.5" stroke="currentColor" strokeWidth="1"/>
+      <circle cx="3" cy="7" r="1" fill="currentColor"/>
+      <circle cx="5" cy="5" r="1" fill="currentColor"/>
+      <circle cx="7" cy="3" r="1" fill="currentColor"/>
+    </svg>
+  );
+}
 import type { ConnectionState, RuntimeState, SoundfontPreset } from "../types/runtime";
 import { midiNoteName, patchName } from "../lib/music";
 
@@ -30,13 +41,13 @@ export type VoiceSeqState = {
 
 // --- Sequencer ---
 
-export type SeqStepEdit = { active: boolean; tie: boolean; degree: number; velocity: number; midiNote: number };
-export type SeqTrackEdit = { midiChannel: number; midiProgram: number; midiBank: number; sampleBank: number; loopLength: number; volume: number; pan: number; velocityScale: number; muted: boolean; solo: boolean; steps: SeqStepEdit[] };
+export type SeqStepEdit = { active: boolean; tie: boolean; degree: number; velocity: number; midiNote: number; probability: number };
+export type SeqTrackEdit = { midiChannel: number; midiProgram: number; midiBank: number; sampleBank: number; loopLength: number; volume: number; pan: number; velocityScale: number; muted: boolean; solo: boolean; name: string; steps: SeqStepEdit[] };
 const SEQ_STEP_COUNTS = [8, 16, 32, 64] as const;
 const SEQ_STEP_DIVISIONS = [8, 16, 32] as const;
 const SEQ_TRACK_COLORS = ['#6ea8fe', '#86efac', '#f59e0b', '#f472b6', '#22d3ee', '#a78bfa', '#fb7185', '#c084fc'];
 const SEQ_PAGE_SIZE = 16;
-const emptySeqStep = (): SeqStepEdit => ({ active: false, tie: false, degree: 0, velocity: 100, midiNote: -1 });
+const emptySeqStep = (): SeqStepEdit => ({ active: false, tie: false, degree: 0, velocity: 100, midiNote: -1, probability: 100 });
 const resizeSeqSteps = (steps: SeqStepEdit[], count: number): SeqStepEdit[] =>
   Array.from({ length: count }, (_, i) => steps[i] ? { ...steps[i] } : emptySeqStep());
 const seqTracksSignature = (tracks: RuntimeState['seq']['tracks']): string =>
@@ -45,7 +56,7 @@ const seqTracksSignature = (tracks: RuntimeState['seq']['tracks']): string =>
     t.volume ?? 100, t.pan ?? 64, t.velocityScale ?? 100,
     t.muted ? 1 : 0, t.solo ? 1 : 0,
     t.steps.length,
-    t.steps.map(s => `${s.active ? 1 : 0}${s.tie ? 1 : 0}:${s.degree}:${s.velocity}:${s.midiNote}`).join(',')
+    t.steps.map(s => `${s.active ? 1 : 0}${s.tie ? 1 : 0}:${s.degree}:${s.velocity}:${s.midiNote}:${s.probability ?? 100}`).join(',')
   ].join('|')).join(';');
 
 type SeqStepCellProps = {
@@ -78,14 +89,20 @@ const SeqStepCell = React.memo(function SeqStepCell({
         isSelected ? 'seq-step-selected' : '',
       ].filter(Boolean).join(' ')}
       disabled={disabled || !isInLoop}
+      style={step.active && (step.probability ?? 100) < 100
+        ? { opacity: 0.35 + 0.65 * ((step.probability ?? 100) / 100) }
+        : undefined}
       onClick={(e) => onClick(ti, si, e)}
       onContextMenu={(e) => { if (!disabled) onContextMenu(ti, si, e); }}
       onMouseDown={() => onMouseDown(ti, si)}
       onMouseEnter={(e) => onMouseEnter(ti, si, e)}
-      title={`T${ti + 1} step ${si + 1}${isInLoop ? '' : ' out of loop'}${step.active ? ` — ${step.tie ? 'tie' : (label || 'scale')} vel ${step.velocity}` : ''}`}>
+      title={`T${ti + 1} step ${si + 1}${isInLoop ? '' : ' out of loop'}${step.active ? ` — ${step.tie ? 'tie' : (label || 'scale')} vel ${step.velocity}${(step.probability ?? 100) < 100 ? ` prob ${step.probability}%` : ''}` : ''}`}>
       <span className="seq-step-num">{si + 1}</span>
       {step.active && <span className="seq-step-note">{step.tie ? '–' : label}</span>}
       {step.active && <span className="seq-step-vel-dot" style={{ width: `${Math.round(step.velocity / 127 * 100)}%` }} />}
+      {step.active && (step.probability ?? 100) < 100 && (
+        <span className="seq-step-prob">{step.probability}%</span>
+      )}
     </button>
   );
 });
@@ -204,6 +221,11 @@ export function SequencerPanel({
   onClearTrack,
   onClearAll,
   onRemoveAll,
+  onSetTrackName,
+  onSetSwing,
+  onSetStepProbability,
+  onCopyTrack,
+  onPasteTrack,
   voiceSeq,
   onVoiceSeq,
 }: {
@@ -227,6 +249,11 @@ export function SequencerPanel({
   onClearTrack: (track: number) => void;
   onClearAll: () => void;
   onRemoveAll: () => void;
+  onSetTrackName: (track: number, name: string) => void;
+  onSetSwing: (swing: number) => void;
+  onSetStepProbability: (track: number, step: number, probability: number) => void;
+  onCopyTrack: (track: number) => void;
+  onPasteTrack: (track: number) => void;
   voiceSeq?: VoiceSeqState;
   onVoiceSeq?: (next: Partial<{ enabled: boolean; recording: boolean; mode: "percussion" | "harmonic" | "hybrid"; snapToScale: boolean; sensitivity: number; timingOffsetMs: number }>) => void;
 }) {
@@ -234,22 +261,31 @@ export function SequencerPanel({
   const tracksSignature = useRef('');
   const [bpm, setBpm] = useState(120);
   const [gate, setGate] = useState(50);
+  const [swing, setSwing] = useState(0);
   const [stepCount, setStepCount] = useState(32);
   const [stepDivision, setStepDivision] = useState(16);
   const [stepPage, setStepPage] = useState(0);
   const [showMixer, setShowMixer] = useState(false);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const [editingTrackName, setEditingTrackName] = useState<number | null>(null);
+  const [trackNameDraft, setTrackNameDraft] = useState('');
+  const [trackContextMenu, setTrackContextMenu] = useState<{ ti: number; x: number; y: number } | null>(null);
+  const trackContextMenuRef = useRef<HTMLDivElement>(null);
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [lastAnchor, setLastAnchor] = useState<{ ti: number; si: number } | null>(null);
   const mouseDownRef = useRef<{ ti: number; si: number; dragged: boolean } | null>(null);
   const tracksRef = useRef<SeqTrackEdit[]>([]);
   const selectionRef = useRef<Set<string>>(new Set());
   const localDirtyRef = useRef(false);
+  const [probLaneTracks, setProbLaneTracks] = useState<Set<number>>(new Set());
+  const probPaintRef = useRef<Map<string, { ti: number; si: number; prob: number }> | null>(null);
+  const onSetStepProbabilityRef = useRef(onSetStepProbability);
+  onSetStepProbabilityRef.current = onSetStepProbability;
   const [tracks, setTracks] = useState<SeqTrackEdit[]>(
     Array.from({ length: 4 }, (_, ti) => ({
       midiChannel: ti, midiProgram: 0, midiBank: 0, sampleBank: -1, loopLength: 32,
-      volume: 100, pan: 64, velocityScale: 100, muted: false, solo: false,
+      volume: 100, pan: 64, velocityScale: 100, muted: false, solo: false, name: '',
       steps: Array.from({ length: 32 }, emptySeqStep),
     }))
   );
@@ -269,6 +305,7 @@ export function SequencerPanel({
     }
     const nextStepCount = seq.stepCount ?? seq.tracks[0]?.steps.length ?? 32;
     const nextStepDivision = seq.stepDivision ?? 16;
+    setSwing(seq.swing ?? 0);
     setStepCount(nextStepCount);
     setStepDivision(nextStepDivision);
     const nextSignature = seqTracksSignature(seq.tracks);
@@ -285,10 +322,12 @@ export function SequencerPanel({
         velocityScale: t.velocityScale ?? 100,
         muted: t.muted,
         solo: t.solo ?? false,
-        steps: resizeSeqSteps(t.steps.map(s => ({ ...s })), nextStepCount),
+        name: t.name ?? '',
+        steps: resizeSeqSteps(t.steps.map(s => ({ ...s, probability: s.probability ?? 100 })), nextStepCount),
       }));
       const localSignature = seqTracksSignature(tracksRef.current);
-      if (!localDirtyRef.current || nextSignature === localSignature) {
+      const trackCountChanged = seq.tracks.length !== tracksRef.current.length;
+      if (!localDirtyRef.current || nextSignature === localSignature || trackCountChanged) {
         tracksRef.current = newTracks;
         localDirtyRef.current = false;
         setTracks(newTracks);
@@ -336,6 +375,51 @@ export function SequencerPanel({
     localDirtyRef.current = true;
     setTracks(next);
   }
+
+  function calcProb(clientY: number, rect: DOMRect): number {
+    return Math.max(1, Math.min(100, Math.round((1 - (clientY - rect.top) / rect.height) * 100)));
+  }
+
+  function setProbLocally(ti: number, si: number, prob: number) {
+    const next = tracksRef.current.map((t, tIdx) =>
+      tIdx === ti
+        ? { ...t, steps: t.steps.map((s, sIdx) => sIdx === si ? { ...s, probability: prob } : s) }
+        : t
+    );
+    applyTracks(next);
+  }
+
+  function onProbCellDown(e: React.PointerEvent<HTMLDivElement>, ti: number, si: number) {
+    if (disabled) return;
+    e.preventDefault();
+    probPaintRef.current = new Map();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const prob = calcProb(e.clientY, rect);
+    setProbLocally(ti, si, prob);
+    probPaintRef.current.set(`${ti}-${si}`, { ti, si, prob });
+  }
+
+  function onProbCellMove(e: React.PointerEvent<HTMLDivElement>, ti: number, si: number) {
+    if (!probPaintRef.current || !(e.buttons & 1)) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const prob = calcProb(e.clientY, rect);
+    const key = `${ti}-${si}`;
+    if (probPaintRef.current.get(key)?.prob === prob) return;
+    setProbLocally(ti, si, prob);
+    probPaintRef.current.set(key, { ti, si, prob });
+  }
+
+  useEffect(() => {
+    const commit = () => {
+      if (!probPaintRef.current) return;
+      for (const { ti, si, prob } of probPaintRef.current.values()) {
+        onSetStepProbabilityRef.current(ti, si, prob);
+      }
+      probPaintRef.current = null;
+    };
+    window.addEventListener('pointerup', commit);
+    return () => window.removeEventListener('pointerup', commit);
+  }, []);
 
   function applySelection(next: Set<string>) {
     selectionRef.current = next;
@@ -431,6 +515,16 @@ export function SequencerPanel({
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [showActionsMenu]);
+
+  useEffect(() => {
+    if (!trackContextMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (trackContextMenuRef.current && !trackContextMenuRef.current.contains(e.target as Node))
+        setTrackContextMenu(null);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [trackContextMenu]);
 
   function send(t: SeqTrackEdit[], b: number, g: number, count = stepCount, division = stepDivision) {
     onChange({ bpm: b, gatePct: g, stepCount: count, stepDivision: division, tracks: t });
@@ -730,6 +824,21 @@ export function SequencerPanel({
           </div>
         </div>
 
+        <span className="seq-tsep" />
+
+        {/* Swing */}
+        <div className="seq-tgroup">
+          <span className="seq-tgroup-label">Swing <span className="seq-tgroup-val">{swing}%</span></span>
+          <input type="range" min={0} max={50} step={1}
+            className="seq-swing-slider"
+            value={swing} disabled={disabled}
+            onChange={e => {
+              const v = Number(e.target.value);
+              setSwing(v);
+              onSetSwing(v);
+            }} />
+        </div>
+
         <span className="seq-transport-spacer" />
 
         {/* Mix + actions */}
@@ -764,12 +873,13 @@ export function SequencerPanel({
 
       {selectedStep >= 0 && (
         <div className="seq-status">
-          T{activeTrack + 1} \u00b7 step {selectedStep + 1}
-          {armedStep && armedStep.midiNote >= 0
-            ? ` \u00b7 ${midiNoteName(armedStep.midiNote)}`
-            : armedStep?.active
-              ? ` \u00b7 scale deg ${armedStep.degree}`
-              : ' \u00b7 empty \u2014 press a face button'}
+          <span>T{activeTrack + 1}{' \u00b7 '}step {selectedStep + 1}
+            {armedStep && armedStep.midiNote >= 0
+              ? ` \u00b7 ${midiNoteName(armedStep.midiNote)}`
+              : armedStep?.active
+                ? ` \u00b7 scale deg ${armedStep.degree}`
+                : ' \u00b7 empty \u2014 press a face button'}
+          </span>
         </div>
       )}
 
@@ -805,9 +915,28 @@ export function SequencerPanel({
               tabIndex={0}
               onClick={() => { if (!disabled) onSelectTrack(ti); }}
               onKeyDown={e => { if (e.key === 'Enter' && !disabled) onSelectTrack(ti); }}
+              onContextMenu={e => { e.preventDefault(); setTrackContextMenu({ ti, x: e.clientX, y: e.clientY }); }}
               title={`Track ${ti + 1} — ${track.sampleBank >= 0 ? `Bank ${track.sampleBank + 1}` : `MIDI ch ${(track.midiChannel ?? ti) + 1}`} — ${trackPatchName(track)}`}>
               <div className="seq-track-header-top">
-                <span className="seq-track-id">T{ti + 1} <small>ch{(track.midiChannel ?? ti) + 1}</small></span>
+                {editingTrackName === ti ? (
+                  <input className="seq-track-name-input"
+                    value={trackNameDraft}
+                    autoFocus
+                    onClick={e => e.stopPropagation()}
+                    onChange={e => setTrackNameDraft(e.target.value)}
+                    onBlur={() => { onSetTrackName(ti, trackNameDraft); setEditingTrackName(null); }}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') { onSetTrackName(ti, trackNameDraft); setEditingTrackName(null); }
+                      if (e.key === 'Escape') setEditingTrackName(null);
+                      e.stopPropagation();
+                    }} />
+                ) : (
+                  <span className="seq-track-id"
+                    onDoubleClick={e => { e.stopPropagation(); setEditingTrackName(ti); setTrackNameDraft(track.name ?? ''); }}>
+                    {track.name || `T${ti + 1}`}
+                    {!track.name && <small> ch{(track.midiChannel ?? ti) + 1}</small>}
+                  </span>
+                )}
                 <span className="seq-track-loop">L{track.loopLength}</span>
                 <button type="button" className={`seq-track-mute-btn${track.muted ? ' seq-track-muted-active' : ''}`}
                   disabled={disabled}
@@ -830,6 +959,20 @@ export function SequencerPanel({
                     onTrackSolo(ti, !track.solo);
                   }}>
                   S
+                </button>
+                <button type="button"
+                  className={`seq-track-prob-btn${probLaneTracks.has(ti) ? ' seq-track-prob-active' : ''}`}
+                  disabled={disabled}
+                  title={probLaneTracks.has(ti) ? 'Hide probability lane' : 'Show probability lane'}
+                  onClick={e => {
+                    e.stopPropagation();
+                    setProbLaneTracks(prev => {
+                      const next = new Set(prev);
+                      if (next.has(ti)) next.delete(ti); else next.add(ti);
+                      return next;
+                    });
+                  }}>
+                  <ChanceIcon />
                 </button>
                 <button type="button" className="seq-track-clear-btn"
                   disabled={disabled}
@@ -859,36 +1002,59 @@ export function SequencerPanel({
               </select>
               <span className="seq-track-name">{trackPatchName(track)}</span>
             </div>
-            <div className="seq-track-steps" style={{
-              '--seq-step-cols': visibleStepCount,
-              '--seq-step-mobile-cols': Math.min(visibleStepCount, 16),
-            } as CSSProperties}>
-              {track.visibleSteps.map((step, offset) => {
-                const si = visibleStart + offset;
-                const label = step.midiNote >= 0 ? midiNoteName(step.midiNote) : '';
-                const isArmed = ti === activeTrack && selectedStep === si;
-                const isSelected = selection.has(`${ti}-${si}`);
-                const loopLength = Math.max(1, Math.min(stepCount, track.loopLength));
-                const isInLoop = si < loopLength;
-                const isCurrent = isInLoop && playheadStep >= 0 && playheadStep % loopLength === si && playing;
-                return (
-                  <SeqStepCell
-                    key={si}
-                    si={si} ti={ti}
-                    step={step}
-                    label={label}
-                    isArmed={isArmed}
-                    isSelected={isSelected}
-                    isInLoop={isInLoop}
-                    isCurrent={isCurrent}
-                    disabled={disabled}
-                    onClick={onStepClick}
-                    onContextMenu={onStepRightClick}
-                    onMouseDown={onStepMouseDown}
-                    onMouseEnter={onStepMouseEnter}
-                  />
-                );
-              })}
+            <div className="seq-steps-col">
+              <div className="seq-track-steps" style={{
+                '--seq-step-cols': visibleStepCount,
+                '--seq-step-mobile-cols': Math.min(visibleStepCount, 16),
+              } as CSSProperties}>
+                {track.visibleSteps.map((step, offset) => {
+                  const si = visibleStart + offset;
+                  const label = step.midiNote >= 0 ? midiNoteName(step.midiNote) : '';
+                  const isArmed = ti === activeTrack && selectedStep === si;
+                  const isSelected = selection.has(`${ti}-${si}`);
+                  const loopLength = Math.max(1, Math.min(stepCount, track.loopLength));
+                  const isInLoop = si < loopLength;
+                  const isCurrent = isInLoop && playheadStep >= 0 && playheadStep % loopLength === si && playing;
+                  return (
+                    <SeqStepCell
+                      key={si}
+                      si={si} ti={ti}
+                      step={step}
+                      label={label}
+                      isArmed={isArmed}
+                      isSelected={isSelected}
+                      isInLoop={isInLoop}
+                      isCurrent={isCurrent}
+                      disabled={disabled}
+                      onClick={onStepClick}
+                      onContextMenu={onStepRightClick}
+                      onMouseDown={onStepMouseDown}
+                      onMouseEnter={onStepMouseEnter}
+                    />
+                  );
+                })}
+              </div>
+              {probLaneTracks.has(ti) && (
+                <div className="seq-prob-lane" style={{ '--seq-step-cols': visibleStepCount } as CSSProperties}>
+                  {track.visibleSteps.map((step, offset) => {
+                    const si = visibleStart + offset;
+                    const loopLength = Math.max(1, Math.min(stepCount, track.loopLength));
+                    const isInLoop = si < loopLength;
+                    return (
+                      <div
+                        key={si}
+                        className={`seq-prob-cell${!isInLoop ? ' seq-step-out' : ''}${!step.active ? ' seq-prob-cell-inactive' : ''}`}
+                        onPointerDown={step.active && isInLoop ? e => onProbCellDown(e, ti, si) : undefined}
+                        onPointerMove={step.active && isInLoop ? e => onProbCellMove(e, ti, si) : undefined}
+                      >
+                        {step.active && (
+                          <div className="seq-prob-bar" style={{ height: `${step.probability ?? 100}%` }} />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -963,6 +1129,26 @@ export function SequencerPanel({
 
       {voiceSeq && onVoiceSeq && (
         <VoiceSection vs={voiceSeq} onChange={onVoiceSeq} disabled={disabled} />
+      )}
+
+      {trackContextMenu && (
+        <div className="seq-track-ctx-menu" ref={trackContextMenuRef}
+          style={{ position: 'fixed', left: trackContextMenu.x, top: trackContextMenu.y }}>
+          <button type="button" className="seq-ctx-item"
+            onClick={() => { onCopyTrack(trackContextMenu.ti); setTrackContextMenu(null); }}>
+            &#x238C; Copy pattern
+          </button>
+          <button type="button" className="seq-ctx-item"
+            disabled={!seq?.clipboardAvailable}
+            onClick={() => { onPasteTrack(trackContextMenu.ti); setTrackContextMenu(null); }}>
+            &#x2398; Paste pattern
+          </button>
+          <div className="seq-ctx-divider" />
+          <button type="button" className="seq-ctx-item seq-ctx-item-danger"
+            onClick={() => { onClearTrack(trackContextMenu.ti); setTrackContextMenu(null); }}>
+            <EraserIcon /> Clear steps
+          </button>
+        </div>
       )}
     </div>
   );

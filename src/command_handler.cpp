@@ -268,8 +268,8 @@ void dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
             resize_sequencer_steps(ctx.seq, cfg.step_count);
 
             if (!cfg.tracks.empty()) {
-                ctx.seq.tracks.resize(cfg.tracks.size());
-                for (std::size_t t = 0; t < cfg.tracks.size(); ++t) {
+                const auto n_tracks = std::min(cfg.tracks.size(), ctx.seq.tracks.size());
+                for (std::size_t t = 0; t < n_tracks; ++t) {
                     auto& dst = ctx.seq.tracks[t];
                     const auto& src = cfg.tracks[t];
                     dst.steps.resize(static_cast<std::size_t>(ctx.seq.step_count));
@@ -278,11 +278,12 @@ void dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
                     dst.sample_bank  = src.sample_bank;
                     dst.loop_length  = std::clamp(src.loop_length, 1, ctx.seq.step_count);
                     dst.muted        = src.muted;
+                    if (!src.name.empty()) dst.name = src.name;
                     const auto n = std::min(dst.steps.size(), src.steps.size());
                     for (std::size_t i = 0; i < n; ++i) {
                         const auto& sc = src.steps[i];
                         dst.steps[i] = {sc.active, sc.tie, sc.degree,
-                                        sc.velocity, sc.midi_note};
+                                        sc.velocity, sc.midi_note, sc.probability};
                     }
                 }
                 ctx.seq.active_track = std::clamp(ctx.seq.active_track, 0,
@@ -560,6 +561,45 @@ void dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
             ctx.seq.tracks = {std::move(default_track)};
             ctx.seq.active_track  = 0;
             ctx.seq.selected_step = -1;
+        },
+
+        [&](const WebSocketServer::SetSeqTrackName& cmd) {
+            const auto idx = static_cast<std::size_t>(cmd.track);
+            if (idx < ctx.seq.tracks.size())
+                ctx.seq.tracks[idx].name = cmd.name;
+        },
+
+        [&](const WebSocketServer::SetSeqSwing& cmd) {
+            ctx.seq.swing = std::clamp(cmd.swing, 0, 50);
+        },
+
+        [&](const WebSocketServer::SetStepProbability& cmd) {
+            const auto tidx = static_cast<std::size_t>(cmd.track);
+            const auto sidx = static_cast<std::size_t>(cmd.step);
+            if (tidx < ctx.seq.tracks.size() &&
+                sidx < ctx.seq.tracks[tidx].steps.size())
+                ctx.seq.tracks[tidx].steps[sidx].probability =
+                    std::clamp(cmd.probability, 1, 100);
+        },
+
+        [&](const WebSocketServer::CopySeqTrack& cmd) {
+            const auto idx = static_cast<std::size_t>(cmd.track);
+            if (idx < ctx.seq.tracks.size())
+                ctx.seq.clipboard = ClipboardTrack{
+                    .steps       = ctx.seq.tracks[idx].steps,
+                    .loop_length = ctx.seq.tracks[idx].loop_length,
+                };
+        },
+
+        [&](const WebSocketServer::PasteSeqTrack& cmd) {
+            const auto idx = static_cast<std::size_t>(cmd.track);
+            if (idx < ctx.seq.tracks.size() && ctx.seq.clipboard.has_value()) {
+                auto& track = ctx.seq.tracks[idx];
+                track.steps = ctx.seq.clipboard->steps;
+                track.steps.resize(static_cast<std::size_t>(ctx.seq.step_count));
+                track.loop_length = ctx.seq.clipboard->loop_length;
+                track.pending_note_off.reset();
+            }
         },
 
         // ── File dialog ───────────────────────────────────────────────────

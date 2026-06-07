@@ -40,6 +40,7 @@ public:
     int degree{};
     int velocity{100};
     int midi_note{-1};
+    int probability{100};
   };
 
   struct SeqTrackConfig final {
@@ -53,6 +54,7 @@ public:
     int velocity_scale{100};
     bool muted{false};
     bool solo{false};
+    std::string name{};
     std::vector<SeqStepConfig> steps{};
   };
 
@@ -194,6 +196,11 @@ public:
   };
   struct ClearAllSeqTracks final {};
   struct RemoveAllSeqTracks final {};
+  struct SetSeqTrackName final { int track{}; std::string name{}; };
+  struct SetSeqSwing final { int swing{}; };
+  struct SetStepProbability final { int track{}; int step{}; int probability{100}; };
+  struct CopySeqTrack final { int track{}; };
+  struct PasteSeqTrack final { int track{}; };
 
   using Command = std::variant<Panic, SetCaptureDevice, SetSampleTrim,
                                SetActiveBank, SaveSample, SetPatch,
@@ -211,7 +218,9 @@ public:
                                OpenStemFolderDialog, LoadStemToBank,
                                DownloadAudio, LoadBankSeq, ArrangeBankToSeq,
                                ClearSeqTrack, ClearAllSeqTracks,
-                               RemoveAllSeqTracks>;
+                               RemoveAllSeqTracks,
+                               SetSeqTrackName, SetSeqSwing,
+                               SetStepProbability, CopySeqTrack, PasteSeqTrack>;
 
   explicit WebSocketServer(std::uint16_t port = 8765);
   ~WebSocketServer();

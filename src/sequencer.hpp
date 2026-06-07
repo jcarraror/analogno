@@ -6,6 +6,8 @@
 
 #include <chrono>
 #include <optional>
+#include <random>
+#include <string>
 #include <vector>
 
 namespace analogno {
@@ -16,6 +18,7 @@ struct SeqStep final {
   int degree{0};
   int velocity{100};
   int midi_note{-1}; // -1 = compute from root/scale/octave; >=0 = absolute pitch
+  int probability{100}; // 1-100: % chance of firing each pass
 };
 
 struct SeqTrack final {
@@ -29,8 +32,14 @@ struct SeqTrack final {
   int velocity_scale{100};
   bool muted{false};
   bool solo{false};
+  std::string name{};
   std::vector<SeqStep> steps = std::vector<SeqStep>(32);
   std::optional<Note> pending_note_off{};
+};
+
+struct ClipboardTrack final {
+  std::vector<SeqStep> steps{};
+  int loop_length{32};
 };
 
 struct Sequencer final {
@@ -45,9 +54,12 @@ struct Sequencer final {
   int gate_pct{50};
   int step_count{32};
   int step_division{16};
+  int swing{0}; // 0-50: % of step duration to delay odd-indexed steps
   int playhead_step{-1};
   int current_step{-1};
   std::chrono::steady_clock::time_point step_start{};
+  std::optional<ClipboardTrack> clipboard{};
+  std::mt19937 rng = [] { std::random_device rd; return std::mt19937(rd()); }();
   std::vector<SeqTrack> tracks = [] {
     std::vector<SeqTrack> v(4);
     for (int i = 0; i < 4; ++i) {

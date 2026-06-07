@@ -567,6 +567,29 @@ void run_event_loop(Gamepad& gamepad, std::vector<WebPreset> sf2_presets,
                                                 job->first_track, audio_sampler, seq,
                                                 job->arrange);
                 transcribe.store_bank_seq(job->bank_idx, std::move(snap));
+
+                if (job->arrange) {
+                    std::size_t arrangement_end = 0;
+                    for (std::size_t i = 0; i < AudioSampler::bank_count; ++i) {
+                        if (transcribe.has_bank_seq(i)) {
+                            const auto& bs = transcribe.bank_seq(i);
+                            arrangement_end = std::max(arrangement_end,
+                                bs.first_track + bs.track_steps.size());
+                        }
+                    }
+                    while (seq.tracks.size() > std::max(arrangement_end, std::size_t{1})) {
+                        const auto& back = seq.tracks.back();
+                        const bool is_empty_default =
+                            back.sample_bank < 0 && back.name.empty() &&
+                            std::none_of(back.steps.begin(), back.steps.end(),
+                                [](const SeqStep& s) { return s.active; });
+                        if (!is_empty_default) break;
+                        seq.tracks.pop_back();
+                    }
+                    seq.active_track = std::clamp(seq.active_track, 0,
+                        static_cast<int>(seq.tracks.size()) - 1);
+                }
+
                 if (seq.playing) {
                     seq.current_step  = -1;
                     seq.playhead_step = -1;

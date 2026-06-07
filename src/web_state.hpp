@@ -138,6 +138,7 @@ struct WebSeqStep final {
   int degree{};
   int velocity{100};
   int midi_note{-1};
+  int probability{100};
 };
 
 struct WebSeqTrack final {
@@ -151,6 +152,7 @@ struct WebSeqTrack final {
   int velocity_scale{100};
   bool muted{false};
   bool solo{false};
+  std::string name{};
   std::vector<WebSeqStep> steps{};
 };
 
@@ -164,6 +166,8 @@ struct WebSeqState final {
   int gate_pct{50};
   int step_count{32};
   int step_division{16};
+  int swing{0};
+  bool clipboard_available{false};
   std::vector<WebSeqTrack> tracks{};
 };
 

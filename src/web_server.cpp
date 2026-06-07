@@ -201,6 +201,7 @@ std::string runtime_json_string(const WebRuntimeState &state) {
                     {"degree", s.degree},
                     {"velocity", s.velocity},
                     {"midiNote", s.midi_note},
+                    {"probability", s.probability},
                 });
               }
               tracks.push_back({
@@ -214,6 +215,7 @@ std::string runtime_json_string(const WebRuntimeState &state) {
                   {"velocityScale", track.velocity_scale},
                   {"muted", track.muted},
                   {"solo", track.solo},
+                  {"name", track.name},
                   {"steps", std::move(steps)},
               });
             }
@@ -227,6 +229,8 @@ std::string runtime_json_string(const WebRuntimeState &state) {
                 {"gatePct", state.seq.gate_pct},
                 {"stepCount", state.seq.step_count},
                 {"stepDivision", state.seq.step_division},
+                {"swing", state.seq.swing},
+                {"clipboardAvailable", state.seq.clipboard_available},
                 {"tracks", std::move(tracks)},
             };
           }(),
@@ -833,6 +837,7 @@ private:
             cfg.tracks[t].velocity_scale = std::clamp(tj.value("velocityScale", 100), 50, 200);
             cfg.tracks[t].muted          = tj.value("muted", false);
             cfg.tracks[t].solo           = tj.value("solo", false);
+            cfg.tracks[t].name           = tj.value("name", std::string{});
             if (tj.contains("steps") && tj["steps"].is_array()) {
               const auto &arr = tj["steps"];
               const auto n = std::min(arr.size(),
@@ -841,11 +846,12 @@ private:
               for (std::size_t i = 0; i < n; ++i) {
                 const auto &s = arr[i];
                 cfg.tracks[t].steps[i] = WebSocketServer::SeqStepConfig{
-                    .active    = s.value("active", false),
-                    .tie       = s.value("tie", false),
-                    .degree    = std::clamp(s.value("degree", 0), 0, 27),
-                    .velocity  = std::clamp(s.value("velocity", 100), 1, 127),
-                    .midi_note = s.value("midiNote", -1),
+                    .active       = s.value("active", false),
+                    .tie          = s.value("tie", false),
+                    .degree       = std::clamp(s.value("degree", 0), 0, 27),
+                    .velocity     = std::clamp(s.value("velocity", 100), 1, 127),
+                    .midi_note    = s.value("midiNote", -1),
+                    .probability  = std::clamp(s.value("probability", 100), 1, 100),
                 };
               }
             }
@@ -957,6 +963,29 @@ private:
         enqueue_command(WebSocketServer::ClearAllSeqTracks{});
       } else if (json.value("type", "") == "removeAllSeqTracks") {
         enqueue_command(WebSocketServer::RemoveAllSeqTracks{});
+      } else if (json.value("type", "") == "setSeqTrackName") {
+        const auto track = json.value("track", -1);
+        if (track >= 0)
+          enqueue_command(WebSocketServer::SetSeqTrackName{
+              .track = track, .name = json.value("name", std::string{})});
+      } else if (json.value("type", "") == "setSeqSwing") {
+        enqueue_command(WebSocketServer::SetSeqSwing{
+            .swing = std::clamp(json.value("swing", 0), 0, 50)});
+      } else if (json.value("type", "") == "setStepProbability") {
+        const auto track = json.value("track", -1);
+        const auto step  = json.value("step", -1);
+        if (track >= 0 && step >= 0)
+          enqueue_command(WebSocketServer::SetStepProbability{
+              .track = track, .step = step,
+              .probability = std::clamp(json.value("probability", 100), 1, 100)});
+      } else if (json.value("type", "") == "copySeqTrack") {
+        const auto track = json.value("track", -1);
+        if (track >= 0)
+          enqueue_command(WebSocketServer::CopySeqTrack{.track = track});
+      } else if (json.value("type", "") == "pasteSeqTrack") {
+        const auto track = json.value("track", -1);
+        if (track >= 0)
+          enqueue_command(WebSocketServer::PasteSeqTrack{.track = track});
       }
     } catch (const std::exception &exception) {
       std::cerr << "invalid websocket JSON: " << exception.what() << '\n';
