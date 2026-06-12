@@ -28,6 +28,7 @@ export type TickState = {
     micLevel: number; envelope: number; gateOpen: boolean; onset: boolean; velocity: number;
     waveform: number[];
     specSamples: number[];
+    touchpadSketch: number[];
     touchpadRawPoints: [number, number][];
     voiceSeqRecording: boolean; voiceSeqRecordProgress: number;
     voiceSeqLastNote: number; voiceSeqLastVelocity: number;
@@ -96,6 +97,7 @@ export type RuntimeState = {
       trimEnd: number;
       isWavetable: boolean;
       isStream: boolean;
+      isLoop: boolean;
       waveformVersion: number;
       waveform: number[];
       rootNote: number;

@@ -135,6 +135,18 @@ bool dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
             }
         },
 
+        [&](const WebSocketServer::SetBankStreamLoop& cmd) {
+            ctx.audio_sampler.set_bank_stream_loop(cmd.bank, cmd.loop);
+        },
+
+        [&](const WebSocketServer::SetBankTrim& cmd) {
+            ctx.audio_sampler.set_bank_trim(cmd.bank, cmd.start, cmd.end);
+        },
+
+        [&](const WebSocketServer::ScrubStream& cmd) {
+            ctx.audio_sampler.stream_seek(cmd.bank, cmd.frac);
+        },
+
         // ── Patch / MIDI program ──────────────────────────────────────────
         [&](const WebSocketServer::SetPatch& cmd) {
             ctx.sampler_mode = false;
@@ -190,7 +202,7 @@ bool dispatch_web_commands(AppContext& ctx, const LoadStemsFn& load_stems_fn) {
             ctx.seq.playing      = true;
             ctx.seq.current_step = -1;
             ctx.seq.playhead_step = -1;
-            ctx.seq.step_start   = std::chrono::steady_clock::now();
+            ctx.seq.step_start   = std::chrono::steady_clock::now() - std::chrono::seconds{100};
             ctx.midi.send_start();
             std::cout << "seq: play\n";
         },

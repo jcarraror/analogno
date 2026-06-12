@@ -26,6 +26,14 @@ public:
     return active_.load(std::memory_order_relaxed);
   }
 
+  void set_loop(bool loop);
+  [[nodiscard]] bool loop() const;
+
+  // Seek to frac 0..1 within the reader's [start_frame, end_frame] window.
+  // Safe to call from any thread. Audio output will stall briefly while the
+  // ring refills from the new position.
+  void seek(float frac);
+
   // Real-time safe — called from audio callback only.
   // Returns false when the stream ends; sets is_active() to false.
   // rate > 1 = higher pitch (faster read), rate < 1 = lower pitch (slower read).
@@ -40,8 +48,10 @@ private:
   std::atomic<bool> eof_{false};
   std::atomic<bool> stop_flag_{false};
   std::atomic<bool> active_{false};
+  std::atomic<bool> loop_{false};
+  std::atomic<float> pending_seek_{-1.0F};
   std::thread reader_;
-  double frac_pos_{0.0}; // fractional sub-frame position; only touched in audio callback
+  double frac_pos_{0.0};
 
   void reader_func(std::string path, float trim_start, float trim_end);
 };

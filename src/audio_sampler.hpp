@@ -40,6 +40,8 @@ public:
 
   // Raw stream playback
   void stream_play(std::size_t bank, float rate = 1.0F);
+  void stream_play_slice(std::size_t bank, int slice_idx);
+  void stream_seek(std::size_t bank, float frac);
   void stream_stop(std::size_t bank);
   void stream_stop_all();
   [[nodiscard]] bool stream_is_active(std::size_t bank) const;
@@ -91,6 +93,15 @@ public:
   [[nodiscard]] int bank_root_note(std::size_t bank) const;
   void set_bank_slice_count(std::size_t bank, int count);
   [[nodiscard]] int bank_slice_count(std::size_t bank) const;
+  void set_bank_stream_loop(std::size_t bank, bool loop);
+  [[nodiscard]] bool bank_stream_loop(std::size_t bank) const;
+  void begin_scrub(std::size_t bank, float initial_x);
+  void end_scrub(std::size_t bank);
+  void set_scrub_x(std::size_t bank, float x);
+  // rate in frames/sample: 1.0 = 1× pitch, negative = reverse
+  void set_scrub_velocity(std::size_t bank, float rate);
+  [[nodiscard]] int get_slice_page(std::size_t bank) const;
+  void set_slice_page(std::size_t bank, int page);
   void set_bank_onset_frames(std::size_t bank, std::vector<double> frame_positions);
   void clear_bank_onset_frames(std::size_t bank);
   [[nodiscard]] bool bank_has_onsets(std::size_t bank) const;
@@ -186,6 +197,18 @@ private:
   std::array<std::atomic<std::uint64_t>, bank_count> stream_pos_{};
   std::array<std::atomic<bool>, bank_count> stream_active_{};
   std::array<std::atomic<float>, bank_count> stream_frac_pos_{};
+  std::array<std::atomic<bool>, bank_count> bank_stream_loop_{};
+  std::array<std::atomic<float>, bank_count> bank_stream_start_frac_{};
+  std::array<std::atomic<float>, bank_count> bank_stream_end_frac_{};
+  std::array<std::atomic<float>, bank_count> scrub_x_{};
+  // Target rate in frames/sample (1.0 = 1× pitch), set from touchpad handler.
+  std::array<std::atomic<float>, bank_count> scrub_vel_{};
+  std::array<std::atomic<bool>,  bank_count> scrub_active_{};
+  std::array<std::atomic<bool>,  bank_count> scrub_pos_init_{};
+  std::array<int, bank_count> slice_page_{};
+  // Callback-private state (audio thread only, no sync needed)
+  std::array<double, bank_count> scrub_pos_cb_{};   // accumulating read head (frames)
+  std::array<double, bank_count> scrub_vel_cb_{}; // LP-smoothed rate
   float vibrato_phase_{};
   bool device_ready_{};
   bool running_{};

@@ -3,6 +3,8 @@
 #include "app_context.hpp"
 #include "sequencer.hpp"
 
+#include <SDL3/SDL_gamepad.h>
+#include <algorithm>
 #include <cmath>
 
 namespace analogno {
@@ -41,10 +43,30 @@ void route_live_notes(AppContext& ctx, const AudioFeatures& audio_features) {
             ctx.audio_sampler.stream_stop_all();
         }
         if (ctx.audio_sampler.bank_is_stream(asb)) {
+            const auto slice_count = ctx.audio_sampler.bank_slice_count(asb);
             if (l2_gate && !intent.note_ons.empty()) {
-                const auto root = ctx.audio_sampler.bank_root_note(asb);
-                const auto semitones = intent.note_ons[0].midi_note - root;
-                ctx.audio_sampler.stream_play(asb, std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+                if (slice_count > 0) {
+                    const auto degree = intent.note_ons[0].degree;
+                    const auto page   = ctx.audio_sampler.get_slice_page(asb);
+                    ctx.audio_sampler.stream_play_slice(asb, page + degree);
+                } else {
+                    const auto root      = ctx.audio_sampler.bank_root_note(asb);
+                    const auto semitones = intent.note_ons[0].midi_note - root;
+                    ctx.audio_sampler.stream_play(
+                        asb, std::pow(2.0F, static_cast<float>(semitones) / 12.0F));
+                }
+            }
+            if (slice_count > 0 && ctx.controller.button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) {
+                const auto page = ctx.audio_sampler.get_slice_page(asb);
+                if (ctx.controller.button_pressed(SDL_GAMEPAD_BUTTON_DPAD_UP))
+                    ctx.audio_sampler.set_slice_page(asb, page - 4);
+                if (ctx.controller.button_pressed(SDL_GAMEPAD_BUTTON_DPAD_DOWN))
+                    ctx.audio_sampler.set_slice_page(asb, page + 4);
+                if (ctx.controller.button_pressed(SDL_GAMEPAD_BUTTON_DPAD_LEFT))
+                    ctx.audio_sampler.set_slice_page(asb, 0);
+                if (ctx.controller.button_pressed(SDL_GAMEPAD_BUTTON_DPAD_RIGHT))
+                    ctx.audio_sampler.set_slice_page(asb,
+                        std::max(0, slice_count - 4));
             }
             if (!intent.note_offs.empty())
                 ctx.audio_sampler.stream_stop(asb);

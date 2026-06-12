@@ -22,6 +22,7 @@ void WavStream::start(std::string path, float trim_start, float trim_end) {
   read_pos_.store(0, std::memory_order_relaxed);
   eof_.store(false, std::memory_order_relaxed);
   stop_flag_.store(false, std::memory_order_relaxed);
+  pending_seek_.store(-1.0F, std::memory_order_relaxed);
   frac_pos_ = 0.0;
 
   active_.store(true, std::memory_order_release);
@@ -37,6 +38,22 @@ void WavStream::stop() {
   active_.store(false, std::memory_order_release);
 }
 
+void WavStream::set_loop(bool loop) {
+  loop_.store(loop, std::memory_order_release);
+}
+
+bool WavStream::loop() const {
+  return loop_.load(std::memory_order_relaxed);
+}
+
+void WavStream::seek(float frac) {
+  pending_seek_.store(std::clamp(frac, 0.0F, 1.0F), std::memory_order_release);
+  // Make ring appear empty so the audio callback outputs silence while the
+  // reader thread jumps to the new position.
+  const auto w = write_pos_.load(std::memory_order_acquire);
+  read_pos_.store(w, std::memory_order_release);
+}
+
 bool WavStream::read_frame(float &l, float &r, float rate) {
   if (!active_.load(std::memory_order_acquire)) return false;
 
@@ -48,6 +65,7 @@ bool WavStream::read_frame(float &l, float &r, float rate) {
       active_.store(false, std::memory_order_release);
       return false;
     }
+    frac_pos_ = 0.0; // reset interpolation on stall (includes post-seek gap)
     l = r = 0.0F;
     return true;
   }
@@ -95,32 +113,67 @@ void WavStream::reader_func(std::string path, float trim_start, float trim_end) 
       ? end_frame - start_frame
       : std::numeric_limits<ma_uint64>::max();
 
-  while (!stop_flag_.load(std::memory_order_relaxed) &&
-         frames_decoded < frames_to_read) {
-    // Wait for space in the ring buffer
+  while (!stop_flag_.load(std::memory_order_relaxed)) {
+    // ── Pending seek ─────────────────────────────────────────────────────────
+    {
+      const auto sf = pending_seek_.exchange(-1.0F, std::memory_order_acq_rel);
+      if (sf >= 0.0F) {
+        const auto range = end_frame > start_frame ? end_frame - start_frame : 0;
+        const auto target = start_frame +
+            static_cast<ma_uint64>(sf * static_cast<float>(range));
+        const auto clamped = std::min(target,
+            end_frame > 0 ? end_frame - 1 : static_cast<ma_uint64>(0));
+        ma_decoder_seek_to_pcm_frame(&dec, clamped);
+        frames_decoded = clamped > start_frame ? clamped - start_frame : 0;
+        const auto rd = read_pos_.load(std::memory_order_acquire);
+        write_pos_.store(rd, std::memory_order_release);
+      }
+    }
+
+    // ── End-of-range: stop or loop ────────────────────────────────────────────
+    if (frames_decoded >= frames_to_read) {
+      if (loop_.load(std::memory_order_acquire)) {
+        ma_decoder_seek_to_pcm_frame(&dec, start_frame);
+        frames_decoded = 0;
+        continue;
+      }
+      break;
+    }
+
+    // ── Wait for ring space ───────────────────────────────────────────────────
     for (;;) {
       if (stop_flag_.load(std::memory_order_relaxed)) goto done;
-      const auto w = write_pos_.load(std::memory_order_acquire);
-      const auto rd = read_pos_.load(std::memory_order_acquire);
+      const auto w   = write_pos_.load(std::memory_order_acquire);
+      const auto rd  = read_pos_.load(std::memory_order_acquire);
       if (w - rd < ring_frames - chunk) break;
       std::this_thread::sleep_for(std::chrono::microseconds{500});
     }
 
-    const auto to_read = static_cast<ma_uint64>(
-        std::min(static_cast<ma_uint64>(chunk), frames_to_read - frames_decoded));
+    // ── Read chunk ────────────────────────────────────────────────────────────
+    {
+      const auto to_read = static_cast<ma_uint64>(
+          std::min(static_cast<ma_uint64>(chunk), frames_to_read - frames_decoded));
 
-    ma_uint64 frames_read = 0;
-    ma_decoder_read_pcm_frames(&dec, temp.data(), to_read, &frames_read);
-    if (frames_read == 0) break;
+      ma_uint64 frames_read = 0;
+      ma_decoder_read_pcm_frames(&dec, temp.data(), to_read, &frames_read);
+      if (frames_read == 0) {
+        if (loop_.load(std::memory_order_acquire)) {
+          ma_decoder_seek_to_pcm_frame(&dec, start_frame);
+          frames_decoded = 0;
+          continue;
+        }
+        break;
+      }
 
-    const auto w = write_pos_.load(std::memory_order_relaxed);
-    for (ma_uint64 i = 0; i < frames_read; ++i) {
-      const auto pos = (w + i) % ring_frames;
-      ring_[pos * 2] = temp[i * 2];
-      ring_[pos * 2 + 1] = temp[i * 2 + 1];
+      const auto w = write_pos_.load(std::memory_order_relaxed);
+      for (ma_uint64 i = 0; i < frames_read; ++i) {
+        const auto pos = (w + i) % ring_frames;
+        ring_[pos * 2]     = temp[i * 2];
+        ring_[pos * 2 + 1] = temp[i * 2 + 1];
+      }
+      write_pos_.fetch_add(frames_read, std::memory_order_release);
+      frames_decoded += frames_read;
     }
-    write_pos_.fetch_add(frames_read, std::memory_order_release);
-    frames_decoded += frames_read;
   }
 
 done:

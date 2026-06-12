@@ -732,6 +732,15 @@ export function App() {
   const setBankSliceCount = useCallback((bank: number, count: number) => {
     socket?.send(JSON.stringify({ type: "setBankSliceCount", bank, count }));
   }, [socket]);
+  const setBankStreamLoop = useCallback((bank: number, loop: boolean) => {
+    socket?.send(JSON.stringify({ type: "setBankStreamLoop", bank, loop }));
+  }, [socket]);
+  const setBankTrim = useCallback((bank: number, start: number, end: number) => {
+    socket?.send(JSON.stringify({ type: "setBankTrim", bank, start, end }));
+  }, [socket]);
+  const scrubStream = useCallback((bank: number, frac: number) => {
+    socket?.send(JSON.stringify({ type: "scrubStream", bank, frac }));
+  }, [socket]);
 
   const transcribeBankToSeq = useCallback((bank: number) => {
     socket?.send(JSON.stringify({ type: "transcribeBankToSeq", bank }));
@@ -1192,20 +1201,47 @@ export function App() {
                   </div>
                   <div className="bank-param-row">
                     <span className="bank-param-label">Slices</span>
-                    <div className="slice-chips">
-                      {[0, 4, 8, 16, 32].map((n) => (
-                        <button
-                          key={n}
-                          type="button"
-                          className={`slice-chip${(activeBankData?.sliceCount ?? 0) === n ? " slice-chip-active" : ""}`}
+                    <div className="slice-row">
+                      {[0, 4, 8, 16].map(n => (
+                        <button key={n} type="button"
+                          className={`slice-preset${(activeBankData?.sliceCount ?? 0) === n ? " slice-preset--on" : ""}`}
                           disabled={connection !== "online"}
-                          onClick={() => setBankSliceCount(audio?.activeBank ?? 0, n)}
-                        >
+                          onClick={() => setBankSliceCount(audio?.activeBank ?? 0, n)}>
                           {n === 0 ? "off" : n}
                         </button>
                       ))}
+                      <input
+                        type="number"
+                        className="slice-count-input"
+                        min={0}
+                        max={9999}
+                        value={activeBankData?.sliceCount ?? 0}
+                        disabled={connection !== "online"}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value, 10);
+                          setBankSliceCount(audio?.activeBank ?? 0, Number.isNaN(v) ? 0 : Math.max(0, v));
+                        }}
+                      />
                     </div>
                   </div>
+                  {activeBankData?.isStream && (
+                    <div className="bank-param-row">
+                      <span className="bank-param-label">Loop</span>
+                      <button
+                        type="button"
+                        className={`loop-toggle-btn${activeBankData.isLoop ? " loop-toggle-btn--on" : ""}`}
+                        disabled={connection !== "online"}
+                        title={activeBankData.isLoop ? "Loop on — click to disable" : "Loop off — click to enable"}
+                        onClick={() => setBankStreamLoop(audio?.activeBank ?? 0, !activeBankData.isLoop)}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <path d="M2 5a5 5 0 0 1 9-2M2 5H5M12 9a5 5 0 0 1-9 2M12 9H9"
+                            stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        {activeBankData.isLoop ? "on" : "off"}
+                      </button>
+                    </div>
+                  )}
                   <div className="bank-param-row">
                     {(() => {
                       const ts = audio?.transcribeState ?? "idle";
@@ -1274,10 +1310,41 @@ export function App() {
                   />
                 </div>
               )}
-              {activeBankHasSample ? (
+              {activeBankData?.isStream ? (
                 <div className="trim">
                   <TrimWaveform
                     waveform={activeBankWaveform}
+                    trimStart={activeBankData.trimStart}
+                    trimEnd={activeBankData.trimEnd}
+                    totalFrames={activeBankData.frames}
+                    disabled={connection !== 'online'}
+                    onChange={(t) => {
+                      const s = t.start ?? activeBankData.trimStart;
+                      const e = t.end   ?? activeBankData.trimEnd;
+                      setBankTrim(audio?.activeBank ?? 0, s, e);
+                    }}
+                  />
+                  <div
+                    className="stream-scrub-bar"
+                    title="Drag to seek"
+                    onPointerDown={(ev) => {
+                      const r = ev.currentTarget.getBoundingClientRect();
+                      const f = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+                      scrubStream(audio?.activeBank ?? 0, f);
+                      ev.currentTarget.setPointerCapture(ev.pointerId);
+                    }}
+                    onPointerMove={(ev) => {
+                      if (ev.buttons !== 1) return;
+                      const r = ev.currentTarget.getBoundingClientRect();
+                      const f = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+                      scrubStream(audio?.activeBank ?? 0, f);
+                    }}
+                  />
+                </div>
+              ) : activeBankHasSample ? (
+                <div className="trim">
+                  <TrimWaveform
+                    waveform={audio?.sampleWaveform ?? []}
                     trimStart={audio?.sampleTrimStart ?? 0}
                     trimEnd={audio?.sampleTrimEnd ?? 1}
                     totalFrames={activeBankData?.frames ?? 0}
@@ -1303,7 +1370,7 @@ export function App() {
                     Waveform editor · touchpad draws · presets below
                   </span>
                   <WaveformEditor
-                    touchpadSketch={audio?.touchpadSketch ?? []}
+                    touchpadSketch={tick?.audio?.touchpadSketch ?? audio?.touchpadSketch ?? []}
                     touchpadDrawing={audio?.touchpadDrawing ?? false}
                     morphAmount={audio?.wavetableMorph ?? 0}
                     noiseAmount={audio?.wavetableNoise ?? 0}

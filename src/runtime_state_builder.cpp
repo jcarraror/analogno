@@ -186,6 +186,7 @@ WebRuntimeState make_web_state(const WebStateParams& p) {
         .trim_end = p.audio_sampler.bank_trim_end(i),
         .is_wavetable = p.audio_sampler.bank_is_wavetable(i),
         .is_stream = p.audio_sampler.bank_is_stream(i),
+        .is_loop = p.audio_sampler.bank_stream_loop(i),
         .waveform_version = wfm_ver,
         .waveform = wfm_changed ? p.audio_sampler.bank_waveform(i, 256U) : std::vector<float>{},
         .root_note = p.audio_sampler.bank_root_note(i),
@@ -364,6 +365,9 @@ WebTickState make_tick_state(const WebStateParams& p) {
           .velocity    = p.audio_features.velocity,
           .waveform    = p.audio_capture.waveform(),
           .spec_samples = p.spec_samples,
+          .touchpad_sketch = p.sketch.active
+              ? build_wavetable(p.sketch.points, 128)
+              : std::vector<float>{},
           .touchpad_raw_points = [&] {
               const auto& src = p.sketch.active ? p.sketch.points : p.sketch.committed_points;
               std::vector<std::array<float, 2>> out;

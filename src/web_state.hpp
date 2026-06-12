@@ -54,6 +54,7 @@ struct WebSampleBank final {
   float trim_end{1.0F};
   bool is_wavetable{};
   bool is_stream{};
+  bool is_loop{};
   std::uint32_t waveform_version{};
   std::vector<float> waveform{};  // empty when unchanged since last publish
   int root_note{48};
@@ -193,6 +194,7 @@ struct WebTickAudioState final {
   int velocity{};
   std::vector<float> waveform{};
   std::vector<float> spec_samples{};
+  std::vector<float> touchpad_sketch{};
   std::vector<std::array<float, 2>> touchpad_raw_points{};
   // voice-seq live feedback
   bool voice_seq_recording{};

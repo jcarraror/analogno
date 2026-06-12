@@ -16,6 +16,24 @@ namespace {
 
 constexpr std::size_t wavetable_length = 367;
 
+bool g_scrubbing = false;
+float g_scrub_prev_x  = 0.0F;
+float g_scrub_prev_y  = 0.0F;
+std::uint64_t g_scrub_prev_ns = 0;
+
+// DualSense touchpad physical dimensions (mm).
+constexpr float pad_w_mm = 95.0F;
+constexpr float pad_h_mm = 44.0F;
+
+constexpr float one_x_mm_s = 100.0F;
+
+[[nodiscard]] bool is_scrub_context(const AppContext& ctx) {
+    if (!ctx.sampler_mode) return false;
+    const auto ab = ctx.audio_sampler.active_bank();
+    return ctx.audio_sampler.bank_has_sample(ab) &&
+           !ctx.audio_sampler.bank_is_wavetable(ab);
+}
+
 [[nodiscard]] int ribbon_note_for_x(float x, int root, int oct_off, ScaleKind sk) {
     const auto sc   = scale_for(sk);
     const int total = sc.size * 2;
@@ -79,6 +97,14 @@ void handle_touchpad_event(const SDL_Event& event, AppContext& ctx) {
                         (ctx.seq.selected_step + 1) % active_track_loop_length(ctx.seq);
                 }
             }
+        } else if (fi == 0 && !l1 && !click && !r1 &&
+               ctx.seq.selected_step < 0 && is_scrub_context(ctx)) {
+            g_scrubbing       = true;
+            g_scrub_prev_x    = event.gtouchpad.x;
+            g_scrub_prev_y    = event.gtouchpad.y;
+            g_scrub_prev_ns   = event.gtouchpad.timestamp;
+            ctx.audio_sampler.begin_scrub(ctx.audio_sampler.active_bank(), event.gtouchpad.x);
+
         } else if (!l1 && !click && !r1 && fi < ribbon_max) {
             const int note = ribbon_note_for_x(event.gtouchpad.x,
                 ctx.last_intent.root_midi_note, ctx.last_intent.octave_offset,
@@ -127,6 +153,34 @@ void handle_touchpad_event(const SDL_Event& event, AppContext& ctx) {
                     ctx.tp_swipe.prev_y  = event.gtouchpad.y;
                 }
             }
+        } else if (fi == 0 && g_scrubbing) {
+            const auto bank     = ctx.audio_sampler.active_bank();
+            const float dx_frac = event.gtouchpad.x - g_scrub_prev_x;
+            const float dy_frac = event.gtouchpad.y - g_scrub_prev_y;
+            const auto delta_ns = event.gtouchpad.timestamp > g_scrub_prev_ns
+                                      ? event.gtouchpad.timestamp - g_scrub_prev_ns : 0U;
+            if (delta_ns > 0U) {
+                const float dt_sec = static_cast<float>(delta_ns) * 1.0e-9F;
+                // Physical displacement of the finger in mm
+                const float dx_mm = dx_frac * pad_w_mm;
+                const float dy_mm = dy_frac * pad_h_mm;
+                // Vector from pad centre to finger's previous position (mm)
+                const float fx = (g_scrub_prev_x - 0.5F) * pad_w_mm;
+                const float fy = (g_scrub_prev_y - 0.5F) * pad_h_mm;
+                const float r  = std::sqrt(fx * fx + fy * fy);
+                float rate = 0.0F;
+                if (r > 3.0F) {
+                    // Tangential unit vector (CW = positive = forward playback)
+                    const float tx = -fy / r;
+                    const float ty =  fx / r;
+                    const float tang_mm = dx_mm * tx + dy_mm * ty;
+                    rate = (tang_mm / dt_sec) / one_x_mm_s;
+                }
+                ctx.audio_sampler.set_scrub_velocity(bank, rate);
+            }
+            g_scrub_prev_x  = event.gtouchpad.x;
+            g_scrub_prev_y  = event.gtouchpad.y;
+            g_scrub_prev_ns = event.gtouchpad.timestamp;
         } else if (fi == 0 && ctx.sketch.active) {
             ctx.sketch.points.emplace_back(event.gtouchpad.x, event.gtouchpad.y);
         } else if (fi < ribbon_max && ctx.ribbon[fi].active) {
@@ -149,7 +203,10 @@ void handle_touchpad_event(const SDL_Event& event, AppContext& ctx) {
         }
 
     } else if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
-        if (fi == 0 && ctx.tp_swipe.active) {
+        if (fi == 0 && g_scrubbing) {
+            g_scrubbing = false;
+            ctx.audio_sampler.end_scrub(ctx.audio_sampler.active_bank());
+        } else if (fi == 0 && ctx.tp_swipe.active) {
             ctx.tp_swipe.active = false;
         } else if (fi == 0 && ctx.sketch.active) {
             ctx.sketch.active = false;

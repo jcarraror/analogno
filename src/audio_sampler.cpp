@@ -114,6 +114,9 @@ AudioSampler::AudioSampler(ma_context *shared_ctx) {
   for (auto &r : bank_playback_rate_) {
     r.store(1.0F);
   }
+  for (auto &f : bank_stream_end_frac_) {
+    f.store(1.0F);
+  }
   for (auto &v : bank_waveform_ver_) {
     v.store(1U);
   }
@@ -860,11 +863,15 @@ void AudioSampler::perf_reset() {
 
 void AudioSampler::stream_play(std::size_t bank, float rate) {
   if (bank >= bank_count) return;
+  scrub_active_[bank].store(false, std::memory_order_relaxed);
+  const auto ts = bank_trim_start_[bank].load();
+  const auto te = bank_trim_end_[bank].load();
   bank_playback_rate_[bank].store(rate, std::memory_order_relaxed);
+  bank_stream_start_frac_[bank].store(ts, std::memory_order_relaxed);
+  bank_stream_end_frac_[bank].store(te, std::memory_order_relaxed);
   if (bank_file_backed_[bank].load()) {
-    wav_streams_[bank]->start(bank_wav_file_[bank],
-                              bank_trim_start_[bank].load(),
-                              bank_trim_end_[bank].load());
+    wav_streams_[bank]->set_loop(bank_stream_loop_[bank].load());
+    wav_streams_[bank]->start(bank_wav_file_[bank], ts, te);
     return;
   }
   std::uint64_t start_pos = 0;
@@ -873,13 +880,131 @@ void AudioSampler::stream_play(std::size_t bank, float rate) {
     if (!banks_[bank] || banks_[bank]->empty()) return;
     const auto ch = std::max<std::uint64_t>(bank_channels_[bank].load(), 1U);
     const auto frames = static_cast<std::uint64_t>(banks_[bank]->size() / ch);
-    start_pos = static_cast<std::uint64_t>(bank_trim_start_[bank].load() * static_cast<float>(frames));
+    start_pos = static_cast<std::uint64_t>(ts * static_cast<float>(frames));
     start_pos = std::min(start_pos, frames > 0 ? frames - 1 : 0);
   }
   stream_active_[bank].store(false, std::memory_order_release);
   stream_frac_pos_[bank].store(0.0F, std::memory_order_relaxed);
   stream_pos_[bank].store(start_pos, std::memory_order_relaxed);
   stream_active_[bank].store(true, std::memory_order_release);
+}
+
+void AudioSampler::stream_play_slice(std::size_t bank, int slice_idx) {
+  if (bank >= bank_count) return;
+  scrub_active_[bank].store(false, std::memory_order_relaxed);
+  const auto n = bank_slice_count_[bank].load();
+  if (n <= 0) { stream_play(bank, 1.0F); return; }
+  const auto sidx = std::clamp(slice_idx, 0, n - 1);
+  const auto ts   = bank_trim_start_[bank].load();
+  const auto te   = bank_trim_end_[bank].load();
+  const auto range      = te - ts;
+  const auto slice_len  = range / static_cast<float>(n);
+  const auto start_frac = ts + static_cast<float>(sidx) * slice_len;
+  const auto end_frac   = start_frac + slice_len;
+
+  bank_playback_rate_[bank].store(1.0F, std::memory_order_relaxed);
+  bank_stream_start_frac_[bank].store(start_frac, std::memory_order_relaxed);
+  bank_stream_end_frac_[bank].store(end_frac, std::memory_order_relaxed);
+
+  if (bank_file_backed_[bank].load()) {
+    wav_streams_[bank]->set_loop(bank_stream_loop_[bank].load());
+    wav_streams_[bank]->start(bank_wav_file_[bank], start_frac, end_frac);
+    return;
+  }
+  std::uint64_t start_pos = 0;
+  {
+    const auto lock = std::scoped_lock{mutex_};
+    if (!banks_[bank] || banks_[bank]->empty()) return;
+    const auto ch     = std::max<std::uint64_t>(bank_channels_[bank].load(), 1U);
+    const auto frames = static_cast<std::uint64_t>(banks_[bank]->size() / ch);
+    start_pos = static_cast<std::uint64_t>(start_frac * static_cast<float>(frames));
+    start_pos = std::min(start_pos, frames > 0 ? frames - 1 : 0);
+  }
+  stream_active_[bank].store(false, std::memory_order_release);
+  stream_frac_pos_[bank].store(0.0F, std::memory_order_relaxed);
+  stream_pos_[bank].store(start_pos, std::memory_order_relaxed);
+  stream_active_[bank].store(true, std::memory_order_release);
+}
+
+void AudioSampler::stream_seek(std::size_t bank, float frac) {
+  if (bank >= bank_count) return;
+  const auto cf = std::clamp(frac, 0.0F, 1.0F);
+  if (bank_file_backed_[bank].load()) {
+    wav_streams_[bank]->seek(cf);
+    return;
+  }
+  const auto lock = std::scoped_lock{mutex_};
+  if (!banks_[bank] || banks_[bank]->empty()) return;
+  const auto ch     = std::max<std::uint64_t>(bank_channels_[bank].load(), 1U);
+  const auto frames = banks_[bank]->size() / ch;
+  const auto sf     = bank_stream_start_frac_[bank].load();
+  const auto ef     = bank_stream_end_frac_[bank].load();
+  const auto range  = static_cast<double>(ef - sf) * static_cast<double>(frames);
+  const auto target = static_cast<std::uint64_t>(
+      static_cast<double>(sf) * static_cast<double>(frames) + static_cast<double>(cf) * range);
+  stream_frac_pos_[bank].store(0.0F, std::memory_order_relaxed);
+  stream_pos_[bank].store(std::min(target, frames > 0 ? frames - 1 : 0),
+                          std::memory_order_relaxed);
+}
+
+void AudioSampler::set_bank_stream_loop(std::size_t bank, bool loop) {
+  if (bank >= bank_count) return;
+  bank_stream_loop_[bank].store(loop, std::memory_order_release);
+  if (bank_file_backed_[bank].load()) {
+    wav_streams_[bank]->set_loop(loop);
+  }
+}
+
+bool AudioSampler::bank_stream_loop(std::size_t bank) const {
+  if (bank >= bank_count) return false;
+  return bank_stream_loop_[bank].load(std::memory_order_relaxed);
+}
+
+void AudioSampler::begin_scrub(std::size_t bank, float initial_x) {
+  if (bank >= bank_count) return;
+  const auto x = std::clamp(initial_x, 0.0F, 1.0F);
+  scrub_x_[bank].store(x, std::memory_order_relaxed);
+  scrub_vel_[bank].store(0.0F, std::memory_order_relaxed);
+  scrub_pos_init_[bank].store(true, std::memory_order_release);
+  if (bank_file_backed_[bank].load()) {
+    const auto ts = bank_trim_start_[bank].load();
+    const auto te = bank_trim_end_[bank].load();
+    wav_streams_[bank]->set_loop(bank_stream_loop_[bank].load());
+    wav_streams_[bank]->start(bank_wav_file_[bank], ts, te);
+    wav_streams_[bank]->seek(x);
+  } else {
+    stream_active_[bank].store(true, std::memory_order_release);
+  }
+  scrub_active_[bank].store(true, std::memory_order_release);
+}
+
+void AudioSampler::end_scrub(std::size_t bank) {
+  if (bank >= bank_count) return;
+  scrub_vel_[bank].store(0.0F, std::memory_order_relaxed);
+  scrub_active_[bank].store(false, std::memory_order_release);
+  stream_active_[bank].store(false, std::memory_order_relaxed);
+}
+
+void AudioSampler::set_scrub_x(std::size_t bank, float x) {
+  if (bank >= bank_count) return;
+  scrub_x_[bank].store(std::clamp(x, 0.0F, 1.0F), std::memory_order_relaxed);
+}
+
+void AudioSampler::set_scrub_velocity(std::size_t bank, float rate) {
+  if (bank >= bank_count) return;
+  constexpr float max_rate = 5.0F;
+  scrub_vel_[bank].store(std::clamp(rate, -max_rate, max_rate),
+                         std::memory_order_relaxed);
+}
+
+int AudioSampler::get_slice_page(std::size_t bank) const {
+  if (bank >= bank_count) return 0;
+  return slice_page_[bank];
+}
+
+void AudioSampler::set_slice_page(std::size_t bank, int page) {
+  if (bank >= bank_count) return;
+  slice_page_[bank] = std::max(0, page);
 }
 
 void AudioSampler::stream_stop(std::size_t bank) {
@@ -1048,6 +1173,12 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
   std::array<float, bank_count> bank_playback_rates{};
   std::array<float, bank_count> stream_frac_pos{};
   std::array<float, bank_count> initial_stream_frac_pos{};
+  std::array<float, bank_count> bank_stream_start_fracs{};
+  std::array<float, bank_count> bank_stream_end_fracs{};
+  std::array<bool,  bank_count> bank_stream_loops{};
+  std::array<float, bank_count> scrub_xs{};
+  std::array<float, bank_count> scrub_vels{};
+  std::array<bool,  bank_count> scrub_actives{};
   std::array<Voice, voice_count> voices{};
   std::uint64_t voice_generation{};
 
@@ -1061,9 +1192,15 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
       initial_stream_positions[b] = stream_positions[b];
       stream_active[b] = self->stream_active_[b].load(std::memory_order_relaxed);
       initial_stream_active[b] = stream_active[b];
-      bank_playback_rates[b] = self->bank_playback_rate_[b].load(std::memory_order_relaxed);
-      stream_frac_pos[b] = self->stream_frac_pos_[b].load(std::memory_order_relaxed);
+      bank_playback_rates[b]     = self->bank_playback_rate_[b].load(std::memory_order_relaxed);
+      stream_frac_pos[b]         = self->stream_frac_pos_[b].load(std::memory_order_relaxed);
       initial_stream_frac_pos[b] = stream_frac_pos[b];
+      bank_stream_start_fracs[b] = self->bank_stream_start_frac_[b].load(std::memory_order_relaxed);
+      bank_stream_end_fracs[b]   = self->bank_stream_end_frac_[b].load(std::memory_order_relaxed);
+      bank_stream_loops[b]       = self->bank_stream_loop_[b].load(std::memory_order_relaxed);
+      scrub_xs[b]      = self->scrub_x_[b].load(std::memory_order_relaxed);
+      scrub_vels[b]    = self->scrub_vel_[b].load(std::memory_order_relaxed);
+      scrub_actives[b] = self->scrub_active_[b].load(std::memory_order_acquire);
     }
     voices = self->voices_;
     voice_generation =
@@ -1241,42 +1378,107 @@ void AudioSampler::playback_callback(ma_device *device, void *output,
       if (self->bank_file_backed_[b].load(std::memory_order_relaxed)) {
         float l = 0.0F;
         float r = 0.0F;
-        if (!self->wav_streams_[b]->read_frame(l, r, bank_playback_rates[b] * pitch_rate)) continue;
-        mixed_left += l * gain * stream_gain_scale * tremolo;
-        mixed_right += r * gain * stream_gain_scale * tremolo;
+        if (scrub_actives[b]) {
+          if (self->scrub_pos_init_[b].load(std::memory_order_relaxed)) {
+            self->scrub_pos_init_[b].store(false, std::memory_order_relaxed);
+            self->scrub_pos_cb_[b] = static_cast<double>(scrub_xs[b]);
+            self->scrub_vel_cb_[b] = 0.0;
+          }
+          const double target_rate = static_cast<double>(scrub_vels[b]);
+          self->scrub_vel_cb_[b] += (target_rate - self->scrub_vel_cb_[b]) * 0.045;
+          const auto rate = static_cast<float>(self->scrub_vel_cb_[b]);
+          if (rate > 0.01F && self->wav_streams_[b]->read_frame(l, r, rate)) {
+            mixed_left  += l * gain * stream_gain_scale * tremolo;
+            mixed_right += r * gain * stream_gain_scale * tremolo;
+          }
+        } else {
+          self->scrub_pos_cb_[b] = 0.0;
+          self->scrub_vel_cb_[b] = 0.0;
+          if (self->wav_streams_[b]->read_frame(l, r, bank_playback_rates[b] * pitch_rate)) {
+            mixed_left  += l * gain * stream_gain_scale * tremolo;
+            mixed_right += r * gain * stream_gain_scale * tremolo;
+          }
+        }
         continue;
       }
-      if (!stream_active[b]) continue;
+      if (!stream_active[b] && !scrub_actives[b]) continue;
       const auto &sample = banks[b];
       if (!sample || sample->empty()) {
         stream_active[b] = false;
         continue;
       }
-      const auto ch = std::max(bank_channels[b], 1U);
+      const auto ch            = std::max(bank_channels[b], 1U);
       const auto stream_frames = sample->size() / ch;
-      const auto trim_end_frame = static_cast<std::uint64_t>(
-          self->bank_trim_end_[b].load() * static_cast<float>(stream_frames));
-      const auto end_frame = std::min(trim_end_frame, static_cast<std::uint64_t>(stream_frames));
-      const auto pos0 = stream_positions[b];
-      if (pos0 >= end_frame) {
-        stream_active[b] = false;
-        continue;
+      const auto start_fr      = static_cast<std::uint64_t>(
+          bank_stream_start_fracs[b] * static_cast<float>(stream_frames));
+      const auto end_frame     = std::min(
+          static_cast<std::uint64_t>(bank_stream_end_fracs[b] * static_cast<float>(stream_frames)),
+          static_cast<std::uint64_t>(stream_frames));
+
+      if (scrub_actives[b]) {
+        const auto x = static_cast<double>(scrub_xs[b]);
+        const auto window = static_cast<double>(end_frame > start_fr ? end_frame - start_fr : 1U);
+        if (self->scrub_pos_init_[b].load(std::memory_order_relaxed)) {
+          self->scrub_pos_cb_[b] = static_cast<double>(start_fr) + x * window;
+          self->scrub_vel_cb_[b] = 0.0;
+          self->scrub_pos_init_[b].store(false, std::memory_order_relaxed);
+        }
+        const double target_rate = static_cast<double>(scrub_vels[b]);
+        self->scrub_vel_cb_[b] += (target_rate - self->scrub_vel_cb_[b]) * 0.045;
+
+        if (std::abs(self->scrub_vel_cb_[b]) < 0.001) continue;
+
+        const auto clamped = std::clamp(
+            self->scrub_pos_cb_[b] + self->scrub_vel_cb_[b],
+            static_cast<double>(start_fr),
+            static_cast<double>(end_frame > 0U ? end_frame - 1U : 0U));
+        self->scrub_pos_cb_[b] = clamped;
+
+        const auto pos0 = static_cast<std::uint64_t>(clamped);
+        const auto pos1 = std::min(pos0 + 1U, end_frame > 0U ? end_frame - 1U : 0U);
+        const auto frac  = static_cast<float>(clamped - static_cast<double>(pos0));
+        const auto sl    = (*sample)[pos0 * ch];
+        const auto sl1   = (*sample)[pos1 * ch];
+        const auto left  = sl  + (sl1  - sl)  * frac;
+        const auto sr    = ch > 1U ? (*sample)[pos0 * ch + 1U] : sl;
+        const auto sr1   = ch > 1U ? (*sample)[pos1 * ch + 1U] : sl1;
+        const auto right = sr  + (sr1  - sr)  * frac;
+        mixed_left  += left  * gain * stream_gain_scale * tremolo;
+        mixed_right += right * gain * stream_gain_scale * tremolo;
+        stream_positions[b] = pos0;
+        stream_frac_pos[b]  = frac;
+      } else {
+        self->scrub_pos_cb_[b] = 0.0;
+
+        const auto eff_rate_d = static_cast<double>(bank_playback_rates[b] * pitch_rate);
+
+        if (stream_positions[b] >= end_frame) {
+          if (bank_stream_loops[b]) {
+            stream_positions[b] = start_fr;
+            stream_frac_pos[b]  = 0.0F;
+          } else {
+            stream_active[b] = false;
+            continue;
+          }
+        }
+
+        const auto pos0 = stream_positions[b];
+        const auto pos1 = std::min(pos0 + 1U, end_frame > 0U ? end_frame - 1U : 0U);
+        const auto frac  = stream_frac_pos[b];
+        const auto sl    = (*sample)[pos0 * ch];
+        const auto sl1   = (*sample)[pos1 * ch];
+        const auto left  = sl  + (sl1  - sl)  * frac;
+        const auto sr    = ch > 1U ? (*sample)[pos0 * ch + 1U] : sl;
+        const auto sr1   = ch > 1U ? (*sample)[pos1 * ch + 1U] : sl1;
+        const auto right = sr  + (sr1  - sr)  * frac;
+        mixed_left  += left  * gain * stream_gain_scale * tremolo;
+        mixed_right += right * gain * stream_gain_scale * tremolo;
+
+        stream_frac_pos[b] += static_cast<float>(eff_rate_d);
+        const auto step = static_cast<std::uint64_t>(stream_frac_pos[b]);
+        stream_frac_pos[b] -= static_cast<float>(step);
+        stream_positions[b] += step;
       }
-      const auto pos1 = std::min(pos0 + 1, end_frame - 1);
-      const auto frac = stream_frac_pos[b];
-      const auto sl = (*sample)[pos0 * ch];
-      const auto sl1 = (*sample)[pos1 * ch];
-      const auto left = sl + (sl1 - sl) * frac;
-      const auto sr = ch > 1U ? (*sample)[pos0 * ch + 1U] : sl;
-      const auto sr1 = ch > 1U ? (*sample)[pos1 * ch + 1U] : sl1;
-      const auto right = sr + (sr1 - sr) * frac;
-      mixed_left += left * gain * stream_gain_scale * tremolo;
-      mixed_right += right * gain * stream_gain_scale * tremolo;
-      const auto eff_rate = static_cast<double>(bank_playback_rates[b] * pitch_rate);
-      stream_frac_pos[b] += static_cast<float>(eff_rate);
-      const auto step = static_cast<std::uint64_t>(stream_frac_pos[b]);
-      stream_frac_pos[b] -= static_cast<float>(step);
-      stream_positions[b] += step;
     }
 
     const auto peak = std::max(std::abs(mixed_left), std::abs(mixed_right));

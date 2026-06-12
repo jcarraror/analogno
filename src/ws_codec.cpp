@@ -39,6 +39,7 @@ Json encode_sample_banks(const std::vector<WebSampleBank>& banks) {
             {"trimEnd",             b.trim_end},
             {"isWavetable",         b.is_wavetable},
             {"isStream",            b.is_stream},
+            {"isLoop",              b.is_loop},
             {"waveform",            b.waveform},
             {"rootNote",            b.root_note},
             {"sliceCount",          b.slice_count},
@@ -347,6 +348,28 @@ const std::unordered_map<std::string, ParseFn>& dispatch_table() {
             if (track < 0) return std::nullopt;
             return WebSocketServer::PasteSeqTrack{.track = track};
         }},
+        {"setBankStreamLoop", [](const Json& j) -> std::optional<Command> {
+            const auto bank = j.value("bank", -1);
+            if (bank < 0 || bank >= 8) return std::nullopt;
+            return WebSocketServer::SetBankStreamLoop{
+                .bank = static_cast<std::size_t>(bank),
+                .loop = j.value("loop", false)};
+        }},
+        {"setBankTrim", [](const Json& j) -> std::optional<Command> {
+            const auto bank = j.value("bank", -1);
+            if (bank < 0 || bank >= 8) return std::nullopt;
+            return WebSocketServer::SetBankTrim{
+                .bank  = static_cast<std::size_t>(bank),
+                .start = std::clamp(j.value("start", 0.0F), 0.0F, 1.0F),
+                .end   = std::clamp(j.value("end",   1.0F), 0.0F, 1.0F)};
+        }},
+        {"scrubStream", [](const Json& j) -> std::optional<Command> {
+            const auto bank = j.value("bank", -1);
+            if (bank < 0 || bank >= 8) return std::nullopt;
+            return WebSocketServer::ScrubStream{
+                .bank = static_cast<std::size_t>(bank),
+                .frac = std::clamp(j.value("frac", 0.0F), 0.0F, 1.0F)};
+        }},
     };
     return table;
 }
@@ -387,6 +410,7 @@ std::string encode(const WebTickState& state) {
             {"velocity",                 state.audio.velocity},
             {"waveform",                 state.audio.waveform},
             {"specSamples",              state.audio.spec_samples},
+            {"touchpadSketch",           state.audio.touchpad_sketch},
             {"touchpadRawPoints",        state.audio.touchpad_raw_points},
             {"voiceSeqRecording",        state.audio.voice_seq_recording},
             {"voiceSeqRecordProgress",   state.audio.voice_seq_record_progress},

@@ -205,6 +205,9 @@ public:
   struct SetStepProbability final { int track{}; int step{}; int probability{100}; };
   struct CopySeqTrack final { int track{}; };
   struct PasteSeqTrack final { int track{}; };
+  struct SetBankStreamLoop final { std::size_t bank{}; bool loop{}; };
+  struct SetBankTrim final { std::size_t bank{}; float start{}; float end{1.0F}; };
+  struct ScrubStream final { std::size_t bank{}; float frac{}; };
 
   using Command = std::variant<Panic, SetCaptureDevice, SetSampleTrim,
                                SetActiveBank, SaveSample, SetPatch,
@@ -225,7 +228,8 @@ public:
                                ClearSeqTrack, ClearAllSeqTracks,
                                RemoveAllSeqTracks,
                                SetSeqTrackName, SetSeqSwing,
-                               SetStepProbability, CopySeqTrack, PasteSeqTrack>;
+                               SetStepProbability, CopySeqTrack, PasteSeqTrack,
+                               SetBankStreamLoop, SetBankTrim, ScrubStream>;
 
   explicit WebSocketServer(std::uint16_t port = 8765);
   ~WebSocketServer();

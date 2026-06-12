@@ -623,15 +623,8 @@ void run_event_loop(Gamepad& gamepad, std::vector<WebPreset> sf2_presets,
                                 bs.first_track + bs.track_steps.size());
                         }
                     }
-                    while (seq.tracks.size() > std::max(arrangement_end, std::size_t{1})) {
-                        const auto& back = seq.tracks.back();
-                        const bool is_empty_default =
-                            back.sample_bank < 0 && back.name.empty() &&
-                            std::none_of(back.steps.begin(), back.steps.end(),
-                                [](const SeqStep& s) { return s.active; });
-                        if (!is_empty_default) break;
-                        seq.tracks.pop_back();
-                    }
+                    if (seq.tracks.size() > std::max(arrangement_end, std::size_t{1}))
+                        seq.tracks.resize(std::max(arrangement_end, std::size_t{1}));
                     seq.active_track = std::clamp(seq.active_track, 0,
                         static_cast<int>(seq.tracks.size()) - 1);
                 }
@@ -639,7 +632,7 @@ void run_event_loop(Gamepad& gamepad, std::vector<WebPreset> sf2_presets,
                 if (seq.playing) {
                     seq.current_step  = -1;
                     seq.playhead_step = -1;
-                    seq.step_start    = std::chrono::steady_clock::now();
+                    seq.step_start    = std::chrono::steady_clock::now() - std::chrono::seconds{100};
                 }
             } else {
                 std::cout << "[transcribe] no onsets detected\n";
